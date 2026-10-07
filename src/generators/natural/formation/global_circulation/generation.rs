@@ -399,13 +399,15 @@ fn stable_fast_step_seconds(grid: &CubedSphereGrid) -> f64 {
 // Preceding-month endpoints approximate both slow-step scalar inputs. Therefore
 // no equivalence to an exact coupled periodic fixed point is claimed.
 // Only atmospheric H/u are injected; the caller must run another coupled cycle.
+// Returns the injected fine atmosphere correction, or `None` when the optional
+// coarse attempt was rejected and the entry is unchanged.
 fn initialize_atmosphere_mechanics(
     context: (&CubedSphereGrid, &SplitExplicitRk3Integrator<'_>, &[f32]),
     forcing: &GlobalClimateForcing,
     background: &WorkClimatology,
     state: &mut LayeredClimateState,
     cancellation: &BuildCancellation,
-) -> Result<(), GlobalCirculationGenerationError> {
+) -> Result<Option<MechanicalAmounts>, GlobalCirculationGenerationError> {
     let (fine_grid, fine_integrator, fine_terrain_floor) = context;
     let cancelled = || cancellation.is_cancelled();
     let fine_planet = forcing.planet_forcing();
@@ -450,7 +452,10 @@ fn initialize_atmosphere_mechanics(
     drop(fine_image);
     // Everything inside the attempt is private. Rejection leaves the original
     // fine entry, including all its scalars, completely unchanged.
-    let attempt = (|| -> Result<LayeredClimateState, GlobalCirculationGenerationError> {
+    let attempt = (|| -> Result<
+        (LayeredClimateState, MechanicalAmounts),
+        GlobalCirculationGenerationError,
+    > {
         let coarse_grid = CubedSphereGrid::new_cancellable(
             fine_grid.face_resolution() / GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
             fine_grid.radius_m(),
@@ -569,14 +574,16 @@ fn initialize_atmosphere_mechanics(
             cancellation,
         )?;
         drop(fine_image_amounts);
-        let mut fine_amounts =
+        // Packing is a pure read of the unchanged entry, so the correction
+        // step below repacks the identical x instead of holding it.
+        let fine_amounts =
             pack_mechanical_amounts(fine_grid, state, fine_terrain_floor, cancellation)?;
         let restricted_entry =
             remap_mechanical_amounts(&restriction, &coarse_grid, &fine_amounts, cancellation)?;
+        drop(fine_amounts);
         drop(restriction);
         drop(fine_surface);
         drop(coarse_surface);
-        let fine_volume: f64 = fine_amounts[..2].iter().flatten().map(|cell| cell[0]).sum();
         let coarse_context = MechanicalCycleContext {
             grid: &coarse_grid,
             integrator: &coarse_integrator,
@@ -632,57 +639,78 @@ fn initialize_atmosphere_mechanics(
         add_scaled_mechanical_amounts(&mut y, -1.0, &restricted_entry, cancellation)?;
         // Restricted nonlinear correction: the coupled coarse solve supplies
         // only atmospheric H/P to the fine trial. Its ocean state stays local.
-        let atmosphere_roles = [
-            ClimateLayerRole::LowerAtmosphere,
-            ClimateLayerRole::UpperAtmosphere,
-        ];
         let correction = remap_mechanical_amounts(
             &prolongation,
             fine_grid,
-            &y[..atmosphere_roles.len()],
+            &y[..FAS_ATMOSPHERE_ROLES.len()],
             cancellation,
         )?;
-        add_scaled_mechanical_amounts(
-            &mut fine_amounts[..atmosphere_roles.len()],
-            1.0,
+        let trial = apply_atmosphere_amount_correction(
+            fine_grid,
+            state,
+            fine_terrain_floor,
             &correction,
             cancellation,
         )?;
-        drop(correction);
-        let mut trial = state
-            .clone_cancellable(cancellation)
-            .map_err(map_state_error)?;
-        let retained_volume = unpack_mechanical_amounts(
-            fine_grid,
-            (&atmosphere_roles, &fine_amounts[..atmosphere_roles.len()]),
-            &mut trial,
-            fine_terrain_floor,
-            cancellation,
-        )?;
-        // The original fine ocean H/u were never unpacked or reprojected;
-        // its already-enforced land constraint therefore remains unchanged.
-        let volume_error = (retained_volume - fine_volume).abs() / fine_volume;
-        if !volume_error.is_finite()
-            || volume_error > crate::world::natural::GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX
-        {
-            return Err(ClimateProjectionError::InvalidDomain {
-                reason: format!("FAS atmosphere volume relative error {volume_error} exceeds existing budget limit"),
-            }.into());
-        }
-        Ok(trial)
+        Ok((trial, correction))
     })();
-    match attempt {
-        Ok(trial) => {
+    let correction = match attempt {
+        Ok((trial, correction)) => {
             *state = trial;
+            Some(correction)
         }
         Err(GlobalCirculationGenerationError::Cancelled) => {
             return Err(GlobalCirculationGenerationError::Cancelled);
         }
         // Optional coarse rejection leaves the original fine entry unchanged.
-        Err(_) => {}
-    }
+        Err(_) => None,
+    };
     check_cancelled(cancellation)?;
-    Ok(())
+    Ok(correction)
+}
+
+/// Adds a fine atmosphere amount correction to a private copy of `state`.
+/// Only the two atmosphere layers are unpacked, so ocean H/u and every scalar
+/// stay unchanged; any rejection leaves `state` itself untouched.
+fn apply_atmosphere_amount_correction(
+    grid: &CubedSphereGrid,
+    state: &LayeredClimateState,
+    terrain_floor: &[f32],
+    correction: &[Vec<[f64; 4]>],
+    cancellation: &BuildCancellation,
+) -> Result<LayeredClimateState, GlobalCirculationGenerationError> {
+    let atmosphere = FAS_ATMOSPHERE_ROLES.len();
+    let mut amounts = pack_mechanical_amounts(grid, state, terrain_floor, cancellation)?;
+    let fine_volume: f64 = amounts[..atmosphere]
+        .iter()
+        .flatten()
+        .map(|cell| cell[0])
+        .sum();
+    add_scaled_mechanical_amounts(&mut amounts[..atmosphere], 1.0, correction, cancellation)?;
+    let mut trial = state
+        .clone_cancellable(cancellation)
+        .map_err(map_state_error)?;
+    let retained_volume = unpack_mechanical_amounts(
+        grid,
+        (&FAS_ATMOSPHERE_ROLES, &amounts[..atmosphere]),
+        &mut trial,
+        terrain_floor,
+        cancellation,
+    )?;
+    // The original fine ocean H/u were never unpacked or reprojected;
+    // its already-enforced land constraint therefore remains unchanged.
+    let volume_error = (retained_volume - fine_volume).abs() / fine_volume;
+    if !volume_error.is_finite()
+        || volume_error > crate::world::natural::GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX
+    {
+        return Err(ClimateProjectionError::InvalidDomain {
+            reason: format!(
+                "FAS atmosphere volume relative error {volume_error} exceeds existing budget limit"
+            ),
+        }
+        .into());
+    }
+    Ok(trial)
 }
 
 fn map_mechanical_remap_error(error: ConservativeRemapError) -> GlobalCirculationGenerationError {
@@ -846,6 +874,12 @@ fn advance_mechanical_cycle(
 // This transient f64 coordinate is also used for signed defects. It is never
 // interpreted as a physical state until explicitly unpacked and validated.
 type MechanicalAmounts = Vec<Vec<[f64; 4]>>;
+
+/// The leading active roles that a restricted FAS correction may write.
+const FAS_ATMOSPHERE_ROLES: [ClimateLayerRole; 2] = [
+    ClimateLayerRole::LowerAtmosphere,
+    ClimateLayerRole::UpperAtmosphere,
+];
 
 fn pack_mechanical_amounts(
     grid: &CubedSphereGrid,
