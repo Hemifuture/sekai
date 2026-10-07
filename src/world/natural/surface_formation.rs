@@ -1362,13 +1362,11 @@ impl FormationTerrainFields {
         {
             return Err(SurfaceWaterGeometryValidationError::ElevationFingerprintMismatch.into());
         }
-        for (field, value) in [("water_inventory_m3", self.water_inventory_m3)] {
-            if !value.is_finite() || value < 0.0 {
-                return Err(SurfaceFormationValidationError::InvalidValue {
-                    field,
-                    found: value,
-                });
-            }
+        if !self.water_inventory_m3.is_finite() || self.water_inventory_m3 < 0.0 {
+            return Err(SurfaceFormationValidationError::InvalidValue {
+                field: "water_inventory_m3",
+                found: self.water_inventory_m3,
+            });
         }
         let realized_water_volume_m3 = self.surface_water_geometry.total_water_volume_m3();
         if !realized_water_volume_m3.is_finite() {
@@ -2332,14 +2330,12 @@ impl NaturalSurfaceFormationSnapshot {
                 },
             );
         }
-        for (role, found) in [("hydrology", self.hydrology.surface_ref())] {
-            if found != self.surface_ref {
-                return Err(SurfaceFormationValidationError::NestedSurfaceMismatch {
-                    role,
-                    found,
-                    expected: self.surface_ref,
-                });
-            }
+        if self.hydrology.surface_ref() != self.surface_ref {
+            return Err(SurfaceFormationValidationError::NestedSurfaceMismatch {
+                role: "hydrology",
+                found: self.hydrology.surface_ref(),
+                expected: self.surface_ref,
+            });
         }
         if self.terrain_fields.current_elevation_m().len() != self.surface_ref.cell_count() as usize
         {
