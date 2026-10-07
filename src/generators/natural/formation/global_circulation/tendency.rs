@@ -858,16 +858,33 @@ impl AtmosphericGravityWaves {
     }
 
     /// Flux-form height tendency of one layer (`0` lower, `1` upper) for the
-    /// given velocity through the frozen stage face depths.
+    /// given velocity through the frozen stage face depths. Each edge flux is
+    /// formed once (one flux per interface, LeVeque 2002 ch. 4) and gathered
+    /// per cell in that cell's edge order, so each sum keeps its order.
     pub(super) fn thickness_tendency_into(
         &self,
         grid: &CubedSphereGrid,
         layer: usize,
         velocity: &[[f32; 3]],
         edge_permeability: &[f32],
-        thickness_tendency_m_s: &mut [f64],
+        (edge_flux_m3_s, thickness_tendency_m_s): (&mut [f64], &mut [f64]),
     ) {
+        debug_assert_eq!(edge_flux_m3_s.len(), grid.edges().len());
         let face_depth = &self.face_depth_m[layer];
+        for (edge_index, (edge, flux)) in grid
+            .edges()
+            .iter()
+            .zip(edge_flux_m3_s.iter_mut())
+            .enumerate()
+        {
+            let [first, second] = edge.cells().map(|index| index as usize);
+            *flux = crate::generators::natural::circulation::edge_volume_flux_m2_s(
+                edge,
+                velocity[first],
+                velocity[second],
+                edge_permeability[edge_index],
+            ) * face_depth[edge_index];
+        }
         for (cell, (geometry, target)) in grid
             .cells()
             .iter()
@@ -877,14 +894,8 @@ impl AtmosphericGravityWaves {
             let mut amount_rate = 0.0;
             for &edge_index in geometry.edges() {
                 let edge_index = edge_index as usize;
-                let edge = &grid.edges()[edge_index];
-                let [first, second] = edge.cells().map(|index| index as usize);
-                let flux = crate::generators::natural::circulation::edge_volume_flux_m2_s(
-                    edge,
-                    velocity[first],
-                    velocity[second],
-                    edge_permeability[edge_index],
-                ) * face_depth[edge_index];
+                let first = grid.edges()[edge_index].cells()[0] as usize;
+                let flux = edge_flux_m3_s[edge_index];
                 amount_rate += if cell == first { -flux } else { flux };
             }
             *target = amount_rate / geometry.area_m2();
@@ -6218,6 +6229,7 @@ mod tests {
                 )
                 .unwrap()
         });
+        let mut edge_flux = vec![0.0; grid.edges().len()];
         let mut thickness = vec![0.0; grid.cell_count()];
         for (layer, role) in roles.into_iter().enumerate() {
             let full_velocity = full.velocity_tendency_m_s2(role).unwrap();
@@ -6244,7 +6256,7 @@ mod tests {
                 layer,
                 state.velocity_m_s(role).unwrap(),
                 &open,
-                &mut thickness,
+                (&mut edge_flux, &mut thickness),
             );
             let full_height = full.height_tendency_m_s(role).unwrap();
             let height_scale = full_height.iter().fold(0.0_f64, |maximum, value| {

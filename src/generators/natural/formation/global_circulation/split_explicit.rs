@@ -670,6 +670,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         let mut velocities =
             ROLES.map(|role| base.velocity_m_s(role).expect("C2 atmosphere").to_vec());
         let small_step_seconds = stage_seconds / f64::from(small_steps);
+        let mut edge_flux = vec![0.0_f64; grid.edges().len()];
         let mut thickness_tendency = vec![0.0_f64; grid.cell_count()];
         let gradients =
             |heights: &[Vec<f32>; 2]| -> Result<[Vec<[f32; 3]>; 2], ClimateIntegratorError> {
@@ -720,7 +721,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
                     layer,
                     &velocities[layer],
                     open_edges,
-                    &mut thickness_tendency,
+                    (&mut edge_flux, &mut thickness_tendency),
                 );
                 let rest = &derivative.layer(*role).height;
                 for (cell, height) in heights[layer].iter_mut().enumerate() {
