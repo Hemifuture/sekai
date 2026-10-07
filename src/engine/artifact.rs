@@ -1,7 +1,7 @@
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -365,9 +365,16 @@ impl BuildArtifacts {
     }
 }
 
+/// serde_json emits one small write per token; hashing them unbuffered costs
+/// more per-call overhead than BLAKE3 itself, so writes are batched first.
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
+
 fn stream_hash<T: Serialize>(value: &T) -> Result<ContentHash, serde_json::Error> {
     let mut hasher = blake3::Hasher::new();
-    serde_json::to_writer(HasherWriter(&mut hasher), value)?;
+    let mut writer = BufWriter::with_capacity(HASH_BUFFER_BYTES, HasherWriter(&mut hasher));
+    serde_json::to_writer(&mut writer, value)?;
+    writer.flush().map_err(serde_json::Error::io)?;
+    drop(writer);
     Ok(ContentHash::new(*hasher.finalize().as_bytes()))
 }
 
@@ -376,14 +383,25 @@ fn stream_hash_cancellable<T: Serialize>(
     cancellation: &BuildCancellation,
 ) -> Result<ContentHash, serde_json::Error> {
     let mut hasher = blake3::Hasher::new();
-    let mut writer = CancellableHasherWriter {
-        hasher: &mut hasher,
-        cancellation,
-        bytes_since_poll: 0,
-    };
-    writer.check_cancelled().map_err(serde_json::Error::io)?;
+    let mut writer = BufWriter::with_capacity(
+        HASH_BUFFER_BYTES,
+        CancellableHasherWriter {
+            hasher: &mut hasher,
+            cancellation,
+            bytes_since_poll: 0,
+        },
+    );
+    writer
+        .get_mut()
+        .check_cancelled()
+        .map_err(serde_json::Error::io)?;
     serde_json::to_writer(&mut writer, value)?;
-    writer.check_cancelled().map_err(serde_json::Error::io)?;
+    writer.flush().map_err(serde_json::Error::io)?;
+    writer
+        .get_mut()
+        .check_cancelled()
+        .map_err(serde_json::Error::io)?;
+    drop(writer);
     Ok(ContentHash::new(*hasher.finalize().as_bytes()))
 }
 
