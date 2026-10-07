@@ -70,7 +70,8 @@ A6 §8.1 实测：A5 §7.18 的两层共同自由面压力带来约 313 m/s 的�
 - **小步**：每个大步以既有快模波速上界（含 313 m/s 外模，`estimate_cfl`）乘阶段
   长度，按 `GLOBAL_CIRCULATION_GRAVITY_WAVE_SMALL_STEP_CFL_TARGET` 取每阶段小步数
   （向上取整、至少 1）。该常量由精度而非稳定性决定，取值过程见 §7.2。
-- 端点重规划（标量端点后取更严者）保留；诊断 `maximum_cfl` 报大步与小步 CFL 的
+- 端点重规划（标量端点后取更严者）保留；小步的快模上界取自标量端点后的状态，
+  标量冷却加快的压力模由小步承担；诊断 `maximum_cfl` 报大步与小步 CFL 的
   较大者，两者都不超过各自目标。
 
 ## 4. 不变的边界
@@ -143,8 +144,15 @@ FAS 周期数、粗网格、CFL 目标、宏步、时间压缩比；发散阻尼
 - `tests/formation_seed_sweep.rs`（2026-10-07，完整图含展示外部产物）：Draft
   8 seed × 3 档构造活动 24/24 通过，每世界 26.2–32.1 s；Standard 8/8 通过，
   65.2–69.4 s。
-- Release 全量回归、fmt/clippy/wasm lib check、CI；用户在 UI 上验收生成耗时与
-  气候场外观。
+- Release 全量回归（2026-10-07，Windows）：1313 通过，两处按设计变化——
+  - 层级探针指纹（审计平台金样）刷新为 `992518cf…`，L0 恒等与陆比漂移 0.0139
+    不变（T1 v2 规格修订 A12）；
+  - 单元测试 `scalar_cooling_replans_the_thermal_fast_step` 断言经典路径的大步按
+    冷端点重规划。A7 大步按参考波速规划，冷端点的压力模改由小步承担，故改写为
+    `scalar_cooling_sizes_the_gravity_wave_small_steps`：入口暖态每阶段需 1 个小步、
+    冷端点需 2 个，降温运行报告的小步 CFL 须等于冷起点、不同于暖起点；把小步规划
+    改用入口态的变异实测会使其失败。
+- fmt/clippy/wasm lib check、CI；用户在 UI 上验收生成耗时与气候场外观。
 
 ## 8. 开放问题
 

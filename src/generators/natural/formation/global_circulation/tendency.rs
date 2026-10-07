@@ -6305,9 +6305,11 @@ mod tests {
     }
 
     #[test]
-    fn scalar_cooling_replans_the_thermal_fast_step() {
-        // A six-cell, smaller-radius pressure fixture makes the entry and
-        // endpoint CFL straddle one substep without generating a full world.
+    fn scalar_cooling_sizes_the_gravity_wave_small_steps() {
+        // C2 large steps follow the reference wave (A7 §3), so the colder
+        // endpoint pressure mode must reach the small steps instead: the
+        // cooled run reports the cold start's small-step CFL, not the warm
+        // entry's. A six-cell, smaller-radius fixture keeps it cheap.
         let grid = CubedSphereGrid::new(1, 500_000.0).unwrap();
         let count = grid.cell_count();
         let forcing = PlanetForcing::new(
@@ -6344,41 +6346,50 @@ mod tests {
             super::super::rk3::estimate_cfl(&grid, &state, 1.0, &cancellation).unwrap();
         let endpoint_rate =
             super::super::rk3::estimate_cfl(&grid, &cold, 1.0, &cancellation).unwrap();
-        assert!(endpoint_rate > entry_rate);
-        let target = crate::world::natural::GLOBAL_CIRCULATION_FAST_CFL_TARGET;
-        let step = target / (0.5 * (entry_rate + endpoint_rate));
+        // One small step per stage at the entry rate, two at the endpoint's.
+        let target = crate::world::natural::GLOBAL_CIRCULATION_GRAVITY_WAVE_SMALL_STEP_CFL_TARGET;
+        let step = 0.95 * target / entry_rate;
+        assert!(step * endpoint_rate > target);
         assert_eq!(
             super::super::SplitExplicitRk3Integrator::slow_step_plan(step).0,
             1
         );
-        let mut declared = LayeredClimateTendency::zeroed(&state);
-        for role in [
-            ClimateLayerRole::LowerAtmosphere,
-            ClimateLayerRole::UpperAtmosphere,
-        ] {
-            declared
-                .layer_mut(role)
+        let advance = |start: &LayeredClimateState, cooling_k: f32| {
+            let mut declared = LayeredClimateTendency::zeroed(start);
+            for role in [
+                ClimateLayerRole::LowerAtmosphere,
+                ClimateLayerRole::UpperAtmosphere,
+            ] {
+                declared
+                    .layer_mut(role)
+                    .unwrap()
+                    .temperature_tendency_k_s
+                    .fill((-f64::from(cooling_k) / step) as f32);
+            }
+            super::super::SplitExplicitRk3Integrator::new(&grid, step)
                 .unwrap()
-                .temperature_tendency_k_s
-                .fill((-f64::from(cooling) / step) as f32);
-        }
-        let result = super::super::SplitExplicitRk3Integrator::new(&grid, step)
-            .unwrap()
-            .advance_with_declared_tendency_and_phase_observer(
-                &state,
-                &forcing,
-                &vec![1.0; grid.edges().len()],
-                step,
-                &declared,
-                &cancellation,
-                &mut |_| {},
-            )
-            .unwrap();
+                .advance_with_declared_tendency_and_phase_observer(
+                    start,
+                    &forcing,
+                    &vec![1.0; grid.edges().len()],
+                    step,
+                    &declared,
+                    &cancellation,
+                    &mut |_| {},
+                )
+                .unwrap()
+                .diagnostics()
+                .maximum_cfl()
+        };
+        let cooled = advance(&state, cooling);
+        let cold = advance(&cold, 0.0);
+        let warm = advance(&state, 0.0);
+        let close = |a: f64, b: f64| (a - b).abs() <= 1.0e-6 * b;
         assert!(
-            result.diagnostics().fast_substeps() > 1,
-            "entry-only planning missed the colder endpoint pressure mode"
+            close(cooled, cold) && !close(cooled, warm),
+            "small steps must follow the scalar endpoint: cooled {cooled}, cold {cold}, warm {warm}"
         );
-        assert!(result.diagnostics().maximum_cfl() <= target);
+        assert!(cooled <= target);
     }
 
     #[test]

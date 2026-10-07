@@ -16,11 +16,11 @@ use sekai::world::{CellId, RootSeed};
 use support::causal_formation::causal_formation_fixture;
 
 /// Draft seed-42 probe fingerprint (spec A4 formula), measured on the bundle
-/// once milestone A6 Task 3 (transient gradient rounding) landed. It
-/// supersedes A9's `cab6c758…`, which predates the finite-time P5 solve and
-/// the bundled endpoint climate (T1 v2 spec amendment A11).
+/// once milestone A7 (gravity-wave time splitting) changed the bundled
+/// endpoint climate. It supersedes A11's `8ced8719…`; L0 identity and the
+/// 0.0139 land drift were unchanged (T1 v2 spec amendment A12).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "8ced8719c1652d23ab4aaf62f12d5ec39a44da46035f43dbf51e523432222c5e";
+    "992518cf6552153039c42cb61f9080e3bf8bbe5a359c2bff65d74ac5f959a485";
 
 fn evaluator() -> HierarchicalEvaluator {
     let fixture = causal_formation_fixture();
