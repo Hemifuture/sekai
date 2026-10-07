@@ -14,7 +14,7 @@ use super::{
 use crate::engine::BuildCancellation;
 use crate::generators::natural::formation::global_circulation::{
     GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalClimateForcing,
-    GlobalClimateForcingBuilder, GlobalClimateForcingError,
+    GlobalClimateForcingBuilder, GlobalClimateForcingError, StartAtmosphereFasCorrection,
 };
 use crate::generators::natural::surface_water_geometry::solve_physical_sea_level_exact;
 use crate::world::natural::water_volume_relative_error;
@@ -81,20 +81,30 @@ impl SurfaceFormationGenerator {
     /// Closes one exact P3-derived state through finite-time P5 and endpoint P4.
     /// The caller has fully validated `inputs.domain` against `inputs.surface`
     /// (the causal chain's start forcing build does), so P5 and its endpoint
-    /// P4 recheck only the binding.
+    /// P4 recheck only the binding. `start_correction` is the restricted FAS
+    /// correction captured by the solve of `inputs.initial_climate`, if any;
+    /// the endpoint P4 reuses it in place of its own FAS block (A8b §2.2).
     pub(in crate::generators::natural) fn generate_from_exact_state(
         inputs: SurfaceFormationInputs<'_>,
         state: FormationState,
+        start_correction: Option<&StartAtmosphereFasCorrection>,
         cancellation: &BuildCancellation,
     ) -> Result<SurfaceFormationClosureOutput, SurfaceFormationGenerationError> {
         let surface_ref = validate_inputs(inputs, cancellation)?;
-        Self::generate_from_validated_state(inputs, state, surface_ref, cancellation)
+        Self::generate_from_validated_state(
+            inputs,
+            state,
+            surface_ref,
+            start_correction,
+            cancellation,
+        )
     }
 
     fn generate_from_validated_state(
         inputs: SurfaceFormationInputs<'_>,
         mut state: FormationState,
         surface_ref: SurfaceRef,
+        start_correction: Option<&StartAtmosphereFasCorrection>,
         cancellation: &BuildCancellation,
     ) -> Result<SurfaceFormationClosureOutput, SurfaceFormationGenerationError> {
         let surface = inputs.surface;
@@ -121,11 +131,12 @@ impl SurfaceFormationGenerator {
             inputs.domain,
             cancellation,
         )?;
-        let endpoint_climate = GlobalCirculationGenerator::generate_from_validated(
+        let (endpoint_climate, _) = GlobalCirculationGenerator::generate_endpoint(
             surface,
             inputs.domain,
             &forcing,
-            inputs.initial_climate.profile(),
+            inputs.initial_climate,
+            start_correction,
             cancellation,
         )?;
         let terminal_diagnostics = recompute_surface_diagnostics(

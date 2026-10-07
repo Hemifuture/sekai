@@ -956,7 +956,7 @@ pub enum GlobalClimateForcingError {
 }
 
 #[cfg(test)]
-mod formation_tests {
+pub(super) mod formation_tests {
     use std::sync::OnceLock;
 
     use super::*;
@@ -972,14 +972,15 @@ mod formation_tests {
     };
     use crate::world::{Meters, SphericalSpaceSpec};
 
-    struct Fixture {
-        surface: SphericalSurfaceSnapshot,
-        relief: PrimaryReliefSnapshot,
-        domain: ClimateWorkDomainSnapshot,
-        permeability: Vec<f32>,
+    /// A small all-ocean Draft P4 input, shared with the generation tests.
+    pub(in super::super) struct Fixture {
+        pub(in super::super) surface: SphericalSurfaceSnapshot,
+        pub(in super::super) relief: PrimaryReliefSnapshot,
+        pub(in super::super) domain: ClimateWorkDomainSnapshot,
+        pub(in super::super) permeability: Vec<f32>,
     }
 
-    fn fixture() -> &'static Fixture {
+    pub(in super::super) fn fixture() -> &'static Fixture {
         static FIXTURE: OnceLock<Fixture> = OnceLock::new();
         FIXTURE.get_or_init(|| {
             let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {

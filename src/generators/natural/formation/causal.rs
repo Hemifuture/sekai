@@ -101,13 +101,14 @@ impl CausalNaturalFormationGenerator {
             inputs.climate_domain,
             cancellation,
         )?;
-        let start_climate = GlobalCirculationGenerator::generate_from_validated(
-            surface,
-            inputs.climate_domain,
-            &start_forcing,
-            ClimateModelProfile::C2LayeredV1,
-            cancellation,
-        )?;
+        let (start_climate, start_correction) =
+            GlobalCirculationGenerator::generate_capturing_start_correction(
+                surface,
+                inputs.climate_domain,
+                &start_forcing,
+                ClimateModelProfile::C2LayeredV1,
+                cancellation,
+            )?;
         let closure = SurfaceFormationGenerator::generate_from_exact_state(
             SurfaceFormationInputs {
                 surface,
@@ -121,8 +122,11 @@ impl CausalNaturalFormationGenerator {
                 formation_spec: inputs.surface_spec,
             },
             formation_state,
+            start_correction.as_ref(),
             cancellation,
         )?;
+        // The carrier lives only from the start solve to the endpoint solve.
+        drop(start_correction);
         let (surface, final_climate, final_climate_forcing) = closure.into_parts();
         if final_climate.checkpoint().forcing_fingerprint() != final_climate_forcing.fingerprint() {
             return Err(CausalFormationGenerationError::EndpointForcingIdentityMismatch);
@@ -1011,14 +1015,15 @@ mod timing_probe {
         .unwrap();
         report(profile, "P4 start forcing", started);
         let started = Instant::now();
-        let start_climate = GlobalCirculationGenerator::generate_from_validated(
-            surface,
-            &domain,
-            &start_forcing,
-            ClimateModelProfile::C2LayeredV1,
-            &cancellation,
-        )
-        .unwrap();
+        let (start_climate, start_correction) =
+            GlobalCirculationGenerator::generate_capturing_start_correction(
+                surface,
+                &domain,
+                &start_forcing,
+                ClimateModelProfile::C2LayeredV1,
+                &cancellation,
+            )
+            .unwrap();
         report(profile, "P4 start solve", started);
         eprintln!("[probe {profile:?}]    {}", solve_summary(&start_climate));
 
@@ -1036,9 +1041,11 @@ mod timing_probe {
                 formation_spec: &surface_spec,
             },
             formation_state,
+            start_correction.as_ref(),
             &cancellation,
         )
         .unwrap();
+        drop(start_correction);
         let (surface_out, final_climate, _forcing) = closure.into_parts();
         report(profile, "P5 + endpoint P4", started);
         eprintln!(
