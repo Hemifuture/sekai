@@ -52,54 +52,6 @@ pub(in crate::generators::natural) struct CausalFormationOutput {
     pub final_climate_forcing: GlobalClimateForcing,
 }
 
-impl CausalFormationOutput {
-    fn validate(
-        &self,
-        surface: &crate::world::spatial::SphericalSurfaceSnapshot,
-        relief_spec: &ReliefSpec,
-    ) -> Result<(), CausalFormationGenerationError> {
-        self.evolved_tectonics
-            .validate_against(surface)
-            .map_err(
-                |error| CausalFormationGenerationError::InvalidFinalCandidate {
-                    role: "evolved_tectonics",
-                    reason: error.to_string(),
-                },
-            )?;
-        self.geologic_substrate
-            .validate_against(surface, &self.evolved_tectonics)
-            .map_err(
-                |error| CausalFormationGenerationError::InvalidFinalCandidate {
-                    role: "geologic_substrate",
-                    reason: error.to_string(),
-                },
-            )?;
-        self.primary_relief
-            .validate_against(surface, &self.geologic_substrate, relief_spec)
-            .map_err(
-                |error| CausalFormationGenerationError::InvalidFinalCandidate {
-                    role: "primary_relief",
-                    reason: error.to_string(),
-                },
-            )?;
-        self.final_climate
-            .validate_against(surface)
-            .map_err(
-                |error| CausalFormationGenerationError::InvalidFinalCandidate {
-                    role: "final_climate",
-                    reason: error.to_string(),
-                },
-            )?;
-        self.surface.validate_against(surface).map_err(|error| {
-            CausalFormationGenerationError::InvalidFinalCandidate {
-                role: "surface_formation",
-                reason: error.to_string(),
-            }
-        })?;
-        Ok(())
-    }
-}
-
 /// Runs the one production Lie-style causal split without publishing partial artifacts.
 #[derive(Debug, Clone, Copy, Default)]
 pub(in crate::generators::natural) struct CausalNaturalFormationGenerator;
@@ -175,19 +127,18 @@ impl CausalNaturalFormationGenerator {
         if final_climate.checkpoint().forcing_fingerprint() != final_climate_forcing.fingerprint() {
             return Err(CausalFormationGenerationError::EndpointForcingIdentityMismatch);
         }
-        let output = CausalFormationOutput {
+        // Each sibling's producer already ended with `validate_against` on this
+        // surface and the same upstream siblings, so the chain trusts them;
+        // the bundle checks cross-sibling identity and publication
+        // revalidates it in full.
+        Ok(CausalFormationOutput {
             evolved_tectonics,
             geologic_substrate,
             primary_relief,
             final_climate,
             surface,
             final_climate_forcing,
-        };
-        output.validate(
-            inputs.profile_bundle.authoritative_surface(),
-            inputs.relief_spec,
-        )?;
-        Ok(output)
+        })
     }
 }
 
@@ -200,7 +151,8 @@ pub(in crate::generators::natural) enum CausalFormationGenerationError {
     /// The final P4 checkpoint was not built from the retained P5 forcing.
     #[error("endpoint climate forcing identity does not match final P5 terrain")]
     EndpointForcingIdentityMismatch,
-    /// One final sibling failed cross-validation before publication.
+    /// The offline reference schedule left a final sibling missing or inconsistent.
+    #[cfg(test)]
     #[error("invalid final {role} candidate: {reason}")]
     InvalidFinalCandidate { role: &'static str, reason: String },
     /// P2 failed before a final tectonic candidate existed.
@@ -779,6 +731,16 @@ mod tests {
             evolution_report,
             cancellation,
         )?;
+        // The observer validated this substrate only against its boundary
+        // snapshot; bind it to the separately published final P2 sibling.
+        geologic_substrate
+            .validate_against(surface, &evolved_tectonics)
+            .map_err(
+                |error| CausalFormationGenerationError::InvalidFinalCandidate {
+                    role: "geologic_substrate",
+                    reason: error.to_string(),
+                },
+            )?;
         let output = CausalFormationOutput {
             evolved_tectonics,
             geologic_substrate,
@@ -787,7 +749,6 @@ mod tests {
             surface: surface_snapshot,
             final_climate_forcing,
         };
-        output.validate(surface, inputs.relief_spec)?;
         Ok(OfflineReferenceOutput {
             output,
             window_count,

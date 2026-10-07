@@ -66,7 +66,25 @@ impl NaturalFormationBundle {
     pub(crate) fn new(
         parts: NaturalFormationBundleParts,
     ) -> Result<Self, NaturalFormationBundleValidationError> {
-        let bundle = Self {
+        let bundle = Self::assemble(parts);
+        bundle.validate()?;
+        Ok(bundle)
+    }
+
+    /// Constructs a bundle from siblings whose producers already validated
+    /// them against the authoritative surface, checking only the bundle's
+    /// own schema and cross-sibling identities.
+    pub(crate) fn from_validated_siblings(
+        parts: NaturalFormationBundleParts,
+    ) -> Result<Self, NaturalFormationBundleValidationError> {
+        let bundle = Self::assemble(parts);
+        bundle.validate_header()?;
+        bundle.validate_bindings()?;
+        Ok(bundle)
+    }
+
+    fn assemble(parts: NaturalFormationBundleParts) -> Self {
+        Self {
             schema_version: parts.schema_version,
             surface_ref: parts.surface_ref,
             timeline: parts.timeline,
@@ -79,13 +97,31 @@ impl NaturalFormationBundle {
             primary_relief_quality: parts.primary_relief_quality,
             climate_quality: parts.climate_quality,
             surface_quality: parts.surface_quality,
-        };
-        bundle.validate()?;
-        Ok(bundle)
+        }
     }
 
     /// Revalidates the current-state schema and every cross-sibling identity.
     pub fn validate(&self) -> Result<(), NaturalFormationBundleValidationError> {
+        self.validate_header()?;
+        self.tectonics.validate().map_err(|error| {
+            NaturalFormationBundleValidationError::invalid_domain("tectonics", error)
+        })?;
+        self.substrate.validate().map_err(|error| {
+            NaturalFormationBundleValidationError::invalid_domain("substrate", error)
+        })?;
+        self.primary_relief.validate().map_err(|error| {
+            NaturalFormationBundleValidationError::invalid_domain("primary_relief", error)
+        })?;
+        self.climate.validate().map_err(|error| {
+            NaturalFormationBundleValidationError::invalid_domain("climate", error)
+        })?;
+        self.surface_formation.validate().map_err(|error| {
+            NaturalFormationBundleValidationError::invalid_domain("surface_formation", error)
+        })?;
+        self.validate_bindings()
+    }
+
+    fn validate_header(&self) -> Result<(), NaturalFormationBundleValidationError> {
         if self.schema_version != NATURAL_FORMATION_BUNDLE_SCHEMA_V1 {
             return Err(NaturalFormationBundleValidationError::UnsupportedSchema {
                 found: self.schema_version,
@@ -109,23 +145,10 @@ impl NaturalFormationBundle {
                 role: "timeline",
                 reason: error.to_string(),
             }
-        })?;
-        self.tectonics.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("tectonics", error)
-        })?;
-        self.substrate.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("substrate", error)
-        })?;
-        self.primary_relief.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("primary_relief", error)
-        })?;
-        self.climate.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("climate", error)
-        })?;
-        self.surface_formation.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("surface_formation", error)
-        })?;
+        })
+    }
 
+    fn validate_bindings(&self) -> Result<(), NaturalFormationBundleValidationError> {
         for (role, found) in [
             ("tectonics", self.tectonics.surface_ref()),
             ("substrate", self.substrate.surface_ref()),
