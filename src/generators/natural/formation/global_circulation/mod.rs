@@ -40,6 +40,8 @@ pub use comparison::{
 };
 pub use forcing::{GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError};
 pub(crate) use generation::StartAtmosphereFasCorrection;
+#[cfg(test)]
+pub(crate) use generation::{offline, EndpointInjection};
 pub use generation::{
     GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalCirculationPhase,
 };

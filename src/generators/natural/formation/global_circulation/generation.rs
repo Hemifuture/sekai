@@ -261,6 +261,10 @@ impl GlobalCirculationGenerator {
                 reason: error.to_string(),
             })?;
         let maximum_formation_cycles = domain.profile().global_circulation_formation_cycles_max();
+        #[cfg(test)]
+        let maximum_formation_cycles = offline::schedule()
+            .maximum_formation_cycles
+            .unwrap_or(maximum_formation_cycles);
         let fast_step_seconds = stable_fast_step_seconds(&grid);
         let planet = forcing.planet_forcing();
         let terrain_floor_m = LayeredTendencySystem::lower_atmosphere_terrain_floor_m(
@@ -366,6 +370,8 @@ impl GlobalCirculationGenerator {
                 initial_residual = residual;
             }
             final_residual = residual;
+            #[cfg(test)]
+            offline::record(|capture| capture.residuals.push(residual));
             formation_cycles = cycle + 1;
             final_cycle_budget = work.final_cycle_budget(&grid, forcing, cancellation)?;
             let hard_closures_pass = final_cycle_budget.hard_closures_pass();
@@ -426,6 +432,11 @@ impl GlobalCirculationGenerator {
                             &mut state,
                             cancellation,
                         )?;
+                        #[cfg(test)]
+                        offline::record(|capture| {
+                            capture.fas_correction =
+                                accepted.as_ref().map(|correction| correction.fine.clone());
+                        });
                         if matches!(role, SolveRole::Start) {
                             start_correction = accepted.map(|correction| {
                                 StartAtmosphereFasCorrection::new(
@@ -465,7 +476,11 @@ impl GlobalCirculationGenerator {
             previous_cycle = state
                 .clone_cancellable(cancellation)
                 .map_err(map_state_error)?;
-            if cycle >= 3 && final_residual <= FORMATION_RESIDUAL_TARGET && hard_closures_pass {
+            let converged =
+                cycle >= 3 && final_residual <= FORMATION_RESIDUAL_TARGET && hard_closures_pass;
+            #[cfg(test)]
+            let converged = converged && !offline::schedule().run_every_cycle;
+            if converged {
                 break;
             }
         }
@@ -493,6 +508,8 @@ impl GlobalCirculationGenerator {
             .finish(final_cycle_budget)?;
         let (fields, published_precipitation_relative_error) =
             work.project(surface, domain, forcing, cancellation, &mut observer)?;
+        #[cfg(test)]
+        offline::record(|capture| capture.fields = Some(fields.clone()));
         let dense_state_bytes = expected_global_circulation_dense_state_bytes(
             domain.profile(),
             profile,
@@ -771,7 +788,12 @@ fn initialize_atmosphere_mechanics(
         // Thus tau=R Phi_f(x)-Phi_c(Rx), and y_next=Phi_c(y)+tau.
         // This first coarse evaluation serves both tau and update number one.
         let (tau, mut y) = fas_first_coarse_update(tau, first_coarse_image, cancellation)?;
-        for coarse_cycle in 0..GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES {
+        let coarse_cycles = GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES;
+        #[cfg(test)]
+        let coarse_cycles = offline::schedule()
+            .mechanical_coarse_cycles
+            .unwrap_or(coarse_cycles);
+        for coarse_cycle in 0..coarse_cycles {
             if coarse_cycle != 0 {
                 advance_mechanical_cycle(&coarse_context, &mut candidate, cancellation)?;
                 y = pack_mechanical_amounts(
@@ -967,6 +989,15 @@ impl StartAtmosphereFasCorrection {
         }
     }
 
+    /// The same carrier injecting the other §9.2 candidate form.
+    #[cfg(test)]
+    pub(crate) fn with_injection(&self, injection: EndpointInjection) -> Self {
+        Self {
+            injection,
+            ..self.clone()
+        }
+    }
+
     /// A8b §2.2a: a carrier from any other solve is a programming error.
     fn validate_for(
         &self,
@@ -1108,6 +1139,68 @@ struct CompletedSolve {
 /// P to stderr (the `SEKAI_P5_TRACE` precedent); it never changes a result.
 fn p4_trace_enabled() -> bool {
     std::env::var_os("SEKAI_P4_TRACE").is_some()
+}
+
+/// Offline-only solver schedule and capture for the A8b §9.2 reference
+/// comparison. The reference schedules are temporary offline constants (A5
+/// §7.50 convention); they exist only in test builds, so the product solve is
+/// unchanged. Both cells are thread-local, so concurrent tests never interact.
+#[cfg(test)]
+pub(crate) mod offline {
+    use std::cell::{Cell, RefCell};
+
+    use super::MechanicalAmounts;
+    use crate::world::natural::GlobalCirculationFields;
+
+    /// Replacements for production schedule constants; `Default` is production.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub(crate) struct OfflineSchedule {
+        /// Replaces the profile's maximum formation cycles.
+        pub(crate) maximum_formation_cycles: Option<u16>,
+        /// Disables the converged stop, so every cycle up to the maximum runs.
+        pub(crate) run_every_cycle: bool,
+        /// Replaces the mechanical coarse cycles of the FAS block.
+        pub(crate) mechanical_coarse_cycles: Option<u16>,
+    }
+
+    /// What one solve exposed; `fields` are the projection before any
+    /// checkpoint or publication check, so a schedule beyond the profile
+    /// horizon still yields them.
+    #[derive(Debug, Default)]
+    pub(crate) struct OfflineCapture {
+        pub(crate) residuals: Vec<f64>,
+        /// The last accepted fine FAS correction `δ` of this solve, if any.
+        pub(crate) fas_correction: Option<MechanicalAmounts>,
+        pub(crate) fields: Option<GlobalCirculationFields>,
+    }
+
+    thread_local! {
+        /// `Some` only inside `run`; every other test solve records nothing.
+        static SCHEDULE: Cell<Option<OfflineSchedule>> = const { Cell::new(None) };
+        static CAPTURE: RefCell<OfflineCapture> = RefCell::new(OfflineCapture::default());
+    }
+
+    /// Runs `solve` under `schedule` and returns what it captured.
+    pub(crate) fn run<T>(
+        schedule: OfflineSchedule,
+        solve: impl FnOnce() -> T,
+    ) -> (T, OfflineCapture) {
+        CAPTURE.with(|capture| capture.take());
+        SCHEDULE.with(|cell| cell.set(Some(schedule)));
+        let result = solve();
+        SCHEDULE.with(|cell| cell.set(None));
+        (result, CAPTURE.with(|capture| capture.take()))
+    }
+
+    pub(super) fn schedule() -> OfflineSchedule {
+        SCHEDULE.with(Cell::get).unwrap_or_default()
+    }
+
+    pub(super) fn record(update: impl FnOnce(&mut OfflineCapture)) {
+        if SCHEDULE.with(Cell::get).is_some() {
+            CAPTURE.with(|capture| update(&mut capture.borrow_mut()));
+        }
+    }
 }
 
 /// A8b §2.2b: the endpoint cycle-0 state `x_e0` plus the start correction,
