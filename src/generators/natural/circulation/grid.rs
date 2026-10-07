@@ -83,6 +83,11 @@ pub struct SphericalEdge {
     center_distance_m: f64,
     center_distances_to_midpoint_m: [f64; 2],
     normal_from_first: [f64; 3],
+    /// Static edge metrics (MPAS-style, Ringler et al. 2010): the tangent
+    /// displacement from each cell center to the midpoint, and the two
+    /// distance-ratio interpolation weights to the midpoint.
+    midpoint_displacements_m: [[f64; 3]; 2],
+    interpolation_weights: [f64; 2],
 }
 
 impl SphericalEdge {
@@ -116,6 +121,33 @@ impl SphericalEdge {
 
     pub const fn normal_from_first(&self) -> [f64; 3] {
         self.normal_from_first
+    }
+
+    /// Tangent displacement of length `center_distances_to_midpoint_m()[owner]`
+    /// from the `owner` cell center toward the midpoint (zero when they coincide).
+    pub(crate) const fn midpoint_displacement_m(&self, owner: usize) -> [f64; 3] {
+        self.midpoint_displacements_m[owner]
+    }
+
+    /// Weights of the first and second cell values at the midpoint: each
+    /// cell's share is the other center's distance over their sum.
+    pub(crate) const fn interpolation_weights(&self) -> [f64; 2] {
+        self.interpolation_weights
+    }
+}
+
+fn midpoint_displacement_m(
+    center_unit: [f64; 3],
+    midpoint_unit: [f64; 3],
+    distance_m: f64,
+) -> [f64; 3] {
+    let chord = add(midpoint_unit, scale(center_unit, -1.0));
+    let toward_midpoint = project_tangent(chord, center_unit);
+    let norm = dot(toward_midpoint, toward_midpoint).sqrt();
+    if norm <= f64::MIN_POSITIVE {
+        [0.0; 3]
+    } else {
+        scale(toward_midpoint, distance_m / norm)
     }
 }
 
@@ -274,6 +306,7 @@ impl CubedSphereGrid {
             let id =
                 u32::try_from(edges.len()).map_err(|_| CubedSphereGridError::AllocationOverflow)?;
             edge_ids.insert(key, id);
+            let denominator = center_distances_to_midpoint_m[0] + center_distances_to_midpoint_m[1];
             edges.push(SphericalEdge {
                 id,
                 vertices: [key.0, key.1],
@@ -283,6 +316,22 @@ impl CubedSphereGrid {
                 center_distance_m,
                 center_distances_to_midpoint_m,
                 normal_from_first,
+                midpoint_displacements_m: [
+                    midpoint_displacement_m(
+                        first_center,
+                        midpoint_unit,
+                        center_distances_to_midpoint_m[0],
+                    ),
+                    midpoint_displacement_m(
+                        second_center,
+                        midpoint_unit,
+                        center_distances_to_midpoint_m[1],
+                    ),
+                ],
+                interpolation_weights: [
+                    center_distances_to_midpoint_m[1] / denominator,
+                    center_distances_to_midpoint_m[0] / denominator,
+                ],
             });
         }
 
