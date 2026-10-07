@@ -803,6 +803,9 @@ pub(super) struct AtmosphericTemperatureGradients {
     upper_temperature: Vec<[f32; 3]>,
 }
 
+/// Interface (`h_L`) and top-thickness (`h_U`) height gradients.
+type InterfaceAndTopGradients<'gradient> = (&'gradient [[f32; 3]], &'gradient [[f32; 3]]);
+
 #[derive(Debug)]
 struct AtmosphericPressureGradients<'temperature> {
     temperature: &'temperature AtmosphericTemperatureGradients,
@@ -810,7 +813,91 @@ struct AtmosphericPressureGradients<'temperature> {
     upper_height: Vec<[f32; 3]>,
 }
 
+/// Linear C2 gravity-wave operator frozen at one fast RK stage (A7 §2.1):
+/// the height-gradient pressure of both atmospheric layers and their
+/// flux-form continuity through the stage face depths.
+#[derive(Debug)]
+pub(super) struct AtmosphericGravityWaves {
+    /// `g - b_U`: common free-surface gravity acting on both layers.
+    surface_gravity_m_s2: Vec<f64>,
+    /// `g' - δb`: interface gravity acting on the lower layer only.
+    reduced_gravity_m_s2: Vec<f64>,
+    /// Stage face depth of the lower and upper layer on every edge.
+    face_depth_m: [Vec<f64>; 2],
+}
+
+impl AtmosphericGravityWaves {
+    fn for_grid(grid: &CubedSphereGrid) -> Self {
+        Self {
+            surface_gravity_m_s2: vec![0.0; grid.cell_count()],
+            reduced_gravity_m_s2: vec![0.0; grid.cell_count()],
+            face_depth_m: [vec![0.0; grid.edges().len()], vec![0.0; grid.edges().len()]],
+        }
+    }
+
+    /// Lower and upper pressure accelerations of one cell from its interface
+    /// (`h_L`) and top-thickness (`h_U`) gradients: `G` of A5 §7.18.
+    pub(super) fn accelerations(
+        &self,
+        grid: &CubedSphereGrid,
+        cell: usize,
+        interface_gradient: [f32; 3],
+        upper_gradient: [f32; 3],
+    ) -> [[f64; 3]; 2] {
+        let surface = self.surface_gravity_m_s2[cell];
+        let reduced = self.reduced_gravity_m_s2[cell];
+        let radial = grid.cells()[cell].center_unit();
+        let common: [f64; 3] = std::array::from_fn(|component| {
+            -surface
+                * (f64::from(interface_gradient[component]) + f64::from(upper_gradient[component]))
+        });
+        let lower = std::array::from_fn(|component| {
+            common[component] - reduced * f64::from(interface_gradient[component])
+        });
+        [tangentize(lower, radial), tangentize(common, radial)]
+    }
+
+    /// Flux-form height tendency of one layer (`0` lower, `1` upper) for the
+    /// given velocity through the frozen stage face depths.
+    pub(super) fn thickness_tendency_into(
+        &self,
+        grid: &CubedSphereGrid,
+        layer: usize,
+        velocity: &[[f32; 3]],
+        edge_permeability: &[f32],
+        thickness_tendency_m_s: &mut [f64],
+    ) {
+        let face_depth = &self.face_depth_m[layer];
+        for (cell, (geometry, target)) in grid
+            .cells()
+            .iter()
+            .zip(thickness_tendency_m_s.iter_mut())
+            .enumerate()
+        {
+            let mut amount_rate = 0.0;
+            for &edge_index in geometry.edges() {
+                let edge_index = edge_index as usize;
+                let edge = &grid.edges()[edge_index];
+                let [first, second] = edge.cells().map(|index| index as usize);
+                let flux = crate::generators::natural::circulation::edge_volume_flux_m2_s(
+                    edge,
+                    velocity[first],
+                    velocity[second],
+                    edge_permeability[edge_index],
+                ) * face_depth[edge_index];
+                amount_rate += if cell == first { -flux } else { flux };
+            }
+            *target = amount_rate / geometry.area_m2();
+        }
+    }
+}
+
 impl LayeredTendencyWorkspace {
+    /// All-open atmospheric edge permeability.
+    pub(super) fn open_edges(&self) -> &[f32] {
+        &self.open_edges
+    }
+
     pub fn for_grid(grid: &CubedSphereGrid) -> Self {
         Self {
             cell_count: grid.cell_count(),
@@ -2124,6 +2211,56 @@ impl<'grid> LayeredTendencySystem<'grid> {
             Option<&AtmosphericTemperatureGradients>,
         ),
     ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
+        self.evaluate_fast_impl(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            cancellation,
+            workspace_and_temperature,
+            None,
+        )
+    }
+
+    /// The fast tensor without the C2 atmospheric gravity-wave terms, plus
+    /// that linear operator frozen at this stage (A7 §2.1). Adding
+    /// `waves.accelerations` and `waves.thickness_tendency_into` evaluated on
+    /// this same state restores the full fast tensor term by term.
+    pub(super) fn evaluate_fast_without_gravity_waves_validated(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        cancellation: &BuildCancellation,
+        workspace_and_temperature: (
+            &mut LayeredTendencyWorkspace,
+            Option<&AtmosphericTemperatureGradients>,
+        ),
+    ) -> Result<(LayeredClimateTendency, AtmosphericGravityWaves), LayeredTendencyError> {
+        debug_assert_eq!(state.profile(), ClimateModelProfile::C2LayeredV1);
+        let mut waves = AtmosphericGravityWaves::for_grid(self.grid);
+        let tendency = self.evaluate_fast_impl(
+            state,
+            forcing,
+            ocean_edge_permeability,
+            cancellation,
+            workspace_and_temperature,
+            Some(&mut waves),
+        )?;
+        Ok((tendency, waves))
+    }
+
+    fn evaluate_fast_impl(
+        &self,
+        state: &LayeredClimateState,
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        cancellation: &BuildCancellation,
+        workspace_and_temperature: (
+            &mut LayeredTendencyWorkspace,
+            Option<&AtmosphericTemperatureGradients>,
+        ),
+        mut gravity_waves: Option<&mut AtmosphericGravityWaves>,
+    ) -> Result<LayeredClimateTendency, LayeredTendencyError> {
         let (workspace, endpoint_temperature) = workspace_and_temperature;
         let physical = state.physical_view();
         let state: &LayeredClimateState = &physical;
@@ -2149,19 +2286,29 @@ impl<'grid> LayeredTendencySystem<'grid> {
             };
             let reference_thickness =
                 f64::from(state.reference_thickness_m(*role).expect("active role"));
-            operators.gradient_and_donor_layer_thickness_tendency_into_cancellable_validated(
-                height,
-                velocity,
-                permeability,
-                reference_thickness,
-                self.layer_terrain_floor(*role),
-                !(state.profile() == ClimateModelProfile::C2LayeredV1 && is_atmosphere_role(*role)),
-                &mut workspace.vector_scratch,
-                &mut workspace.thickness_tendency_m_s,
-                &mut workspace.transport,
-                cancellation,
-            )?;
-            let reduced_gravity = role_constants(state.profile(), *role).0;
+            // The split stage leaves the atmospheric height gradient and its
+            // C2 continuity (zero here) to the gravity-wave operator.
+            let split_atmosphere = gravity_waves.is_some() && is_atmosphere_role(*role);
+            let reduced_gravity = if split_atmosphere {
+                workspace.vector_scratch.fill([0.0; 3]);
+                workspace.thickness_tendency_m_s.fill(0.0);
+                0.0
+            } else {
+                operators.gradient_and_donor_layer_thickness_tendency_into_cancellable_validated(
+                    height,
+                    velocity,
+                    permeability,
+                    reference_thickness,
+                    self.layer_terrain_floor(*role),
+                    !(state.profile() == ClimateModelProfile::C2LayeredV1
+                        && is_atmosphere_role(*role)),
+                    &mut workspace.vector_scratch,
+                    &mut workspace.thickness_tendency_m_s,
+                    &mut workspace.transport,
+                    cancellation,
+                )?;
+                role_constants(state.profile(), *role).0
+            };
             let layer = tendency.layer_mut(*role).expect("active tendency role");
             for (cell, &cell_velocity) in velocity.iter().enumerate() {
                 if cell % 256 == 0 {
@@ -2209,27 +2356,45 @@ impl<'grid> LayeredTendencySystem<'grid> {
             let temperature_gradients = endpoint_temperature
                 .or(fresh_temperature.as_ref())
                 .expect("C2 temperature gradients are supplied or evaluated");
-            let pressure_gradients = self.atmospheric_pressure_gradients(
-                state,
-                temperature_gradients,
-                &workspace.open_edges,
-                cancellation,
-            )?;
-            self.apply_common_surface_pressure(
-                state,
-                &pressure_gradients,
-                cancellation,
-                &mut tendency,
-            )?;
-            self.apply_atmospheric_thermal_pressure(
-                state,
-                Some(forcing),
-                &pressure_gradients,
-                cancellation,
-                &mut tendency,
-            )?;
+            if let Some(waves) = gravity_waves.as_deref_mut() {
+                self.apply_atmospheric_thermal_pressure_terms(
+                    state,
+                    Some(forcing),
+                    temperature_gradients,
+                    None,
+                    cancellation,
+                    &mut tendency,
+                    Some(waves),
+                )?;
+            } else {
+                let pressure_gradients = self.atmospheric_pressure_gradients(
+                    state,
+                    temperature_gradients,
+                    &workspace.open_edges,
+                    cancellation,
+                )?;
+                self.apply_common_surface_pressure(
+                    state,
+                    &pressure_gradients,
+                    cancellation,
+                    &mut tendency,
+                )?;
+                self.apply_atmospheric_thermal_pressure(
+                    state,
+                    Some(forcing),
+                    &pressure_gradients,
+                    cancellation,
+                    &mut tendency,
+                )?;
+            }
         }
-        self.apply_horizontal_momentum_transport(state, cancellation, &mut tendency, workspace)?;
+        self.apply_horizontal_momentum_transport_impl(
+            state,
+            cancellation,
+            &mut tendency,
+            workspace,
+            gravity_waves.map(|waves| &mut waves.face_depth_m),
+        )?;
         self.apply_pair_momentum_exchanges(state, forcing, cancellation, &mut tendency)?;
         self.apply_ocean_fast_thermodynamics(
             state,
@@ -2426,14 +2591,36 @@ impl<'grid> LayeredTendencySystem<'grid> {
         tendency: &mut LayeredClimateTendency,
         workspace: &mut LayeredTendencyWorkspace,
     ) -> Result<(), LayeredTendencyError> {
+        self.apply_horizontal_momentum_transport_impl(
+            state,
+            cancellation,
+            tendency,
+            workspace,
+            None,
+        )
+    }
+
+    /// With `continuity_face_depth`, the stage face depths are retained for
+    /// the gravity-wave continuity instead of forming this height tendency.
+    fn apply_horizontal_momentum_transport_impl(
+        &self,
+        state: &LayeredClimateState,
+        cancellation: &BuildCancellation,
+        tendency: &mut LayeredClimateTendency,
+        workspace: &mut LayeredTendencyWorkspace,
+        mut continuity_face_depth: Option<&mut [Vec<f64>; 2]>,
+    ) -> Result<(), LayeredTendencyError> {
         if state.profile() != ClimateModelProfile::C2LayeredV1 {
             return Ok(());
         }
         let mut maximum_rate = 0.0_f64;
-        for role in [
+        for (layer_index, role) in [
             ClimateLayerRole::LowerAtmosphere,
             ClimateLayerRole::UpperAtmosphere,
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let velocity = state.velocity_m_s(role).expect("C2 atmosphere");
             // Reuse this existing f64 cell buffer for actual depth; the old
             // donor Hdot is no longer needed for explicit C2 atmosphere.
@@ -2451,6 +2638,10 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 &mut workspace.transport,
                 cancellation,
             )?;
+            let split = continuity_face_depth.is_some();
+            if let Some(retained) = continuity_face_depth.as_deref_mut() {
+                retained[layer_index].copy_from_slice(face_depth);
+            }
             let layer = tendency.layer_mut(role).expect("C2 atmosphere");
             for (cell, geometry) in self.grid.cells().iter().enumerate() {
                 if cell % 256 == 0 {
@@ -2478,7 +2669,9 @@ impl<'grid> LayeredTendencySystem<'grid> {
                                 - f64::from(velocity[second][component]));
                     }
                 }
-                layer.height_tendency_m_s[cell] = (amount_rate / geometry.area_m2()) as f32;
+                if !split {
+                    layer.height_tendency_m_s[cell] = (amount_rate / geometry.area_m2()) as f32;
+                }
                 maximum_rate = maximum_rate.max(exchange_rate);
                 let acceleration = tangentize(acceleration, geometry.center_unit());
                 for (target, acceleration) in layer.velocity_tendency_m_s2[cell]
@@ -2579,42 +2772,89 @@ impl<'grid> LayeredTendencySystem<'grid> {
         cancellation: &BuildCancellation,
         tendency: &mut LayeredClimateTendency,
     ) -> Result<(), LayeredTendencyError> {
+        self.apply_atmospheric_thermal_pressure_terms(
+            state,
+            forcing,
+            gradients.temperature,
+            Some((&gradients.lower_height, &gradients.upper_height)),
+            cancellation,
+            tendency,
+            None,
+        )
+    }
+
+    /// Validated thermal buoyancies `(b_U, δb)` of one C2 column. These are
+    /// the only state-dependent coefficients of the height-gradient pressure.
+    fn atmospheric_column_buoyancies(
+        &self,
+        state: &LayeredClimateState,
+        forcing: Option<&PlanetForcing>,
+        cell: usize,
+    ) -> Result<(f64, f64), LayeredTendencyError> {
+        let internal_gravity = atmospheric_internal_gravity_m_s2();
+        let buoyancy_difference = atmospheric_thermal_buoyancy_difference_m_s2(state, cell);
+        let upper_buoyancy = atmospheric_unlapsed_upper_buoyancy_m_s2(state, cell)
+            + atmospheric_thermal_buoyancy_m_s2(
+                crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M
+                    * self.atmospheric_reference_height_m(forcing, cell),
+            );
+        let surface_gravity = STANDARD_GRAVITY_M_S2 - upper_buoyancy;
+        if !surface_gravity.is_finite() || surface_gravity <= 0.0 {
+            return Err(LayeredTendencyError::UnstableAtmosphericFreeSurface {
+                cell,
+                effective_gravity_m_s2: surface_gravity,
+            });
+        }
+        if !buoyancy_difference.is_finite() || internal_gravity <= buoyancy_difference {
+            return Err(LayeredTendencyError::UnstableAtmosphericStratification {
+                cell,
+                reduced_gravity_m_s2: internal_gravity - buoyancy_difference,
+            });
+        }
+        Ok((upper_buoyancy, buoyancy_difference))
+    }
+
+    /// Without `height_gradients` only the temperature-gradient terms are
+    /// applied; `waves` then receives the frozen height-gradient coefficients.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_atmospheric_thermal_pressure_terms(
+        &self,
+        state: &LayeredClimateState,
+        forcing: Option<&PlanetForcing>,
+        temperature: &AtmosphericTemperatureGradients,
+        height_gradients: Option<InterfaceAndTopGradients<'_>>,
+        cancellation: &BuildCancellation,
+        tendency: &mut LayeredClimateTendency,
+        mut waves: Option<&mut AtmosphericGravityWaves>,
+    ) -> Result<(), LayeredTendencyError> {
         if state.profile() != ClimateModelProfile::C2LayeredV1 {
             return Ok(());
         }
         let lower = ClimateLayerRole::LowerAtmosphere;
         let upper = ClimateLayerRole::UpperAtmosphere;
-        let lower_gradient = &gradients.temperature.lower_temperature;
-        let upper_gradient = &gradients.temperature.upper_temperature;
-        let interface_gradient = &gradients.lower_height;
-        let upper_height_gradient = &gradients.upper_height;
-        let internal_gravity =
-            role_constants(state.profile(), lower).0 + role_constants(state.profile(), upper).0;
+        let lower_gradient = &temperature.lower_temperature;
+        let upper_gradient = &temperature.upper_temperature;
+        let internal_gravity = atmospheric_internal_gravity_m_s2();
         for cell in 0..self.grid.cell_count() {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
             }
             let lower_depth = self.fluid_layer_thickness_m(state, lower, cell)?;
             let upper_depth = self.fluid_layer_thickness_m(state, upper, cell)?;
-            let buoyancy_difference = atmospheric_thermal_buoyancy_difference_m_s2(state, cell);
-            let upper_buoyancy = atmospheric_unlapsed_upper_buoyancy_m_s2(state, cell)
-                + atmospheric_thermal_buoyancy_m_s2(
-                    crate::world::natural::CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M
-                        * self.atmospheric_reference_height_m(forcing, cell),
-                );
-            let surface_gravity = STANDARD_GRAVITY_M_S2 - upper_buoyancy;
-            if !surface_gravity.is_finite() || surface_gravity <= 0.0 {
-                return Err(LayeredTendencyError::UnstableAtmosphericFreeSurface {
-                    cell,
-                    effective_gravity_m_s2: surface_gravity,
-                });
+            let (upper_buoyancy, buoyancy_difference) =
+                self.atmospheric_column_buoyancies(state, forcing, cell)?;
+            if let Some(waves) = waves.as_deref_mut() {
+                waves.surface_gravity_m_s2[cell] = STANDARD_GRAVITY_M_S2 - upper_buoyancy;
+                waves.reduced_gravity_m_s2[cell] = internal_gravity - buoyancy_difference;
             }
-            if !buoyancy_difference.is_finite() || internal_gravity <= buoyancy_difference {
-                return Err(LayeredTendencyError::UnstableAtmosphericStratification {
-                    cell,
-                    reduced_gravity_m_s2: internal_gravity - buoyancy_difference,
-                });
-            }
+            let height_gradient = |component: usize| {
+                height_gradients.map_or((0.0, 0.0), |(interface, top)| {
+                    (
+                        f64::from(interface[cell][component]),
+                        f64::from(top[cell][component]),
+                    )
+                })
+            };
             // Hydrostatic integration at fixed physical height precedes layer
             // averaging. Differentiating an actual-depth weighted T instead
             // would introduce a spurious bottom-slope pressure term.
@@ -2622,7 +2862,7 @@ impl<'grid> LayeredTendencySystem<'grid> {
                 0.5 * atmospheric_thermal_buoyancy_m_s2(
                     lower_depth * f64::from(lower_gradient[cell][component])
                         + upper_depth * f64::from(upper_gradient[cell][component]),
-                ) + buoyancy_difference * f64::from(interface_gradient[cell][component])
+                ) + buoyancy_difference * height_gradient(component).0
             });
             let difference = tangentize(difference, self.grid.cells()[cell].center_unit());
             // Fixed top pressure gives BT_U = U grad(b_U)/2 + b_U grad(eta).
@@ -2630,13 +2870,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
             // bottom-pressure torque over terrain (A5 §7.52).
             let upper_acceleration = tangentize(
                 std::array::from_fn(|component| {
+                    let (interface, top) = height_gradient(component);
                     0.5 * upper_depth
                         * atmospheric_thermal_buoyancy_m_s2(f64::from(
                             upper_gradient[cell][component],
                         ))
-                        + upper_buoyancy
-                            * (f64::from(interface_gradient[cell][component])
-                                + f64::from(upper_height_gradient[cell][component]))
+                        + upper_buoyancy * (interface + top)
                 }),
                 self.grid.cells()[cell].center_unit(),
             );
@@ -4123,9 +4362,7 @@ pub(super) fn atmospheric_fast_mode_speed_m_s(
     upper_buoyancy_lower_bound: f64,
     cell: usize,
 ) -> Result<f64, LayeredTendencyError> {
-    let profile = ClimateModelProfile::C2LayeredV1;
-    let internal_gravity = role_constants(profile, ClimateLayerRole::LowerAtmosphere).0
-        + role_constants(profile, ClimateLayerRole::UpperAtmosphere).0;
+    let internal_gravity = atmospheric_internal_gravity_m_s2();
     // With positive surface/internal gravity, c_plus^2 <= trace(G diag(H)).
     // Omitting the nonnegative lapse gives a lower bound on upper buoyancy;
     // omitting terrain gives an upper bound on depth. Both increase the trace.
@@ -4164,6 +4401,14 @@ pub(super) fn atmospheric_fast_mode_speed_m_s(
         });
     }
     Ok(trace_bound.sqrt())
+}
+
+/// Sum of the two C2 atmospheric reduced gravities: the interface restoring
+/// gravity before the thermal buoyancy difference is subtracted.
+fn atmospheric_internal_gravity_m_s2() -> f64 {
+    let profile = ClimateModelProfile::C2LayeredV1;
+    role_constants(profile, ClimateLayerRole::LowerAtmosphere).0
+        + role_constants(profile, ClimateLayerRole::UpperAtmosphere).0
 }
 
 fn role_constants(profile: ClimateModelProfile, role: ClimateLayerRole) -> (f64, f64, f64, f64) {
@@ -5918,6 +6163,102 @@ mod tests {
                 );
             }
             previous_velocity = Some(velocity.to_vec());
+        }
+    }
+
+    #[test]
+    fn gravity_wave_operator_restores_the_full_fast_tensor() {
+        // A7 §2.1: the excluded fast tensor plus the stage operator applied to
+        // the same heights and velocities is the full fast tensor.
+        let (grid, forcing, mut state) = axisymmetric_venting_fixture(0.0);
+        let cancellation = BuildCancellation::new();
+        let system = LayeredTendencySystem::new(&grid);
+        let open = vec![1.0; grid.edges().len()];
+        let roles = [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ];
+        for (layer, role) in roles.into_iter().enumerate() {
+            for (cell, geometry) in grid.cells().iter().enumerate() {
+                let [x, y, z] = geometry.center_unit();
+                state.temperature_c_mut(role).unwrap()[cell] += (3.0 * y) as f32;
+                state.height_anomaly_m_mut(role).unwrap()[cell] =
+                    (40.0 * x + 15.0 * layer as f64 * z) as f32;
+                // Solid-body zonal flow about the polar axis is tangent.
+                state.velocity_m_s_mut(role).unwrap()[cell] =
+                    [(-12.0 * y) as f32, (12.0 * x) as f32, 0.0];
+            }
+        }
+        let mut workspace = LayeredTendencyWorkspace::for_grid(&grid);
+        let full = system
+            .evaluate_fast_with_temperature_gradients_validated(
+                &state,
+                &forcing,
+                &open,
+                &cancellation,
+                (&mut workspace, None),
+            )
+            .unwrap();
+        let (split, waves) = system
+            .evaluate_fast_without_gravity_waves_validated(
+                &state,
+                &forcing,
+                &open,
+                &cancellation,
+                (&mut workspace, None),
+            )
+            .unwrap();
+        let operators = CirculationOperators::new(&grid);
+        let gradients = roles.map(|role| {
+            operators
+                .transient_gradient_with_permeability_cancellable(
+                    state.height_anomaly_m(role).unwrap(),
+                    &open,
+                    &cancellation,
+                )
+                .unwrap()
+        });
+        let mut thickness = vec![0.0; grid.cell_count()];
+        for (layer, role) in roles.into_iter().enumerate() {
+            let full_velocity = full.velocity_tendency_m_s2(role).unwrap();
+            let scale = full_velocity
+                .iter()
+                .flatten()
+                .fold(0.0_f64, |maximum, value| maximum.max(value.abs()));
+            assert!(scale > 0.0);
+            for cell in 0..grid.cell_count() {
+                let pressure =
+                    waves.accelerations(&grid, cell, gradients[0][cell], gradients[1][cell]);
+                for component in 0..3 {
+                    let restored = split.velocity_tendency_m_s2(role).unwrap()[cell][component]
+                        + pressure[layer][component];
+                    assert!(
+                        (restored - full_velocity[cell][component]).abs() <= 1.0e-6 * scale,
+                        "{role:?} cell {cell}: {restored} vs {}",
+                        full_velocity[cell][component]
+                    );
+                }
+            }
+            waves.thickness_tendency_into(
+                &grid,
+                layer,
+                state.velocity_m_s(role).unwrap(),
+                &open,
+                &mut thickness,
+            );
+            let full_height = full.height_tendency_m_s(role).unwrap();
+            let height_scale = full_height.iter().fold(0.0_f64, |maximum, value| {
+                maximum.max(f64::from(value.abs()))
+            });
+            assert!(height_scale > 0.0);
+            for cell in 0..grid.cell_count() {
+                let restored =
+                    f64::from(split.height_tendency_m_s(role).unwrap()[cell]) + thickness[cell];
+                assert!(
+                    (restored - f64::from(full_height[cell])).abs() <= 1.0e-6 * height_scale,
+                    "{role:?} cell {cell} height"
+                );
+            }
         }
     }
 

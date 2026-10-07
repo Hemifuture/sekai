@@ -14,7 +14,8 @@ use crate::world::natural::{
     CERES_EBAF_SURFACE_UP_LONGWAVE_GLOBAL_MEAN_W_M2, CLIMATE_MONTH_COUNT,
     EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
     EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_GRAY_GREENHOUSE_OFFSET_K,
-    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
+    GLOBAL_CIRCULATION_GRAVITY_WAVE_SMALL_STEP_CFL_TARGET, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
     GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES,
     GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
     GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
@@ -69,6 +70,13 @@ pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8
         );
         hasher.update(&GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR.to_le_bytes());
         hasher.update(&GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES.to_le_bytes());
+        // A7: Wicker-Skamarock fast stages with Störmer-Verlet gravity waves.
+        hasher.update(b"gravity-wave-time-split-ws-rk3-stormer-verlet.v1\0");
+        hasher.update(
+            &GLOBAL_CIRCULATION_GRAVITY_WAVE_SMALL_STEP_CFL_TARGET
+                .to_bits()
+                .to_le_bytes(),
+        );
     }
     hasher.update(&tendency::layered_equation_model_fingerprint(profile));
     hasher.update(&(CLIMATE_MONTH_COUNT as u64).to_le_bytes());

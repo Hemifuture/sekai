@@ -1198,6 +1198,28 @@ pub(crate) fn estimate_cfl(
     dt_seconds: f64,
     cancellation: &BuildCancellation,
 ) -> Result<f64, ClimateIntegratorError> {
+    estimate_cfl_impl(grid, state, dt_seconds, cancellation, true)
+}
+
+/// CFL of the time-split C2 large step (A7 §3): the C2 atmospheric
+/// gravity-wave bound is left to the small steps, so only the reference
+/// first-baroclinic wave speed joins the measured flow speed.
+pub(crate) fn estimate_reference_wave_cfl(
+    grid: &CubedSphereGrid,
+    state: &LayeredClimateState,
+    dt_seconds: f64,
+    cancellation: &BuildCancellation,
+) -> Result<f64, ClimateIntegratorError> {
+    estimate_cfl_impl(grid, state, dt_seconds, cancellation, false)
+}
+
+fn estimate_cfl_impl(
+    grid: &CubedSphereGrid,
+    state: &LayeredClimateState,
+    dt_seconds: f64,
+    cancellation: &BuildCancellation,
+    atmospheric_fast_mode: bool,
+) -> Result<f64, ClimateIntegratorError> {
     let mut maximum_speed = 0.0_f64;
     for role in state.active_roles() {
         for (index, velocity) in state
@@ -1215,45 +1237,46 @@ pub(crate) fn estimate_cfl(
             maximum_speed = maximum_speed.max(speed);
         }
     }
-    let reference_speed =
-        if state.profile() == crate::world::natural::ClimateModelProfile::C2LayeredV1 {
-            let lower = f64::from(
+    let reference_speed = if atmospheric_fast_mode
+        && state.profile() == crate::world::natural::ClimateModelProfile::C2LayeredV1
+    {
+        let lower = f64::from(
+            state
+                .reference_thickness_m(crate::world::natural::ClimateLayerRole::LowerAtmosphere)
+                .expect("C2"),
+        );
+        let upper = f64::from(
+            state
+                .reference_thickness_m(crate::world::natural::ClimateLayerRole::UpperAtmosphere)
+                .expect("C2"),
+        );
+        let mut speed = GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S;
+        for (cell, (&lower_height, &upper_height)) in state
+            .height_anomaly_m(crate::world::natural::ClimateLayerRole::LowerAtmosphere)
+            .expect("C2")
+            .iter()
+            .zip(
                 state
-                    .reference_thickness_m(crate::world::natural::ClimateLayerRole::LowerAtmosphere)
+                    .height_anomaly_m(crate::world::natural::ClimateLayerRole::UpperAtmosphere)
                     .expect("C2"),
-            );
-            let upper = f64::from(
-                state
-                    .reference_thickness_m(crate::world::natural::ClimateLayerRole::UpperAtmosphere)
-                    .expect("C2"),
-            );
-            let mut speed = GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S;
-            for (cell, (&lower_height, &upper_height)) in state
-                .height_anomaly_m(crate::world::natural::ClimateLayerRole::LowerAtmosphere)
-                .expect("C2")
-                .iter()
-                .zip(
-                    state
-                        .height_anomaly_m(crate::world::natural::ClimateLayerRole::UpperAtmosphere)
-                        .expect("C2"),
-                )
-                .enumerate()
-            {
-                poll_integrator_cancelled(cell, Some(cancellation))?;
-                // Omitting the nonnegative bottom floor overestimates the fluid
-                // depth, keeping this wave-speed bound conservative over terrain.
-                speed = speed.max(super::tendency::atmospheric_fast_mode_speed_m_s(
-                    lower + f64::from(lower_height),
-                    upper + f64::from(upper_height),
-                    super::tendency::atmospheric_thermal_buoyancy_difference_m_s2(state, cell),
-                    super::tendency::atmospheric_unlapsed_upper_buoyancy_m_s2(state, cell),
-                    cell,
-                )?);
-            }
-            speed
-        } else {
-            GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S
-        };
+            )
+            .enumerate()
+        {
+            poll_integrator_cancelled(cell, Some(cancellation))?;
+            // Omitting the nonnegative bottom floor overestimates the fluid
+            // depth, keeping this wave-speed bound conservative over terrain.
+            speed = speed.max(super::tendency::atmospheric_fast_mode_speed_m_s(
+                lower + f64::from(lower_height),
+                upper + f64::from(upper_height),
+                super::tendency::atmospheric_thermal_buoyancy_difference_m_s2(state, cell),
+                super::tendency::atmospheric_unlapsed_upper_buoyancy_m_s2(state, cell),
+                cell,
+            )?);
+        }
+        speed
+    } else {
+        GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S
+    };
     let advective =
         dt_seconds * (reference_speed + maximum_speed) / grid.minimum_center_distance_m();
     let rotational = dt_seconds * 2.0 * EARTH_ROTATION_RATE_RAD_S;

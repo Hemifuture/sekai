@@ -1072,11 +1072,8 @@ impl<'grid> CirculationOperators<'grid> {
             let [first, second] = *edge.cells();
             let first = first as usize;
             let second = second as usize;
-            let signed_volume_flux = dot(
-                interpolate_vector(edge, velocity[first], velocity[second]),
-                edge.normal_from_first(),
-            ) * edge.length_m()
-                * f64::from(*permeability);
+            let signed_volume_flux =
+                edge_volume_flux_m2_s(edge, velocity[first], velocity[second], *permeability);
             let (donor, owner) = if signed_volume_flux >= 0.0 {
                 (first, 0)
             } else {
@@ -1885,6 +1882,21 @@ pub(crate) fn donor_layer_edge_amount_rate_m3_s(
         + f64::from(fields.height_anomaly_m[donor]))
     .max(0.0);
     normal_velocity_m_s * edge.length_m() * f64::from(permeability) * donor_thickness_m
+}
+
+/// Signed volume flux per unit depth through one edge, positive from its
+/// first cell: the interpolated normal velocity times the open edge length.
+pub(crate) fn edge_volume_flux_m2_s(
+    edge: &SphericalEdge,
+    first: [f32; 3],
+    second: [f32; 3],
+    permeability: f32,
+) -> f64 {
+    dot(
+        interpolate_vector(edge, first, second),
+        edge.normal_from_first(),
+    ) * edge.length_m()
+        * f64::from(permeability)
 }
 
 pub(crate) fn interpolate_vector(
