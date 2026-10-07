@@ -45,7 +45,14 @@ pub fn evaluate_evolved_tectonic_quality(
     snapshot
         .validate_against(surface)
         .map_err(|error| invalid_input("evolved-tectonics", error.to_string()))?;
+    evaluate_evolved_tectonic_quality_from_validated(surface, snapshot)
+}
 
+/// Evaluates P2 evidence for a snapshot already validated against `surface`.
+pub(crate) fn evaluate_evolved_tectonic_quality_from_validated(
+    surface: &SphericalSurfaceSnapshot,
+    snapshot: &EvolvedTectonicSnapshot,
+) -> Result<NaturalQualityReport, QualityBuildError> {
     let mut builder = NaturalQualityReportBuilder::new(snapshot.surface_ref());
     let budget = *snapshot.material_budget();
     let initial = budget.initial_control();

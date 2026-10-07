@@ -6,11 +6,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use super::super::quality::{
-    evaluate_evolved_tectonic_quality,
-    evaluate_global_circulation_quality_for_formation_cancellable, evaluate_primary_relief_quality,
-    evaluate_surface_formation_quality_cancellable, validate_evolved_tectonic_quality_report,
-    validate_global_circulation_quality_report, validate_primary_relief_quality_report,
-    validate_surface_formation_quality_report, QualityBuildError,
+    evaluate_evolved_tectonic_quality_from_validated,
+    evaluate_global_circulation_quality_for_formation_cancellable,
+    evaluate_primary_relief_quality_from_validated, evaluate_surface_formation_quality_cancellable,
+    validate_evolved_tectonic_quality_report, validate_global_circulation_quality_report,
+    validate_primary_relief_quality_report, validate_surface_formation_quality_report,
+    QualityBuildError,
 };
 use super::super::{
     ClimateWorkDomainArtifact, ClimateWorkDomainStage, ReliefSpecArtifact,
@@ -117,13 +118,16 @@ impl NaturalFormationBundleArtifact {
             return Err(NaturalFormationBundleGenerationError::EndpointForcingMismatch);
         }
 
+        // The causal chain validated every sibling against `surface`, so the
+        // P2/P3 evidence skips input revalidation and P3 reuses the P2 report.
         let tectonic_quality =
-            evaluate_evolved_tectonic_quality(surface, &output.evolved_tectonics)?;
-        let primary_relief_quality = evaluate_primary_relief_quality(
+            evaluate_evolved_tectonic_quality_from_validated(surface, &output.evolved_tectonics)?;
+        let primary_relief_quality = evaluate_primary_relief_quality_from_validated(
             surface,
             &output.evolved_tectonics,
             &output.geologic_substrate,
             &output.primary_relief,
+            &tectonic_quality,
         )?;
         let climate_quality = evaluate_global_circulation_quality_for_formation_cancellable(
             surface,
@@ -138,23 +142,26 @@ impl NaturalFormationBundleArtifact {
             &output.surface,
             cancellation,
         )?;
-        let bundle = NaturalFormationBundle::new(NaturalFormationBundleParts {
-            schema_version: NATURAL_FORMATION_BUNDLE_SCHEMA_V1,
-            surface_ref: SurfaceRef::for_spherical(surface),
-            timeline: inputs.formation.timeline(),
-            tectonics: output.evolved_tectonics,
-            substrate: output.geologic_substrate,
-            primary_relief: output.primary_relief,
-            climate: output.final_climate,
-            surface_formation: output.surface,
-            tectonic_quality,
-            primary_relief_quality,
-            climate_quality,
-            surface_quality,
-        })?;
+        let bundle =
+            NaturalFormationBundle::from_validated_siblings(NaturalFormationBundleParts {
+                schema_version: NATURAL_FORMATION_BUNDLE_SCHEMA_V1,
+                surface_ref: SurfaceRef::for_spherical(surface),
+                timeline: inputs.formation.timeline(),
+                tectonics: output.evolved_tectonics,
+                substrate: output.geologic_substrate,
+                primary_relief: output.primary_relief,
+                climate: output.final_climate,
+                surface_formation: output.surface,
+                tectonic_quality,
+                primary_relief_quality,
+                climate_quality,
+                surface_quality,
+            })?;
         let artifact = Self { bundle };
+        // Publication revalidates the whole product; checking the evidence
+        // here keeps its failures on this stage's product error code.
         artifact
-            .validate_product()
+            .validate_quality_reports()
             .map_err(|error| NaturalFormationBundleGenerationError::Product(error.to_string()))?;
         Ok(artifact)
     }
@@ -168,6 +175,10 @@ impl NaturalFormationBundleArtifact {
         self.bundle
             .validate()
             .map_err(|error| ArtifactValidationError::new(INVALID_INPUT_CODE, error.to_string()))?;
+        self.validate_quality_reports()
+    }
+
+    fn validate_quality_reports(&self) -> Result<(), ArtifactValidationError> {
         validate_evolved_tectonic_quality_report(
             self.bundle.tectonic_quality(),
             self.bundle.surface_ref(),
