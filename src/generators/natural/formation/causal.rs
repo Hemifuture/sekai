@@ -1079,7 +1079,7 @@ mod endpoint_reuse_comparison {
 
     use super::super::global_circulation::{
         offline::{self, OfflineCapture, OfflineSchedule},
-        EndpointInjection, StartAtmosphereFasCorrection,
+        StartAtmosphereFasCorrection,
     };
     use super::{
         EvolvedTectonicGenerator, FormationState, GeologicSubstrateGenerator,
@@ -1356,8 +1356,8 @@ mod endpoint_reuse_comparison {
     }
 
     /// Per seed, one start solve and one P5 advance, then on that bitwise
-    /// endpoint forcing: T (today's cold endpoint), U and U′ (the two reuse
-    /// forms), R (cold, every one of the profile's cycles), T96 (96 coarse
+    /// endpoint forcing: T (today's cold endpoint), U (the production reuse),
+    /// R (cold, every one of the profile's cycles), T96 (96 coarse
     /// FAS cycles) and, for seed 42, R16. Writes one JSON per seed.
     ///
     /// `SEKAI_COMPARE_PROFILE=draft|standard`, `SEKAI_COMPARE_SEEDS=a,b`
@@ -1534,17 +1534,9 @@ mod endpoint_reuse_comparison {
                         .map_err(|error| error.to_string())
                     })
                 };
-            let reuse = |injection: EndpointInjection| {
-                carrier
-                    .as_ref()
-                    .map(|carrier| carrier.with_injection(injection))
-            };
-            let differential = reuse(EndpointInjection::Differential);
-            let floor_corrected = reuse(EndpointInjection::FloorCorrectedAbsolute);
             let production = OfflineSchedule::default();
             let t = endpoint("T", production, None);
-            let u = endpoint("U", production, differential.as_ref());
-            let u_prime = endpoint("U'", production, floor_corrected.as_ref());
+            let u = endpoint("U", production, carrier.as_ref());
             let r = endpoint(
                 "R",
                 OfflineSchedule {
@@ -1573,7 +1565,7 @@ mod endpoint_reuse_comparison {
                 )
             });
 
-            let quality = [&t, &u, &u_prime]
+            let quality = [&t, &u]
                 .into_iter()
                 .filter_map(|run| {
                     let report = evaluate_global_circulation_quality_for_formation_cancellable(
@@ -1599,19 +1591,19 @@ mod endpoint_reuse_comparison {
                     })
                 })
                 .collect();
-            let candidates = [&t, &u, &u_prime, &t96, &r];
+            let candidates = [&t, &u, &t96, &r];
             let comparison = SeedComparison {
                 seed,
                 profile,
                 activity,
-                runs: [&start, &t, &u, &u_prime, &r, &t96]
+                runs: [&start, &t, &u, &r, &t96]
                     .into_iter()
                     .chain(r16.as_ref())
                     .map(|run| run.record.clone())
                     .collect(),
-                error_vs_r: errors_against(&candidates[..4], Some(&r)),
+                error_vs_r: errors_against(&candidates[..3], Some(&r)),
                 error_vs_r16: errors_against(&candidates, r16.as_ref()),
-                distance_to_t: errors_against(&[&start, &u, &u_prime, &t96, &r], Some(&t)),
+                distance_to_t: errors_against(&[&start, &u, &t96, &r], Some(&t)),
                 correction_drift: start
                     .capture
                     .fas_correction

@@ -203,11 +203,13 @@ impl GlobalCirculationGenerator {
             Ok(solved) => Ok((solved.snapshot, solved.guess)),
             Err(error) if error.is_independent_of_initial_guess() => Err(error),
             // A8b §2.3: any other failure may stem from the reused guess, so
-            // the endpoint is re-solved once exactly as today.
+            // the endpoint is re-solved once exactly as today. After a rejected
+            // injection the failed solve already was today's, so the retry
+            // repeats it bit for bit and returns the same error.
             Err(error) => {
                 check_cancelled(cancellation)?;
                 if p4_trace_enabled() {
-                    eprintln!("[p4 endpoint] RetriedCold:{}", error.variant_name());
+                    eprintln!("[p4 endpoint] RetriedCold: {error}");
                 }
                 cold().map(|solved| (solved.snapshot, MechanicalGuessOutcome::RetriedCold))
             }
@@ -392,14 +394,15 @@ impl GlobalCirculationGenerator {
                 let context = (&grid, &integrator, terrain_floor_m.as_slice());
                 match role {
                     SolveRole::Endpoint(MechanicalGuess::ReuseStart(correction)) => {
-                        // A8b §2.2: inject the start correction in place of
-                        // this solve's own FAS block; any rejection leaves
-                        // `state` untouched and runs today's block instead.
-                        match inject_start_correction(
+                        // A8b §2.2b: x_e0 + δ_s through the same checked step
+                        // as today's FAS tail, in place of this solve's own
+                        // FAS block; any rejection leaves `state` untouched
+                        // and runs today's block instead.
+                        match apply_atmosphere_amount_correction(
                             &grid,
-                            &terrain_floor_m,
                             &state,
-                            correction,
+                            &terrain_floor_m,
+                            &correction.amounts,
                             cancellation,
                         ) {
                             Ok(trial) => {
@@ -434,17 +437,12 @@ impl GlobalCirculationGenerator {
                         )?;
                         #[cfg(test)]
                         offline::record(|capture| {
-                            capture.fas_correction =
-                                accepted.as_ref().map(|correction| correction.fine.clone());
+                            capture.fas_correction = accepted.clone();
                         });
                         if matches!(role, SolveRole::Start) {
                             start_correction = accepted.map(|correction| {
                                 StartAtmosphereFasCorrection::new(
-                                    &grid,
-                                    profile,
-                                    forcing,
-                                    correction,
-                                    terrain_floor_m.clone(),
+                                    &grid, profile, forcing, correction,
                                 )
                             });
                         }
@@ -570,7 +568,13 @@ impl GlobalCirculationGenerator {
         )?;
         snapshot.validate_against_cancellable(surface, &cancelled)?;
         if let Some(label) = trace {
-            eprintln!("[p4 {label}] {guess:?} cycles {formation_cycles} residual {initial_residual:.6} -> {final_residual:.6}");
+            // A start line also tells whether its endpoint can reuse a carrier.
+            let carrier = match (role, &start_correction) {
+                (SolveRole::Start, Some(_)) => " carrier captured",
+                (SolveRole::Start, None) => " no carrier",
+                _ => "",
+            };
+            eprintln!("[p4 {label}] {guess:?}{carrier} cycles {formation_cycles} residual {initial_residual:.6} -> {final_residual:.6}");
         }
         Ok(CompletedSolve {
             snapshot,
@@ -596,15 +600,15 @@ fn stable_fast_step_seconds(grid: &CubedSphereGrid) -> f64 {
 // Preceding-month endpoints approximate both slow-step scalar inputs. Therefore
 // no equivalence to an exact coupled periodic fixed point is claimed.
 // Only atmospheric H/u are injected; the caller must run another coupled cycle.
-// Returns the injected correction, or `None` when the optional coarse attempt
-// was rejected and the entry is unchanged.
+// Returns the injected fine atmosphere correction, or `None` when the optional
+// coarse attempt was rejected and the entry is unchanged.
 fn initialize_atmosphere_mechanics(
     context: (&CubedSphereGrid, &SplitExplicitRk3Integrator<'_>, &[f32]),
     forcing: &GlobalClimateForcing,
     background: &WorkClimatology,
     state: &mut LayeredClimateState,
     cancellation: &BuildCancellation,
-) -> Result<Option<AtmosphereFasCorrection>, GlobalCirculationGenerationError> {
+) -> Result<Option<MechanicalAmounts>, GlobalCirculationGenerationError> {
     let (fine_grid, fine_integrator, fine_terrain_floor) = context;
     let cancelled = || cancellation.is_cancelled();
     let fine_planet = forcing.planet_forcing();
@@ -650,11 +654,33 @@ fn initialize_atmosphere_mechanics(
     // Everything inside the attempt is private. Rejection leaves the original
     // fine entry, including all its scalars, completely unchanged.
     let attempt = (|| -> Result<
-        (LayeredClimateState, AtmosphereFasCorrection),
+        (LayeredClimateState, MechanicalAmounts),
         GlobalCirculationGenerationError,
     > {
-        let (coarse_grid, coarse_surface, restriction, prolongation) =
-            mechanical_transfer(fine_grid, cancellation)?;
+        let coarse_grid = CubedSphereGrid::new_cancellable(
+            fine_grid.face_resolution() / GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
+            fine_grid.radius_m(),
+            &cancelled,
+        )
+        .map_err(map_grid_error)?;
+        let fine_surface = fine_grid
+            .to_surface_snapshot_cancellable(&cancelled)
+            .map_err(map_grid_error)?;
+        let coarse_surface = coarse_grid
+            .to_surface_snapshot_cancellable(&cancelled)
+            .map_err(map_grid_error)?;
+        let restriction = ConservativeSurfaceMapBuilder::build_cancellable(
+            &fine_surface,
+            &coarse_surface,
+            &cancelled,
+        )
+        .map_err(map_mechanical_remap_error)?;
+        let prolongation = ConservativeSurfaceMapBuilder::build_cancellable(
+            &coarse_surface,
+            &fine_surface,
+            &cancelled,
+        )
+        .map_err(map_mechanical_remap_error)?;
         let restrict = |values: &[f32]| {
             remap_intensive_f32_cancellable(&restriction, values, &cancelled)
                 .map_err(map_mechanical_remap_error)
@@ -757,6 +783,7 @@ fn initialize_atmosphere_mechanics(
             remap_mechanical_amounts(&restriction, &coarse_grid, &fine_amounts, cancellation)?;
         drop(fine_amounts);
         drop(restriction);
+        drop(fine_surface);
         drop(coarse_surface);
         let coarse_context = MechanicalCycleContext {
             grid: &coarse_grid,
@@ -815,7 +842,6 @@ fn initialize_atmosphere_mechanics(
             )?;
             candidate.enforce_full_land_ocean_velocity(&coarse_planet, cancellation)?;
         }
-        let coarse_solution = y[..FAS_ATMOSPHERE_ROLES.len()].to_vec();
         add_scaled_mechanical_amounts(&mut y, -1.0, &restricted_entry, cancellation)?;
         // Restricted nonlinear correction: the coupled coarse solve supplies
         // only atmospheric H/P to the fine trial. Its ocean state stays local.
@@ -832,13 +858,7 @@ fn initialize_atmosphere_mechanics(
             &correction,
             cancellation,
         )?;
-        Ok((
-            trial,
-            AtmosphereFasCorrection {
-                fine: correction,
-                coarse_solution,
-            },
-        ))
+        Ok((trial, correction))
     })();
     let correction = match attempt {
         Ok((trial, correction)) => {
@@ -853,48 +873,6 @@ fn initialize_atmosphere_mechanics(
     };
     check_cancelled(cancellation)?;
     Ok(correction)
-}
-
-/// Coarse FAS grid with its surface and conservative restriction and
-/// prolongation maps to and from `fine_grid`.
-fn mechanical_transfer(
-    fine_grid: &CubedSphereGrid,
-    cancellation: &BuildCancellation,
-) -> Result<
-    (
-        CubedSphereGrid,
-        SphericalSurfaceSnapshot,
-        ConservativeSurfaceMap,
-        ConservativeSurfaceMap,
-    ),
-    GlobalCirculationGenerationError,
-> {
-    let cancelled = || cancellation.is_cancelled();
-    let coarse_grid = CubedSphereGrid::new_cancellable(
-        fine_grid.face_resolution() / GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
-        fine_grid.radius_m(),
-        &cancelled,
-    )
-    .map_err(map_grid_error)?;
-    let fine_surface = fine_grid
-        .to_surface_snapshot_cancellable(&cancelled)
-        .map_err(map_grid_error)?;
-    let coarse_surface = coarse_grid
-        .to_surface_snapshot_cancellable(&cancelled)
-        .map_err(map_grid_error)?;
-    let restriction = ConservativeSurfaceMapBuilder::build_cancellable(
-        &fine_surface,
-        &coarse_surface,
-        &cancelled,
-    )
-    .map_err(map_mechanical_remap_error)?;
-    let prolongation = ConservativeSurfaceMapBuilder::build_cancellable(
-        &coarse_surface,
-        &fine_surface,
-        &cancelled,
-    )
-    .map_err(map_mechanical_remap_error)?;
-    Ok((coarse_grid, coarse_surface, restriction, prolongation))
 }
 
 /// Adds a fine atmosphere amount correction to a private copy of `state`.
@@ -941,18 +919,10 @@ fn apply_atmosphere_amount_correction(
     Ok(trial)
 }
 
-/// An accepted restricted FAS correction: the fine atmosphere increment
-/// `δ = J_atm P(y - R x)` and the coarse atmosphere solution `y` it came from.
-struct AtmosphereFasCorrection {
-    fine: MechanicalAmounts,
-    coarse_solution: MechanicalAmounts,
-}
-
-/// The start solve's accepted restricted FAS correction, carried through P5
-/// to the endpoint solve in place of that solve's own FAS block (A8b §2.1,
-/// §3). Crate-private and transient: never published, cached, or persisted.
-/// Its size is `2 N (32 B)` for `δ_s` plus `N (4 B)` and a coarse
-/// `2 N / 16 (32 B)` for the U′ candidate.
+/// The start solve's accepted restricted FAS correction `δ_s`, carried
+/// through P5 to the endpoint solve in place of that solve's own FAS block
+/// (A8b §2.1, §3). Crate-private and transient: never published, cached, or
+/// persisted. Its size is `2 N (32 B)`.
 #[derive(Debug, Clone)]
 pub(crate) struct StartAtmosphereFasCorrection {
     grid_fingerprint: [u8; 32],
@@ -961,12 +931,6 @@ pub(crate) struct StartAtmosphereFasCorrection {
     start_forcing_fingerprint: [u8; 32],
     /// `δ_s` per `FAS_ATMOSPHERE_ROLES` layer and fine cell, as `(V, P)`.
     amounts: MechanicalAmounts,
-    /// U′ only: the coarse atmosphere solution `y_s` and the start floor.
-    coarse_solution: MechanicalAmounts,
-    terrain_floor_m: Vec<f32>,
-    /// The candidate form the endpoint injects; captured as the production
-    /// form, changed only by the offline §9.2 comparison.
-    injection: EndpointInjection,
 }
 
 impl StartAtmosphereFasCorrection {
@@ -974,27 +938,14 @@ impl StartAtmosphereFasCorrection {
         grid: &CubedSphereGrid,
         profile: ClimateModelProfile,
         forcing: &GlobalClimateForcing,
-        correction: AtmosphereFasCorrection,
-        terrain_floor_m: Vec<f32>,
+        amounts: MechanicalAmounts,
     ) -> Self {
         Self {
             grid_fingerprint: *grid.fingerprint(),
             profile,
             model_fingerprint: super::global_circulation_model_fingerprint(profile),
             start_forcing_fingerprint: *forcing.fingerprint(),
-            amounts: correction.fine,
-            coarse_solution: correction.coarse_solution,
-            terrain_floor_m,
-            injection: EndpointInjection::PRODUCTION,
-        }
-    }
-
-    /// The same carrier injecting the other §9.2 candidate form.
-    #[cfg(test)]
-    pub(crate) fn with_injection(&self, injection: EndpointInjection) -> Self {
-        Self {
-            injection,
-            ..self.clone()
+            amounts,
         }
     }
 
@@ -1009,13 +960,9 @@ impl StartAtmosphereFasCorrection {
             "grid"
         } else if self.profile != start.profile() {
             "profile"
-        } else if self.amounts.len() != FAS_ATMOSPHERE_ROLES.len()
-            || self.coarse_solution.len() != FAS_ATMOSPHERE_ROLES.len()
-        {
+        } else if self.amounts.len() != FAS_ATMOSPHERE_ROLES.len() {
             "roles"
-        } else if self.amounts.iter().any(|layer| layer.len() != cells)
-            || self.terrain_floor_m.len() != cells
-        {
+        } else if self.amounts.iter().any(|layer| layer.len() != cells) {
             "cell_count"
         } else if self.model_fingerprint
             != super::global_circulation_model_fingerprint(self.profile)
@@ -1030,64 +977,28 @@ impl StartAtmosphereFasCorrection {
     }
 
     /// Appends the A8b §6.2 reuse record: the start forcing and the bits of
-    /// the data the chosen injection consumed.
+    /// the injected `δ_s`.
     fn record_reuse(
         &self,
         hasher: &mut blake3::Hasher,
         cancellation: &BuildCancellation,
     ) -> Result<(), GlobalCirculationGenerationError> {
         let mut data = blake3::Hasher::new();
-        let label: &[u8] = match self.injection {
-            EndpointInjection::Differential => {
-                hash_mechanical_amounts(&mut data, &self.amounts, cancellation)?;
-                b"endpoint-start-fas-atmosphere-correction.v1\0"
-            }
-            EndpointInjection::FloorCorrectedAbsolute => {
-                hash_mechanical_amounts(&mut data, &self.coarse_solution, cancellation)?;
-                for floor in &self.terrain_floor_m {
-                    data.update(&floor.to_le_bytes());
+        for layer in &self.amounts {
+            for (cell, value) in layer.iter().enumerate() {
+                if cell % 256 == 0 {
+                    check_cancelled(cancellation)?;
                 }
-                b"endpoint-start-fas-floor-corrected-coarse-solution.v1\0"
+                for component in value {
+                    data.update(&component.to_le_bytes());
+                }
             }
-        };
-        hasher.update(label);
+        }
+        hasher.update(b"endpoint-start-fas-atmosphere-correction.v1\0");
         hasher.update(&self.start_forcing_fingerprint);
         hasher.update(data.finalize().as_bytes());
         Ok(())
     }
-}
-
-fn hash_mechanical_amounts(
-    hasher: &mut blake3::Hasher,
-    amounts: &[Vec<[f64; 4]>],
-    cancellation: &BuildCancellation,
-) -> Result<(), GlobalCirculationGenerationError> {
-    for layer in amounts {
-        for (cell, value) in layer.iter().enumerate() {
-            if cell % 256 == 0 {
-                check_cancelled(cancellation)?;
-            }
-            for component in value {
-                hasher.update(&component.to_le_bytes());
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The two A8b §2.1 candidate endpoint injections; §9.2 keeps one of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EndpointInjection {
-    /// U: `x_e0 + δ_s`.
-    Differential,
-    /// U′: `x_e0 + J_atm P(y_s′ - R x_e0)` with the lower-layer volume
-    /// `y_s′ = y_s - R[A (floor_e - floor_s)]`, volume-neutral by construction.
-    #[cfg_attr(not(test), allow(dead_code))]
-    FloorCorrectedAbsolute,
-}
-
-impl EndpointInjection {
-    pub(crate) const PRODUCTION: Self = Self::Differential;
 }
 
 /// The endpoint's cycle-0 mechanical initial guess.
@@ -1095,7 +1006,7 @@ impl EndpointInjection {
 pub(crate) enum MechanicalGuess<'a> {
     /// Today's restricted FAS block on this solve's own coarse problem.
     OwnFas,
-    /// The start solve's correction in its carried injection form.
+    /// The start solve's correction `δ_s`, injected as `x_e0 + δ_s`.
     ReuseStart(&'a StartAtmosphereFasCorrection),
 }
 
@@ -1199,54 +1110,6 @@ pub(crate) mod offline {
     pub(super) fn record(update: impl FnOnce(&mut OfflineCapture)) {
         if SCHEDULE.with(Cell::get).is_some() {
             CAPTURE.with(|capture| update(&mut capture.borrow_mut()));
-        }
-    }
-}
-
-/// A8b §2.2b: the endpoint cycle-0 state `x_e0` plus the start correction,
-/// through the same checked step as today's FAS tail. `state` is untouched.
-fn inject_start_correction(
-    grid: &CubedSphereGrid,
-    terrain_floor: &[f32],
-    state: &LayeredClimateState,
-    carrier: &StartAtmosphereFasCorrection,
-    cancellation: &BuildCancellation,
-) -> Result<LayeredClimateState, GlobalCirculationGenerationError> {
-    match carrier.injection {
-        EndpointInjection::Differential => apply_atmosphere_amount_correction(
-            grid,
-            state,
-            terrain_floor,
-            &carrier.amounts,
-            cancellation,
-        ),
-        EndpointInjection::FloorCorrectedAbsolute => {
-            let (coarse_grid, _, restriction, prolongation) =
-                mechanical_transfer(grid, cancellation)?;
-            let mut entry = pack_mechanical_amounts(grid, state, terrain_floor, cancellation)?;
-            entry.truncate(FAS_ATMOSPHERE_ROLES.len());
-            // y_s′ - R x_e0 = y_s - R(x_e0 + A Δfloor): the floor shift joins
-            // the lower-layer volume before the one restriction.
-            for (cell, (value, geometry)) in entry[0].iter_mut().zip(grid.cells()).enumerate() {
-                if cell % 256 == 0 {
-                    check_cancelled(cancellation)?;
-                }
-                value[0] += geometry.area_m2()
-                    * (f64::from(terrain_floor[cell]) - f64::from(carrier.terrain_floor_m[cell]));
-            }
-            let restricted =
-                remap_mechanical_amounts(&restriction, &coarse_grid, &entry, cancellation)?;
-            drop(entry);
-            let mut defect = carrier.coarse_solution.clone();
-            add_scaled_mechanical_amounts(&mut defect, -1.0, &restricted, cancellation)?;
-            let correction = remap_mechanical_amounts(&prolongation, grid, &defect, cancellation)?;
-            apply_atmosphere_amount_correction(
-                grid,
-                state,
-                terrain_floor,
-                &correction,
-                cancellation,
-            )
         }
     }
 }
@@ -3433,15 +3296,6 @@ impl GlobalCirculationGenerationError {
                 | Self::Forcing(_)
         )
     }
-
-    /// The bare variant name, for the `SEKAI_P4_TRACE` retry tag.
-    fn variant_name(&self) -> String {
-        format!("{self:?}")
-            .split(['(', ' ', '{'])
-            .next()
-            .unwrap_or_default()
-            .to_owned()
-    }
 }
 
 impl From<ClimateWorkDomainValidationError> for GlobalCirculationGenerationError {
@@ -4175,41 +4029,40 @@ mod tests {
                 .map(|value| value[0])
                 .sum()
         };
-        for injection in [
-            EndpointInjection::Differential,
-            EndpointInjection::FloorCorrectedAbsolute,
-        ] {
-            let mut correction = fixture.correction.clone();
-            correction.injection = injection;
-            let trial =
-                inject_start_correction(&grid, &floor, &entry, &correction, &cancellation).unwrap();
-            let volume_error = (atmosphere_volume(&trial) - atmosphere_volume(&entry)).abs()
-                / atmosphere_volume(&entry);
-            assert!(
-                volume_error <= crate::world::natural::GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX,
-                "{injection:?}: {volume_error}"
-            );
-            assert_ne!(
-                trial.height_anomaly_m(ClimateLayerRole::LowerAtmosphere),
-                entry.height_anomaly_m(ClimateLayerRole::LowerAtmosphere)
-            );
-            for &role in entry.active_roles() {
-                assert_eq!(trial.temperature_c(role), entry.temperature_c(role));
-                if !FAS_ATMOSPHERE_ROLES.contains(&role) {
-                    assert_eq!(trial.height_anomaly_m(role), entry.height_anomaly_m(role));
-                    assert_eq!(trial.velocity_m_s(role), entry.velocity_m_s(role));
-                }
+        let trial = apply_atmosphere_amount_correction(
+            &grid,
+            &entry,
+            &floor,
+            &fixture.correction.amounts,
+            &cancellation,
+        )
+        .unwrap();
+        let volume_error = (atmosphere_volume(&trial) - atmosphere_volume(&entry)).abs()
+            / atmosphere_volume(&entry);
+        assert!(
+            volume_error <= crate::world::natural::GLOBAL_CIRCULATION_BUDGET_RELATIVE_ERROR_MAX,
+            "{volume_error}"
+        );
+        assert_ne!(
+            trial.height_anomaly_m(ClimateLayerRole::LowerAtmosphere),
+            entry.height_anomaly_m(ClimateLayerRole::LowerAtmosphere)
+        );
+        for &role in entry.active_roles() {
+            assert_eq!(trial.temperature_c(role), entry.temperature_c(role));
+            if !FAS_ATMOSPHERE_ROLES.contains(&role) {
+                assert_eq!(trial.height_anomaly_m(role), entry.height_anomaly_m(role));
+                assert_eq!(trial.velocity_m_s(role), entry.velocity_m_s(role));
             }
-            assert_eq!(trial.specific_humidity(), entry.specific_humidity());
-            assert_eq!(
-                trial.upper_specific_humidity(),
-                entry.upper_specific_humidity()
-            );
-            assert_eq!(
-                trial.deep_ocean_temperature_c(),
-                entry.deep_ocean_temperature_c()
-            );
         }
+        assert_eq!(trial.specific_humidity(), entry.specific_humidity());
+        assert_eq!(
+            trial.upper_specific_humidity(),
+            entry.upper_specific_humidity()
+        );
+        assert_eq!(
+            trial.deep_ocean_temperature_c(),
+            entry.deep_ocean_temperature_c()
+        );
     }
 
     // A8b §9.1-3: a nonphysical injected amount runs the solve's own FAS, so

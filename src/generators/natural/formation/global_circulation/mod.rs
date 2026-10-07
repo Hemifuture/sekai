@@ -39,9 +39,9 @@ pub use comparison::{
     CLOSED_ANNUAL_LAYER_MASS_DRIFT_MAX, SELECTED_PRODUCTION_INTEGRATOR,
 };
 pub use forcing::{GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError};
-pub(crate) use generation::StartAtmosphereFasCorrection;
 #[cfg(test)]
-pub(crate) use generation::{offline, EndpointInjection};
+pub(crate) use generation::offline;
+pub(crate) use generation::StartAtmosphereFasCorrection;
 pub use generation::{
     GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalCirculationPhase,
 };
