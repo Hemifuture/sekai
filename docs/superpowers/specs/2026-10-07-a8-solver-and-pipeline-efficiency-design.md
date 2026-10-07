@@ -246,6 +246,9 @@ Standard 55.480 → 48.747 s（−12.1 %）。
   3.48 → 1.18 s、14.45 → 3.76 s（剩余主要是 P1 表面、§8 的
   `ProfileSurfaceBuilder::complete`、仍在的哈希与呈现组装）。
 - 对 A1 目标：Standard 52.4 s 达标；Draft 22.7 s 仍高于 20 s。
+- 本表止于 A8 的逐位提交。A8b（终点 P4 复用起点 FAS 校正）之后的总计以 A8b 规格
+  §9.4.1 为准：成对中位探针全链 Draft 18.692 s、Standard 43.544 s，全图 `ui_scope`
+  Draft 19.703 s、Standard 47.739 s（单对）。
 
 ## 7. 验证（最小充分证据）
 
