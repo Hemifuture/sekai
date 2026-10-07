@@ -139,6 +139,8 @@ impl CausalNaturalFormationGenerator {
                 cancellation,
             )?;
         let formation_state = FormationState::from_primary_working(&primary_working)?;
+        // The public forcing build is this chain's one full validation of the
+        // work domain against `surface`; every later consumer trusts it.
         let start_forcing = GlobalClimateForcingBuilder::build(
             surface,
             &primary_relief,
@@ -147,7 +149,7 @@ impl CausalNaturalFormationGenerator {
             inputs.climate_domain,
             cancellation,
         )?;
-        let start_climate = GlobalCirculationGenerator::generate(
+        let start_climate = GlobalCirculationGenerator::generate_from_validated(
             surface,
             inputs.climate_domain,
             &start_forcing,
@@ -1048,7 +1050,7 @@ mod timing_probe {
         .unwrap();
         report(profile, "P4 start forcing", started);
         let started = Instant::now();
-        let start_climate = GlobalCirculationGenerator::generate(
+        let start_climate = GlobalCirculationGenerator::generate_from_validated(
             surface,
             &domain,
             &start_forcing,

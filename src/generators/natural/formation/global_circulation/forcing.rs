@@ -395,7 +395,9 @@ impl GlobalClimateForcingBuilder {
         domain: &ClimateWorkDomainSnapshot,
         cancellation: &BuildCancellation,
     ) -> Result<GlobalClimateForcing, GlobalClimateForcingError> {
-        let source_ref = validate_common_inputs(surface, climate_spec, domain, cancellation)?;
+        let source_ref = validate_common_inputs(surface, climate_spec, cancellation, || {
+            domain.validate_against_cancellable(surface, &|| cancellation.is_cancelled())
+        })?;
         if relief.surface_ref() != source_ref {
             return Err(GlobalClimateForcingError::SourceMismatch);
         }
@@ -411,7 +413,9 @@ impl GlobalClimateForcingBuilder {
 
     /// Builds the exact production P4 forcing from a validated intermediate
     /// P5 terrain. This remains crate-private so the public P4 product boundary
-    /// continues to require the authoritative P3 relief identity.
+    /// continues to require the authoritative P3 relief identity. The caller
+    /// has already validated `surface` and fully validated `domain` against it,
+    /// so only their constant-time binding is rechecked here.
     pub(crate) fn build_for_formation_terrain(
         surface: &SphericalSurfaceSnapshot,
         terrain: &FormationTerrainFields,
@@ -420,7 +424,9 @@ impl GlobalClimateForcingBuilder {
         domain: &ClimateWorkDomainSnapshot,
         cancellation: &BuildCancellation,
     ) -> Result<GlobalClimateForcing, GlobalClimateForcingError> {
-        let source_ref = validate_common_inputs(surface, climate_spec, domain, cancellation)?;
+        let source_ref = validate_common_inputs(surface, climate_spec, cancellation, || {
+            domain.validate_binding_against(surface)
+        })?;
         validate_formation_terrain_against_surface(surface, terrain, cancellation)?;
         let surface_water_geometry = terrain.surface_water_geometry();
         let source_fingerprint = formation_terrain_climate_fingerprint(
@@ -711,11 +717,13 @@ impl GlobalClimateForcingBuilder {
     }
 }
 
+/// `validate_domain` runs before the surface identity is derived, so the full
+/// public check can also validate the surface first.
 fn validate_common_inputs(
     surface: &SphericalSurfaceSnapshot,
     climate_spec: &ClimateSpec,
-    domain: &ClimateWorkDomainSnapshot,
     cancellation: &BuildCancellation,
+    validate_domain: impl FnOnce() -> Result<(), ClimateWorkDomainValidationError>,
 ) -> Result<SurfaceRef, GlobalClimateForcingError> {
     check_cancelled(cancellation)?;
     climate_spec
@@ -724,9 +732,7 @@ fn validate_common_inputs(
             role: "climate_spec",
             reason: error.to_string(),
         })?;
-    domain
-        .validate_against_cancellable(surface, &|| cancellation.is_cancelled())
-        .map_err(map_work_domain_error)?;
+    validate_domain().map_err(map_work_domain_error)?;
     SurfaceRef::from_validated_spherical(surface).map_err(|error| {
         GlobalClimateForcingError::InvalidInput {
             role: "surface",
