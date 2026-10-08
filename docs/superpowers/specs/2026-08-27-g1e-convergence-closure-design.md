@@ -382,3 +382,12 @@ Continents 与 Archipelago 的发布相位是**分散半程**，因此开局必�
   统计，并减弱真实的大尺度裂谷减薄（标准档 2 跳均值场标准差降 0.6–0.9 km）。这是过程
   离散的物理取舍，交用户裁定。(b) 构造阶段版本号未抬，因为缓存只在内存。
   冻结身份的重钉留给后续单独提交。
+  **跨平台（2026-10-08，合并后 CI）**：线性插值把超越函数在最后几位上的平台差异
+  带进了厚度，进而带进动力学，所以 Linux 与 Windows 会演化出不同的世界。审计
+  平台之外本来就不要求身份一致。受影响的是单世界的 `collision-causality-fraction`：
+  一个世界只有 6–23 条大陆碰撞边，单个 seed 的值会随平台翻转。实测：Linux 夹具
+  0.739（17/23），Windows 为 1.0（6 条）；17 seed 逐 seed 不达标的，修前 Windows
+  有 3 个（7、23、89），修后 Windows 1 个（43）、Linux 1 个（42）；语料值修前
+  0.969，修后 Windows 0.972、Linux 0.971，都过 0.8 门。所以
+  `tests/evolved_tectonic_quality.rs` 的单世界断言不再对这一项要求 Pass，该门改由
+  17 seed 语料（`tests/evolved_tectonic_evidence.rs`）承担，阈值不变。

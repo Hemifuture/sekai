@@ -582,7 +582,9 @@ impl GlobalClimateForcingBuilder {
             // whose ice-free annual target sits below the liquid floor is ice
             // covered. The target is read at sea level, without the cell's
             // orographic lapse, because the water surface of a partly-land
-            // cell is at sea level.
+            // cell is at sea level; for the same reason it absorbs with the
+            // open-ocean albedo, not the cell mean that carries the land
+            // part's highland snow.
             let mut ice_free_annual_absorbed = 0.0_f64;
             for month in 0..CLIMATE_MONTH_COUNT {
                 let phase = std::f64::consts::TAU * (month as f64 + MONTH_PHASE_OFFSET)
@@ -590,7 +592,7 @@ impl GlobalClimateForcingBuilder {
                 let declination = axial_tilt_rad * (-phase.cos());
                 ice_free_annual_absorbed += absorbed_shortwave_w_m2(
                     daily_mean_insolation(latitude, declination),
-                    ice_free_albedo,
+                    P4_OPEN_OCEAN_SURFACE_ALBEDO,
                 ) / CLIMATE_MONTH_COUNT as f64;
             }
             let ice_free_annual_c =
