@@ -2155,12 +2155,22 @@ fn show_formation_area_summary(
             summary.authored_continental_fraction() * 100.0,
             summary.evolved_continental_fraction() * 100.0,
         ));
-        ui.label(format!(
-            "陆地面积：目标 {:.1}%｜实际 {:.1}%｜偏差 {:+.1} 个百分点",
-            summary.target_land_fraction() * 100.0,
-            summary.actual_land_fraction() * 100.0,
-            (summary.actual_land_fraction() - f64::from(summary.target_land_fraction())) * 100.0,
-        ));
+        // Under WaterInventory the sea level is solved from the water volume and
+        // the stored target land fraction is not an input, so no deviation exists.
+        if summary.sea_level_policy() == SeaLevelPolicy::TargetLandFraction {
+            ui.label(format!(
+                "陆地面积：目标 {:.1}%｜实际 {:.1}%｜偏差 {:+.1} 个百分点",
+                summary.target_land_fraction() * 100.0,
+                summary.actual_land_fraction() * 100.0,
+                (summary.actual_land_fraction() - f64::from(summary.target_land_fraction()))
+                    * 100.0,
+            ));
+        } else {
+            ui.label(format!(
+                "陆地面积：实际 {:.1}%（由海水量求解）",
+                summary.actual_land_fraction() * 100.0,
+            ));
+        }
         ui.label(format!(
             "海水量 = {:.3} × 地球",
             summary.water_inventory_ratio()
@@ -4749,6 +4759,30 @@ mod natural_app_tests {
             .iter()
             .any(|text| text == "E-P：+0.100 mm/day｜相对闭合差 3.57%"));
         assert!(texts.iter().any(|text| text.starts_with("地球参考：")));
+
+        let water_driven = FormationAreaSummary::new(
+            0.38,
+            0.50,
+            0.60,
+            0.21,
+            -80.0,
+            SeaLevelPolicy::WaterInventory,
+            1.0,
+            p4_budget_fixture(),
+        );
+        let output = context.run(egui::RawInput::default(), |context| {
+            egui::CentralPanel::default().show(context, |ui| {
+                show_formation_area_summary(ui, water_driven, &registry);
+            });
+        });
+        let mut texts = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut texts);
+        }
+        assert!(texts
+            .iter()
+            .any(|text| text == "陆地面积：实际 21.0%（由海水量求解）"));
+        assert!(!texts.iter().any(|text| text.contains("偏差")));
     }
 
     #[test]
