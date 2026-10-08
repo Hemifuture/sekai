@@ -490,6 +490,10 @@ const LAND_OCEAN: [LinearRgba; 2] = [
     LinearRgba::new(0.320, 0.360, 0.180, 1.0),
 ];
 
+/// Published lakes are drawn lighter than the ocean so inland water reads as
+/// its own hydrology class, the usual atlas distinction between lakes and sea.
+const LAKE_WATER_COLOR: LinearRgba = LinearRgba::new(0.120, 0.300, 0.430, 1.0);
+
 /// Linear-light color for an informational diagnostic.
 pub const DIAGNOSTIC_INFO_COLOR: LinearRgba = LinearRgba::new(0.130, 0.430, 0.720, 1.0);
 /// Linear-light color for a warning diagnostic.
@@ -547,9 +551,10 @@ pub(crate) fn terrain_water_color(
     use crate::world::natural::SurfaceWaterKind;
 
     match water {
-        SurfaceWaterKind::Lake | SurfaceWaterKind::Ocean => {
+        SurfaceWaterKind::Ocean => {
             return sample_palette(built_in_palette(PaletteId::LandOcean), 0.0);
         }
+        SurfaceWaterKind::Lake => return LAKE_WATER_COLOR,
         SurfaceWaterKind::DryLand => {}
     }
     let t = ((f64::from(elevation_m) - (sea_level_m - display_radius_m))
@@ -565,15 +570,16 @@ mod terrain_water_tests {
 
     #[test]
     fn published_water_overrides_derived_elevation() {
-        let water_color = sample_palette(built_in_palette(PaletteId::LandOcean), 0.0);
-        for water in [SurfaceWaterKind::Lake, SurfaceWaterKind::Ocean] {
+        let ocean_color = sample_palette(built_in_palette(PaletteId::LandOcean), 0.0);
+        for (water, color) in [
+            (SurfaceWaterKind::Lake, LAKE_WATER_COLOR),
+            (SurfaceWaterKind::Ocean, ocean_color),
+        ] {
             for elevation in [-500.0, 500.0] {
-                assert_eq!(
-                    terrain_water_color(elevation, 0.0, 2000.0, water),
-                    water_color
-                );
+                assert_eq!(terrain_water_color(elevation, 0.0, 2000.0, water), color);
             }
         }
+        assert_ne!(LAKE_WATER_COLOR, ocean_color);
         assert_eq!(
             terrain_water_color(-500.0, 0.0, 2000.0, SurfaceWaterKind::DryLand),
             sample_palette(built_in_palette(PaletteId::Hypsometric), 0.5)

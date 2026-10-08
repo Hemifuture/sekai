@@ -232,6 +232,19 @@ pub const GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S: f64 = 65.0;
 /// drops from `749` to `215`; a 32-seed Draft/Standard sweep converged
 /// without a single failure.
 pub const GLOBAL_CIRCULATION_FAST_CFL_TARGET: f64 = 0.8;
+/// Courant target of the C2 gravity-wave small steps inside the
+/// time-split fast stages (A7 §3).
+///
+/// The small steps advance only the linear height-gradient pressure and
+/// flux-form continuity by Störmer–Verlet, which stays stable well beyond
+/// `GLOBAL_CIRCULATION_FAST_CFL_TARGET`, so this value is set by accuracy.
+/// Measured on Draft seed 42 (2026-10-07, A7 §7.2) against the classic split
+/// path at a quarter of `GLOBAL_CIRCULATION_FAST_CFL_TARGET`: Courant `0.8`
+/// leaves a `9.5 %` relative RMS precipitation error and `0.2` gives `4.0 %`
+/// (the classic production path `5.0 %`) for `+2.8 s` of solve time, while
+/// first-order forward-backward steps plateau at `5.0 %` and `4.8 %` for
+/// Courant `0.1` and `0.025`.
+pub const GLOBAL_CIRCULATION_GRAVITY_WAVE_SMALL_STEP_CFL_TARGET: f64 = 0.2;
 /// Fewest fast substeps one macro step can legitimately report.
 ///
 /// The Coriolis term alone bounds the fast step at

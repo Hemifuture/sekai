@@ -45,14 +45,9 @@ use crate::world::natural::{
     spherical_formation_field_registry, strahler_stream_order_field_id,
     surface_elevation_m_field_id, surface_water_kind_field_id, tectonic_displacement_m_field_id,
     tectonic_displacement_rate_m_per_year_field_id, ClimateBudgetReport, GlobalCirculationFields,
-    NaturalFieldRegistryError, NaturalFormationBundleValidationError, PrimaryReliefValidationError,
-    SeaLevelPolicy, SphericalTectonicValidationError, SurfaceFormationValidationError,
-    CLIMATE_MONTH_COUNT,
+    NaturalFieldRegistryError, PrimaryReliefValidationError, SeaLevelPolicy, CLIMATE_MONTH_COUNT,
 };
-use crate::world::spatial::{
-    canonical_east_north_basis, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
-    SurfaceRef,
-};
+use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, SurfaceRef};
 use crate::world::RootSeed;
 
 const SPHERICAL_FORMATION_GRAPH_CONTRACT_VERSION: u16 = 3;
@@ -344,7 +339,7 @@ pub struct SphericalFormationFieldDocument {
 }
 
 impl SphericalFormationFieldDocument {
-    /// Extracts shared artifacts and builds a fully cross-validated document.
+    /// Extracts shared artifacts of a verified build and binds their identities.
     pub fn from_build_outcome(
         outcome: &BuildOutcome,
     ) -> Result<Self, SphericalFormationDisplayError> {
@@ -373,16 +368,13 @@ impl SphericalFormationFieldDocument {
         formation: Arc<NaturalFormationBundleArtifact>,
         report: &BuildReport,
     ) -> Result<Self, SphericalFormationDisplayError> {
-        surface.snapshot().validate()?;
-        let authoritative = SurfaceRef::for_spherical(surface.snapshot());
+        // Publication validated every artifact, and the formation stage
+        // validated each sibling against this surface and relief spec, so the
+        // verified outcome only needs the cheap identity bindings below.
+        let authoritative = SurfaceRef::from_validated_spherical(surface.snapshot())
+            .expect("published spherical surfaces have a supported, non-empty identity");
         let bundle = formation.bundle();
-        bundle.validate()?;
-        bundle
-            .tectonics()
-            .compatibility()
-            .validate_against(surface.snapshot())?;
         let formation_snapshot = bundle.surface_formation();
-        formation_snapshot.validate()?;
         if formation_snapshot.surface_ref() != authoritative {
             return Err(SphericalFormationDisplayError::FormationSurfaceMismatch {
                 snapshot: formation_snapshot.surface_ref(),
@@ -391,11 +383,7 @@ impl SphericalFormationFieldDocument {
         }
         bundle
             .primary_relief()
-            .validate_against_authoring(surface.snapshot(), relief_spec.spec())?;
-        bundle
-            .substrate()
-            .validate_against_surface(surface.snapshot())
-            .map_err(PrimaryReliefValidationError::from)?;
+            .validate_authored_policy(surface.snapshot(), relief_spec.spec())?;
 
         let compatibility = bundle.tectonics().compatibility();
         let plate_count = u16::try_from(compatibility.plates().len())
@@ -799,14 +787,6 @@ pub enum SphericalFormationDisplayError {
     Artifact(#[from] ArtifactError),
     #[error(transparent)]
     BuildOutcomeIntegrity(BuildOutcomeIntegrityError),
-    #[error(transparent)]
-    Surface(#[from] SphericalSurfaceValidationError),
-    #[error(transparent)]
-    Tectonic(#[from] SphericalTectonicValidationError),
-    #[error(transparent)]
-    Formation(#[from] SurfaceFormationValidationError),
-    #[error(transparent)]
-    FormationBundle(#[from] NaturalFormationBundleValidationError),
     #[error(transparent)]
     PrimaryRelief(#[from] PrimaryReliefValidationError),
     #[error(transparent)]

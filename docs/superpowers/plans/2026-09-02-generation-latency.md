@@ -51,8 +51,11 @@
       冷启动扫描的生成器耗时：Draft 平均 21.1 s（15.6–25.5），Standard 平均 55.1 s
       （48.9–64.0）。**Draft 未达 10–20 s 目标**（差约 2 s，seed 间波动 ±5 s），
       `tests/generation_latency.rs` 的 Draft 断言按用户目标保留、当前失败；
-      Standard 达标。剩余的 1.8 s 引擎开销是束产物 JSON 序列化 + blake3 身份哈希
-      （来源契约，不动）。热启动的 17.8 s 数据作废。
+      Standard 达标。剩余的 1.8 s 引擎开销当时归为束产物 JSON 序列化 + blake3
+      身份哈希；A8 实测更正：哈希（含序列化）只占 Draft 0.45 s / Standard 1.64 s，
+      其余是对已校验产物的重复校验与重算，见 A8 设计
+      `specs/2026-10-07-a8-solver-and-pipeline-efficiency-design.md` §3。
+      热启动的 17.8 s 数据作废。
       17 seed P4 证据：全球降水均值 2.80 mm/day（GPCP 2.81）、TOA 1.8–8.3 W/m²、
       硬门（水循环、TOA）全过；非硬门里「海流泄漏到陆地」（17/17 seed，
       0.30–0.68 m/s）与「地形增湿比」（6/17）、「雨影」（1/17）为 fail。在 A0

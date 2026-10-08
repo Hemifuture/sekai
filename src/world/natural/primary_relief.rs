@@ -967,7 +967,7 @@ impl PrimaryReliefSnapshot {
         self.validate_authored_policy(surface, relief_spec)
     }
 
-    fn validate_authored_policy(
+    pub(crate) fn validate_authored_policy(
         &self,
         surface: &SphericalSurfaceSnapshot,
         relief_spec: &ReliefSpec,

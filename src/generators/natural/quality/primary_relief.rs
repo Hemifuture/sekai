@@ -1,7 +1,9 @@
 //! Versioned scientific and morphology evidence for physical P3 relief.
 
-use super::{MetricObservation, NaturalQualityReportBuilder, QualityBuildError};
-use crate::generators::natural::evaluate_evolved_tectonic_quality;
+use super::{
+    evaluate_evolved_tectonic_quality_from_validated, MetricObservation,
+    NaturalQualityReportBuilder, QualityBuildError,
+};
 use crate::world::natural::{
     CrustKind, EvolvedTectonicSnapshot, GeologicSubstrateSnapshot, NaturalQualityReport,
     PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus, ELEVATION_MAX_M, ELEVATION_MIN_M,
@@ -63,9 +65,27 @@ pub fn evaluate_primary_relief_quality(
     relief: &PrimaryReliefSnapshot,
 ) -> Result<NaturalQualityReport, QualityBuildError> {
     validate_inputs(surface, evolved, substrate, relief)?;
+    let p2 = evaluate_evolved_tectonic_quality_from_validated(surface, evolved)?;
+    evaluate_primary_relief_quality_from_validated(surface, evolved, substrate, relief, &p2)
+}
+
+/// Evaluates P3 evidence for siblings already validated against `surface`,
+/// reusing the P2 report `p2` evaluated for the same `evolved` snapshot.
+pub(crate) fn evaluate_primary_relief_quality_from_validated(
+    surface: &SphericalSurfaceSnapshot,
+    evolved: &EvolvedTectonicSnapshot,
+    substrate: &GeologicSubstrateSnapshot,
+    relief: &PrimaryReliefSnapshot,
+    p2: &NaturalQualityReport,
+) -> Result<NaturalQualityReport, QualityBuildError> {
+    if p2.surface_ref() != evolved.surface_ref() {
+        return Err(invalid_input(
+            "evolved-tectonics-quality",
+            "P2 report surface does not match the evolved snapshot".to_owned(),
+        ));
+    }
     let raw = RawReliefMetrics::collect(surface, evolved, substrate, relief)?;
-    let p2 = evaluate_evolved_tectonic_quality(surface, evolved)?;
-    let maximum_plate_area = metric_value(&p2, "maximum-plate-area-fraction")?;
+    let maximum_plate_area = metric_value(p2, "maximum-plate-area-fraction")?;
     let upstream_hard_failures = p2
         .metrics()
         .iter()

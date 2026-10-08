@@ -1,17 +1,20 @@
 use super::rk3::{
-    apply_scalar_endpoint, conservative_ocean_layer, copy_scalars, estimate_cfl,
-    ocean_mass_source_heat_j, rk3_step_with, rk3_step_with_first, validate_step, ClimateDerivative,
-    ClimateIntegratorDiagnostics, ClimateIntegratorError, ClimateStepResult,
+    apply_scalar_endpoint, combine_state, conservative_ocean_layer, copy_scalars, estimate_cfl,
+    estimate_reference_wave_cfl, ocean_mass_source_heat_j, rk3_step_with, rk3_step_with_first,
+    validate_step, ClimateDerivative, ClimateIntegratorDiagnostics, ClimateIntegratorError,
+    ClimateStepResult,
 };
+use super::tendency::AtmosphericGravityWaves;
 use super::{
     ClimateConservationInterpretation, ClimateIntegrationProcedure, FormationProcedureIdentity,
-    GlobalCirculationPhase, LayeredClimateState, LayeredClimateTendency, LayeredTendencySystem,
-    LayeredTendencyWorkspace,
+    GlobalCirculationPhase, LayeredClimateState, LayeredClimateTendency, LayeredTendencyError,
+    LayeredTendencySystem, LayeredTendencyWorkspace,
 };
 use crate::engine::BuildCancellation;
-use crate::generators::natural::circulation::CubedSphereGrid;
+use crate::generators::natural::circulation::{CirculationOperators, CubedSphereGrid};
 use crate::world::natural::{
-    ClimateCapabilitySet, ClimateModelProfile, PlanetForcing, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
+    ClimateCapabilitySet, ClimateLayerRole, ClimateModelProfile, PlanetForcing,
+    GLOBAL_CIRCULATION_FAST_CFL_TARGET, GLOBAL_CIRCULATION_GRAVITY_WAVE_SMALL_STEP_CFL_TARGET,
     GLOBAL_CIRCULATION_MAXIMUM_SLOW_STEP_SECONDS,
 };
 
@@ -156,6 +159,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             state,
             macro_step_seconds,
             initial_fast.momentum_transport_rate_s_inv(),
+            false,
             cancellation,
         )?;
         drop(initial_fast);
@@ -343,11 +347,15 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         F: FnMut(GlobalCirculationPhase),
     {
         let system = self.tendency_system;
+        // C2 leaves its atmospheric gravity waves to forward-backward small
+        // steps inside Wicker-Skamarock stages (A7 §2); C1 keeps classic RK3.
+        let time_split = state.profile() == ClimateModelProfile::C2LayeredV1;
 
         let (mut substeps, mut fast_step_seconds) = self.fast_substep_plan(
             state,
             macro_step_seconds,
             full.momentum_transport_rate_s_inv(),
+            time_split,
             cancellation,
         )?;
         let mut endpoint_cfl = 0.0_f64;
@@ -399,6 +407,19 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             slow = slow.add(&thermal_pressure_difference, cancellation)?;
         }
         clear_scalar_components(&mut slow, state.profile());
+        if time_split {
+            drop(fast_derivative);
+            return self.advance_time_split_fast_cycle(
+                (state, advanced),
+                forcing,
+                ocean_edge_permeability,
+                (macro_step_seconds, substeps, fast_step_seconds),
+                (full, &slow, source_heat),
+                cancellation,
+                observer,
+                fast_workspace,
+            );
+        }
         // Atmospheric T is fixed from this scalar endpoint through the fast
         // stages. These two arrays live only for this slow step; H and ocean T
         // remain stage-dependent, and no cache survives into the next endpoint.
@@ -433,6 +454,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
                 &advanced,
                 macro_step_seconds,
                 endpoint_fast.momentum_transport_rate_s_inv(),
+                false,
                 cancellation,
             )?;
             if endpoint_plan.0 > substeps {
@@ -509,14 +531,243 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
         .with_ocean_mass_source_heat_j(source_heat))
     }
 
+    /// Wicker-Skamarock RK3 over the slow step (A7 §2): stages of `Δt/3`,
+    /// `Δt/2` and `Δt` all start from the large-step state and re-evaluate the
+    /// fast tensor without its gravity waves, which take forward-backward
+    /// small steps under the operator frozen at that stage.
+    #[allow(clippy::too_many_arguments)]
+    fn advance_time_split_fast_cycle<F>(
+        &self,
+        (state, mut advanced): (&LayeredClimateState, LayeredClimateState),
+        forcing: &PlanetForcing,
+        ocean_edge_permeability: &[f32],
+        (macro_step_seconds, mut substeps, mut fast_step_seconds): (f64, u32, f64),
+        (full, slow, source_heat): (&LayeredClimateTendency, &ClimateDerivative, f64),
+        cancellation: &BuildCancellation,
+        observer: &mut F,
+        fast_workspace: &mut LayeredTendencyWorkspace,
+    ) -> Result<ClimateStepResult, ClimateIntegratorError>
+    where
+        F: FnMut(GlobalCirculationPhase),
+    {
+        let system = self.tendency_system;
+        // Atmospheric T is fixed from this scalar endpoint through the fast
+        // stages, exactly as in the classic cycle.
+        let endpoint_temperature =
+            system.atmospheric_temperature_gradients(&advanced, Some(forcing), cancellation)?;
+        let open_edges = fast_workspace.open_edges().to_vec();
+        let evaluate = |stage: &LayeredClimateState,
+                        workspace: &mut LayeredTendencyWorkspace|
+         -> Result<
+            (ClimateDerivative, AtmosphericGravityWaves, f64),
+            ClimateIntegratorError,
+        > {
+            let (mut value, waves) = system.evaluate_fast_without_gravity_waves_validated(
+                stage,
+                forcing,
+                ocean_edge_permeability,
+                cancellation,
+                (workspace, Some(&endpoint_temperature)),
+            )?;
+            if let Some(exchange) = full.overturning_exchange_m_s() {
+                system.apply_declared_overturning_momentum(
+                    stage,
+                    exchange,
+                    cancellation,
+                    &mut value,
+                )?;
+            }
+            let derivative = ClimateDerivative::from_tendency(stage, &value, cancellation)?
+                .add(slow, cancellation)?;
+            Ok((derivative, waves, value.momentum_transport_rate_s_inv()))
+        };
+        let first = evaluate(&advanced, fast_workspace)?;
+        // The scalar endpoint can change the actual depths; retain the
+        // stricter of the entry and endpoint plans.
+        let endpoint_plan =
+            self.fast_substep_plan(&advanced, macro_step_seconds, first.2, true, cancellation)?;
+        if endpoint_plan.0 > substeps {
+            (substeps, fast_step_seconds) = endpoint_plan;
+        }
+        let mut maximum_cfl =
+            estimate_reference_wave_cfl(self.grid, state, fast_step_seconds, cancellation)?.max(
+                estimate_reference_wave_cfl(self.grid, &advanced, fast_step_seconds, cancellation)?,
+            );
+        let mut evaluations = 3_u64;
+        let mut first = Some(first);
+        observer(GlobalCirculationPhase::FastSubstepsStarted);
+        for _ in 0..substeps {
+            if cancellation.is_cancelled() {
+                return Err(ClimateIntegratorError::Cancelled);
+            }
+            // The fast-mode CFL is linear in the step; one bound per large
+            // step sizes all three stages' small steps.
+            let wave_cfl_per_second = estimate_cfl(self.grid, &advanced, 1.0, cancellation)?;
+            let mut stage: Option<LayeredClimateState> = None;
+            for fraction in [1.0 / 3.0, 0.5, 1.0] {
+                let (derivative, waves, _) = match first.take() {
+                    Some(first) => first,
+                    None => {
+                        evaluations += 1;
+                        evaluate(stage.as_ref().unwrap_or(&advanced), fast_workspace)?
+                    }
+                };
+                let stage_seconds = fast_step_seconds * fraction;
+                let small_steps = (stage_seconds * wave_cfl_per_second
+                    / GLOBAL_CIRCULATION_GRAVITY_WAVE_SMALL_STEP_CFL_TARGET)
+                    .ceil()
+                    .max(1.0);
+                if small_steps > f64::from(u32::MAX) {
+                    return Err(ClimateIntegratorError::InvalidTimeStep {
+                        found: macro_step_seconds,
+                    });
+                }
+                maximum_cfl = maximum_cfl.max(stage_seconds / small_steps * wave_cfl_per_second);
+                stage = Some(self.time_split_stage(
+                    &advanced,
+                    &derivative,
+                    &waves,
+                    (stage_seconds, small_steps as u32),
+                    &open_edges,
+                    cancellation,
+                )?);
+            }
+            advanced = stage.expect("three stages");
+            observer(GlobalCirculationPhase::FastSubstepCompleted);
+        }
+        advanced.validate_against_cancellable(self.grid, cancellation)?;
+        Ok(ClimateStepResult::new(
+            advanced,
+            ClimateIntegratorDiagnostics::split(evaluations, 1, substeps, maximum_cfl),
+            copy_scalars(full.precipitation_rate_mm_s(), cancellation)?,
+        )
+        .with_ocean_mass_source_heat_j(source_heat))
+    }
+
+    /// One Wicker-Skamarock stage from `base`: every variable advances by the
+    /// stage tendency over `stage_seconds`, except the C2 atmospheric heights
+    /// and velocities, which take `small_steps` Störmer-Verlet steps (Hairer,
+    /// Lubich & Wanner 2003): a half kick of the velocity from the current
+    /// heights, the flux-form continuity with that velocity, then a half kick
+    /// from the new heights.
+    fn time_split_stage(
+        &self,
+        base: &LayeredClimateState,
+        derivative: &ClimateDerivative,
+        waves: &AtmosphericGravityWaves,
+        (stage_seconds, small_steps): (f64, u32),
+        open_edges: &[f32],
+        cancellation: &BuildCancellation,
+    ) -> Result<LayeredClimateState, ClimateIntegratorError> {
+        const ROLES: [ClimateLayerRole; 2] = [
+            ClimateLayerRole::LowerAtmosphere,
+            ClimateLayerRole::UpperAtmosphere,
+        ];
+        let grid = self.grid;
+        let operators = CirculationOperators::new(grid);
+        let mut heights =
+            ROLES.map(|role| base.height_anomaly_m(role).expect("C2 atmosphere").to_vec());
+        let mut velocities =
+            ROLES.map(|role| base.velocity_m_s(role).expect("C2 atmosphere").to_vec());
+        let small_step_seconds = stage_seconds / f64::from(small_steps);
+        let mut edge_flux = vec![0.0_f64; grid.edges().len()];
+        let mut thickness_tendency = vec![0.0_f64; grid.cell_count()];
+        let gradients =
+            |heights: &[Vec<f32>; 2]| -> Result<[Vec<[f32; 3]>; 2], ClimateIntegratorError> {
+                let interface = operators
+                    .transient_gradient_with_permeability_cancellable(
+                        &heights[0],
+                        open_edges,
+                        cancellation,
+                    )
+                    .map_err(LayeredTendencyError::from)?;
+                let upper = operators
+                    .transient_gradient_with_permeability_cancellable(
+                        &heights[1],
+                        open_edges,
+                        cancellation,
+                    )
+                    .map_err(LayeredTendencyError::from)?;
+                Ok([interface, upper])
+            };
+        // Half kick of both velocities under the frozen pressure operator.
+        let kick = |velocities: &mut [Vec<[f32; 3]>; 2], gradient: &[Vec<[f32; 3]>; 2]| {
+            let half_step_seconds = 0.5 * small_step_seconds;
+            for cell in 0..grid.cell_count() {
+                let accelerations =
+                    waves.accelerations(grid, cell, gradient[0][cell], gradient[1][cell]);
+                for (layer, role) in ROLES.iter().enumerate() {
+                    let rest = derivative.layer(*role).velocity[cell];
+                    let velocity = &mut velocities[layer][cell];
+                    let advanced: [f32; 3] = std::array::from_fn(|component| {
+                        (f64::from(velocity[component])
+                            + half_step_seconds
+                                * (rest[component] + accelerations[layer][component]))
+                            as f32
+                    });
+                    *velocity = operators.project_tangent_cell_validated(cell, advanced);
+                }
+            }
+        };
+        let mut gradient = gradients(&heights)?;
+        for _ in 0..small_steps {
+            if cancellation.is_cancelled() {
+                return Err(ClimateIntegratorError::Cancelled);
+            }
+            kick(&mut velocities, &gradient);
+            for (layer, role) in ROLES.iter().enumerate() {
+                waves.thickness_tendency_into(
+                    grid,
+                    layer,
+                    &velocities[layer],
+                    open_edges,
+                    (&mut edge_flux, &mut thickness_tendency),
+                );
+                let rest = &derivative.layer(*role).height;
+                for (cell, height) in heights[layer].iter_mut().enumerate() {
+                    let value = f64::from(*height)
+                        + small_step_seconds * (f64::from(rest[cell]) + thickness_tendency[cell]);
+                    if !value.is_finite() {
+                        return Err(ClimateIntegratorError::LinearSolveBreakdown);
+                    }
+                    *height = value as f32;
+                }
+            }
+            // The closing kick's gradient opens the next small step.
+            gradient = gradients(&heights)?;
+            kick(&mut velocities, &gradient);
+        }
+        let mut result = combine_state(grid, base, &[(stage_seconds, derivative)], cancellation)?;
+        for (layer, role) in ROLES.iter().enumerate() {
+            result
+                .height_anomaly_m_mut(*role)
+                .expect("C2 atmosphere")
+                .copy_from_slice(&heights[layer]);
+            result
+                .velocity_m_s_mut(*role)
+                .expect("C2 atmosphere")
+                .copy_from_slice(&velocities[layer]);
+        }
+        result.validate_against_cancellable(grid, cancellation)?;
+        Ok(result)
+    }
+
+    /// One fast step of the time-split C2 cycle, or one classic fast RK3
+    /// substep: the reference-wave CFL plans the former (A7 §3).
     fn fast_substep_plan(
         &self,
         state: &LayeredClimateState,
         macro_step_seconds: f64,
         momentum_exchange_rate_s_inv: f64,
+        time_split: bool,
         cancellation: &BuildCancellation,
     ) -> Result<(u32, f64), ClimateIntegratorError> {
-        let configured_cfl = estimate_cfl(
+        let wave_cfl = if time_split {
+            estimate_reference_wave_cfl
+        } else {
+            estimate_cfl
+        };
+        let configured_cfl = wave_cfl(
             self.grid,
             state,
             self.maximum_fast_step_seconds,

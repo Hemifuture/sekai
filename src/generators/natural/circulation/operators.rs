@@ -1049,7 +1049,7 @@ impl<'grid> CirculationOperators<'grid> {
             }
             for owner in 0..2 {
                 let cell = edge.cells()[owner] as usize;
-                let displacement = edge_displacement_m(self.grid, edge, owner);
+                let displacement = edge.midpoint_displacement_m(owner);
                 let increment = dot(workspace.gradients[cell], displacement);
                 let center = value_at(cell);
                 let ratio = if increment > 0.0 {
@@ -1072,17 +1072,14 @@ impl<'grid> CirculationOperators<'grid> {
             let [first, second] = *edge.cells();
             let first = first as usize;
             let second = second as usize;
-            let signed_volume_flux = dot(
-                interpolate_vector(edge, velocity[first], velocity[second]),
-                edge.normal_from_first(),
-            ) * edge.length_m()
-                * f64::from(*permeability);
+            let signed_volume_flux =
+                edge_volume_flux_m2_s(edge, velocity[first], velocity[second], *permeability);
             let (donor, owner) = if signed_volume_flux >= 0.0 {
                 (first, 0)
             } else {
                 (second, 1)
             };
-            let displacement = edge_displacement_m(self.grid, edge, owner);
+            let displacement = edge.midpoint_displacement_m(owner);
             let reconstructed = value_at(donor)
                 + workspace.limiter[donor] * dot(workspace.gradients[donor], displacement);
             let face_value =
@@ -1837,22 +1834,6 @@ fn interpolate_scalar_f64(edge: &SphericalEdge, first: f64, second: f64) -> f64 
     (first * distances[1] + second * distances[0]) / (distances[0] + distances[1])
 }
 
-fn edge_displacement_m(grid: &CubedSphereGrid, edge: &SphericalEdge, owner: usize) -> [f64; 3] {
-    let cell = edge.cells()[owner] as usize;
-    let radial = grid.cells()[cell].center_unit();
-    let chord = add(edge.midpoint_unit(), scale(radial, -1.0));
-    let toward_midpoint = project_tangent(chord, radial);
-    let norm = dot(toward_midpoint, toward_midpoint).sqrt();
-    if norm <= f64::MIN_POSITIVE {
-        [0.0; 3]
-    } else {
-        scale(
-            toward_midpoint,
-            edge.center_distances_to_midpoint_m()[owner] / norm,
-        )
-    }
-}
-
 /// 以供体实际厚度计算边体积通量，正值从边的第一个单元流向第二个单元。
 ///
 /// `edge`、`permeability` 和 `fields` 须来自同一已验证网格；本助手不分配内存。
@@ -1887,6 +1868,21 @@ pub(crate) fn donor_layer_edge_amount_rate_m3_s(
     normal_velocity_m_s * edge.length_m() * f64::from(permeability) * donor_thickness_m
 }
 
+/// Signed volume flux per unit depth through one edge, positive from its
+/// first cell: the interpolated normal velocity times the open edge length.
+pub(crate) fn edge_volume_flux_m2_s(
+    edge: &SphericalEdge,
+    first: [f32; 3],
+    second: [f32; 3],
+    permeability: f32,
+) -> f64 {
+    dot(
+        interpolate_vector(edge, first, second),
+        edge.normal_from_first(),
+    ) * edge.length_m()
+        * f64::from(permeability)
+}
+
 pub(crate) fn interpolate_vector(
     edge: &SphericalEdge,
     first: [f32; 3],
@@ -1896,10 +1892,7 @@ pub(crate) fn interpolate_vector(
 }
 
 fn interpolate_vector_f64(edge: &SphericalEdge, first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
-    let distances = edge.center_distances_to_midpoint_m();
-    let denominator = distances[0] + distances[1];
-    let first_weight = distances[1] / denominator;
-    let second_weight = distances[0] / denominator;
+    let [first_weight, second_weight] = edge.interpolation_weights();
     let interpolated = add(scale(first, first_weight), scale(second, second_weight));
     project_tangent(interpolated, edge.midpoint_unit())
 }
