@@ -1080,6 +1080,8 @@ pub(crate) mod offline {
     #[derive(Debug, Default)]
     pub(crate) struct OfflineCapture {
         pub(crate) residuals: Vec<f64>,
+        pub(crate) strain_geometry_builds: u32,
+        pub(crate) strain_geometry_seconds: f64,
         /// The last accepted fine FAS correction `δ` of this solve, if any.
         pub(crate) fas_correction: Option<MechanicalAmounts>,
         pub(crate) fields: Option<GlobalCirculationFields>,
@@ -1107,7 +1109,7 @@ pub(crate) mod offline {
         SCHEDULE.with(Cell::get).unwrap_or_default()
     }
 
-    pub(super) fn record(update: impl FnOnce(&mut OfflineCapture)) {
+    pub(crate) fn record(update: impl FnOnce(&mut OfflineCapture)) {
         if SCHEDULE.with(Cell::get).is_some() {
             CAPTURE.with(|capture| update(&mut capture.borrow_mut()));
         }

@@ -899,7 +899,7 @@ mod timing_probe {
         PrimaryReliefGenerator, SurfaceFormationGenerator, SurfaceFormationInputs,
     };
     use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
-    use crate::generators::natural::ClimateWorkDomainBuilder;
+    use crate::generators::natural::{quality, ClimateWorkDomainBuilder};
     use crate::generators::spatial::ProfileSurfaceBuilder;
     use crate::world::natural::{
         ClimateModelProfile, ClimateSpec, GeologicSpec, GlobalCirculationSnapshot,
@@ -936,6 +936,27 @@ mod timing_probe {
     #[test]
     #[ignore = "release-only wall-clock stage breakdown"]
     fn stage_timing_probe() {
+        use super::super::global_circulation::offline::{self, OfflineSchedule};
+
+        // A P4-only solve cannot detect changed erosion forcing and endpoint feedback.
+        let mechanical_coarse_cycles = std::env::var("SEKAI_PROBE_COARSE_CYCLES")
+            .ok()
+            .map(|value| value.parse().expect("coarse cycles must be an integer"));
+        let (_, capture) = offline::run(
+            OfflineSchedule {
+                mechanical_coarse_cycles,
+                ..OfflineSchedule::default()
+            },
+            run_stage_timing_probe,
+        );
+        eprintln!("[probe] formation residuals {:?}", capture.residuals);
+        eprintln!(
+            "[probe] strain geometry builds={} seconds={:.3}",
+            capture.strain_geometry_builds, capture.strain_geometry_seconds,
+        );
+    }
+
+    fn run_stage_timing_probe() {
         let profile = match std::env::var("SEKAI_PROBE_PROFILE").as_deref() {
             Ok("standard") => NaturalQualityProfile::Standard,
             Ok("high") => NaturalQualityProfile::High,
@@ -1046,7 +1067,7 @@ mod timing_probe {
         )
         .unwrap();
         drop(start_correction);
-        let (surface_out, final_climate, _forcing) = closure.into_parts();
+        let (surface_out, final_climate, forcing) = closure.into_parts();
         report(profile, "P5 + endpoint P4", started);
         eprintln!(
             "[probe {profile:?}]    P5 substeps={} endpoint {}",
@@ -1060,6 +1081,21 @@ mod timing_probe {
                 std::env::var("SEKAI_PROBE_DIR").unwrap_or_else(|_| "target/probe-dumps".into()),
             );
             std::fs::create_dir_all(&dir).unwrap();
+            let quality = quality::evaluate_global_circulation_quality_for_formation_cancellable(
+                surface,
+                surface_out.terrain_fields(),
+                &forcing,
+                &final_climate,
+                &cancellation,
+            )
+            .unwrap();
+            let file =
+                std::fs::File::create(dir.join(format!("{tag}-{profile:?}-quality.json"))).unwrap();
+            serde_json::to_writer(
+                std::io::BufWriter::new(file),
+                &serde_json::json!({ "quality": quality, "surface": surface_out }),
+            )
+            .unwrap();
             for (name, climate) in [("start", &start_climate), ("end", &final_climate)] {
                 let file =
                     std::fs::File::create(dir.join(format!("{tag}-{profile:?}-{name}.json")))

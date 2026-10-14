@@ -79,7 +79,14 @@ impl LayeredTendencySystem<'_> {
             workspace.atmosphere_strain = None;
         }
         if workspace.atmosphere_strain.is_none() {
+            #[cfg(test)]
+            let started = std::time::Instant::now();
             let triangles = atmosphere_strain_triangles(self.grid, cancellation)?;
+            #[cfg(test)]
+            crate::generators::natural::formation::global_circulation::offline::record(|capture| {
+                capture.strain_geometry_builds += 1;
+                capture.strain_geometry_seconds += started.elapsed().as_secs_f64();
+            });
             workspace.atmosphere_strain = Some(AtmosphereStrainWorkspace {
                 grid_fingerprint: *self.grid.fingerprint(),
                 triangles,
