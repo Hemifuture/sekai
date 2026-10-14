@@ -31,7 +31,10 @@ fn draft_bundle_is_exact_identity_bound_quality_checked_and_repeatable() {
     assert_eq!(plan.authoritative_resolved_cell_count(), 20_252);
     assert_eq!(plan.tectonic_control_target_cell_count(), 4_842);
     assert_eq!(plan.tectonic_control_resolved_cell_count(), 4_842);
-    assert_eq!(plan.climate_face_resolution(), 24);
+    assert_eq!(
+        plan.climate_face_resolution(),
+        NaturalQualityProfile::Draft.climate_face_resolution()
+    );
     assert_eq!(first.authoritative_surface().cells().len(), 20_252);
     assert_eq!(first.tectonic_control_surface().cells().len(), 4_842);
     if audited_float_platform() {

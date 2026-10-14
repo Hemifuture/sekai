@@ -16,11 +16,11 @@ use sekai::world::{CellId, RootSeed};
 use support::causal_formation::causal_formation_fixture;
 
 /// Draft seed-42 probe fingerprint (spec A4 formula), measured on the bundle
-/// once G1e R4 (resample start thickness from same-plate linear interpolation)
-/// changed the evolved crust and therefore the terrain. It supersedes A13's
-/// `0eb17f04…`; L0 identity held (T1 v2 spec amendment A14).
+/// after the common climate work scale changed precipitation and downstream
+/// terrain. L0 identity still holds; the derivation formula is unchanged
+/// (T1 v2 spec amendment A15).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "f40c7903640653083a9ac537c6d6b29e68502b1763652d7deefb6d14408e6c82";
+    "7df42191396e6bf2e7afef766535aca2fc58035b9fa5dce2316ebc80954a6c3f";
 
 fn evaluator() -> HierarchicalEvaluator {
     let fixture = causal_formation_fixture();

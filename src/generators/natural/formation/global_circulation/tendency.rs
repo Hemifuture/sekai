@@ -6382,12 +6382,14 @@ mod tests {
                 .unwrap()
                 .advance_with_declared_tendency_and_phase_observer(
                     start,
-                    &forcing,
-                    &vec![1.0; grid.edges().len()],
+                    (&forcing, &vec![1.0; grid.edges().len()]),
                     step,
                     &declared,
-                    &cancellation,
-                    &mut |_| {},
+                    (
+                        &cancellation,
+                        &mut |_| {},
+                        &mut LayeredTendencyWorkspace::for_grid(&grid),
+                    ),
                 )
                 .unwrap()
                 .diagnostics()
@@ -7548,6 +7550,67 @@ mod tests {
             .any(|&rate| rate != 0.0));
         assert_eq!(frozen_endpoint, endpoint(&at_freezing));
         assert_eq!(fast(&frozen), fast(&at_freezing));
+    }
+
+    #[test]
+    fn reused_slow_step_workspaces_match_fresh_steps_and_observe_cancellation() {
+        // Two changing endpoints are the smallest fixture that detects stale
+        // scratch values crossing slow-step boundaries; no world generation needed.
+        let (grid, forcing, mut state) = axisymmetric_venting_fixture(0.5);
+        let cancellation = BuildCancellation::new();
+        let open = vec![1.0; grid.edges().len()];
+        let integrator = super::super::SplitExplicitRk3Integrator::new(&grid, 300.0).unwrap();
+        let system = integrator.tendency_system();
+        let mut full_workspace = LayeredTendencyWorkspace::for_grid(&grid);
+        let mut fast_workspace = LayeredTendencyWorkspace::for_grid(&grid);
+        let step = super::super::SplitExplicitRk3Integrator::slow_step_plan(
+            super::GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
+        )
+        .1;
+        for month in 0..2 {
+            state
+                .temperature_c_mut(ClimateLayerRole::LowerAtmosphere)
+                .unwrap()[0] += 1.0;
+            let fresh = integrator
+                .advance(&state, &forcing, &open, month, step, &cancellation)
+                .unwrap();
+            let declared = system
+                .evaluate_with_workspace_for_step(
+                    &state,
+                    &forcing,
+                    &open,
+                    month,
+                    step,
+                    &cancellation,
+                    &mut full_workspace,
+                )
+                .unwrap();
+            let reused = integrator
+                .advance_with_declared_tendency_and_phase_observer(
+                    &state,
+                    (&forcing, &open),
+                    step,
+                    &declared,
+                    (&cancellation, &mut |_| {}, &mut fast_workspace),
+                )
+                .unwrap();
+            assert_eq!(reused, fresh);
+            state = reused.into_state();
+        }
+        let declared = system
+            .evaluate_for_step(&state, &forcing, &open, 0, step, &cancellation)
+            .unwrap();
+        cancellation.cancel();
+        assert!(matches!(
+            integrator.advance_with_declared_tendency_and_phase_observer(
+                &state,
+                (&forcing, &open),
+                step,
+                &declared,
+                (&cancellation, &mut |_| {}, &mut fast_workspace),
+            ),
+            Err(super::super::ClimateIntegratorError::Cancelled)
+        ));
     }
 
     fn axisymmetric_venting_fixture(

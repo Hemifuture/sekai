@@ -310,6 +310,8 @@ impl GlobalCirculationGenerator {
         let mut start_correction = None;
         for cycle in 0..maximum_formation_cycles {
             let mut cycle_budgets = BudgetAccumulator::new(&grid, &layout, &state, cancellation)?;
+            let mut full_workspace = LayeredTendencyWorkspace::for_grid(&grid);
+            let mut fast_workspace = LayeredTendencyWorkspace::for_grid(&grid);
             for month in 0..CLIMATE_MONTH_COUNT {
                 for slow_step in 0..slow_step_count {
                     check_cancelled(cancellation)?;
@@ -318,23 +320,22 @@ impl GlobalCirculationGenerator {
                         .map_err(map_state_error)?;
                     observer(GlobalCirculationPhase::TransportStarted);
                     check_cancelled(cancellation)?;
-                    let declared = tendency_system.evaluate_for_step(
+                    let declared = tendency_system.evaluate_with_workspace_for_step(
                         &before,
                         planet,
                         forcing.ocean_edge_permeability(),
                         month,
                         slow_step_seconds,
                         cancellation,
+                        &mut full_workspace,
                     )?;
                     observer(GlobalCirculationPhase::TransportCompleted);
                     let result = integrator.advance_with_declared_tendency_and_phase_observer(
                         &before,
-                        planet,
-                        forcing.ocean_edge_permeability(),
+                        (planet, forcing.ocean_edge_permeability()),
                         slow_step_seconds,
                         &declared,
-                        cancellation,
-                        &mut observer,
+                        (cancellation, &mut observer, &mut fast_workspace),
                     )?;
                     let diagnostics = result.diagnostics();
                     cycle_budgets.record(
@@ -367,6 +368,10 @@ impl GlobalCirculationGenerator {
                 // numerical refinement must not extend the physical interval.
                 continuation_steps += 1;
             }
+            // The optional FAS solve owns its own grid workspaces. Release
+            // these before entering it to preserve the peak owner inventory.
+            drop(full_workspace);
+            drop(fast_workspace);
             let residual = relative_state_residual(&grid, &previous_cycle, &state, cancellation)?;
             if cycle == 0 {
                 initial_residual = residual;
@@ -1179,6 +1184,8 @@ fn advance_mechanical_cycle(
 ) -> Result<(), GlobalCirculationGenerationError> {
     let (slow_steps, dt) =
         SplitExplicitRk3Integrator::slow_step_plan(GLOBAL_CIRCULATION_MACRO_STEP_SECONDS);
+    let mut full_workspace = LayeredTendencyWorkspace::for_grid(context.grid);
+    let mut fast_workspace = LayeredTendencyWorkspace::for_grid(context.grid);
     for month in 0..CLIMATE_MONTH_COUNT {
         let previous = (month + CLIMATE_MONTH_COUNT - 1) % CLIMATE_MONTH_COUNT;
         for _ in 0..slow_steps {
@@ -1232,14 +1239,28 @@ fn advance_mechanical_cycle(
                 }
                 *target = background[previous];
             }
-            let result = context.integrator.advance(
-                state,
-                context.forcing,
-                context.ocean_edge_permeability,
-                month,
-                dt,
-                cancellation,
-            )?;
+            let declared = context
+                .integrator
+                .tendency_system()
+                .evaluate_with_workspace_for_step(
+                    state,
+                    context.forcing,
+                    context.ocean_edge_permeability,
+                    month,
+                    dt,
+                    cancellation,
+                    &mut full_workspace,
+                )
+                .map_err(ClimateIntegratorError::from)?;
+            let result = context
+                .integrator
+                .advance_with_declared_tendency_and_phase_observer(
+                    state,
+                    (context.forcing, context.ocean_edge_permeability),
+                    dt,
+                    &declared,
+                    (cancellation, &mut |_| {}, &mut fast_workspace),
+                )?;
             *state = result.into_state();
             state.enforce_full_land_ocean_velocity(context.forcing, cancellation)?;
             state
@@ -3791,12 +3812,14 @@ mod tests {
         let result = integrator
             .advance_with_declared_tendency_and_phase_observer(
                 &before,
-                &forcing,
-                &permeability,
+                (&forcing, &permeability),
                 step,
                 &declared,
-                &cancellation,
-                &mut |_| {},
+                (
+                    &cancellation,
+                    &mut |_| {},
+                    &mut LayeredTendencyWorkspace::for_grid(&grid),
+                ),
             )
             .unwrap();
         let observed =
