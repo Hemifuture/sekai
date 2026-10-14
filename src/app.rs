@@ -83,12 +83,12 @@ fn default_formation_quality_profile() -> crate::world::natural::NaturalQualityP
 }
 
 /// The authored combo label per quality tier (single source for the selector).
-fn quality_tier_label(profile: crate::world::natural::NaturalQualityProfile) -> &'static str {
-    match profile {
-        crate::world::natural::NaturalQualityProfile::Draft => "草稿 · 约 2 万格 · 1–2 分钟",
-        crate::world::natural::NaturalQualityProfile::Standard => "标准 · 约 8 万格 · 3–6 分钟",
-        crate::world::natural::NaturalQualityProfile::High => "高 · 约 20 万格 · 实验性离线级",
-    }
+fn quality_tier_label(profile: crate::world::natural::NaturalQualityProfile) -> String {
+    format!(
+        "{} · 约 {} 万格",
+        quality_tier_short_label(profile),
+        profile.authoritative_target_cell_count() / 10_000,
+    )
 }
 
 /// The short tier name shown on the published-world status line.
@@ -1156,15 +1156,16 @@ impl TemplateApp {
             radius_m,
         );
         if stale {
-            let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
-                profile,
-                self.spherical_space_spec.radius,
-                &crate::engine::BuildCancellation::new(),
-            )?;
+            let (_, surface) =
+                crate::generators::spatial::ProfileSurfaceBuilder::build_authoritative(
+                    profile,
+                    self.spherical_space_spec.radius,
+                    &crate::engine::BuildCancellation::new(),
+                )?;
             self.formation_surface = Some(FormationSurfaceCacheEntry {
                 profile,
                 radius_m,
-                surface: bundle.authoritative_surface().clone(),
+                surface,
             });
         }
         Ok(&self
@@ -1224,7 +1225,7 @@ impl TemplateApp {
                             radius_m,
                         );
                         if stale {
-                            let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
+                            let (_, surface) = crate::generators::spatial::ProfileSurfaceBuilder::build_authoritative(
                                 quality_profile,
                                 space.radius,
                                 &worker_cancellation,
@@ -1233,7 +1234,7 @@ impl TemplateApp {
                             formation_surface = Some(FormationSurfaceCacheEntry {
                                 profile: quality_profile,
                                 radius_m,
-                                surface: bundle.authoritative_surface().clone(),
+                                surface,
                             });
                         }
                         crate::app::SphericalWorldBuildTarget::Formation {
@@ -2017,7 +2018,11 @@ impl eframe::App for TemplateApp {
                                         quality_tier_label(profile),
                                     );
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text(
+                                "草稿与标准共用气候工作尺度；标准档提供更细的地形与地图。",
+                            );
                     }
                     ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效");
                     if ui.button("按当前参数重建").clicked() {
