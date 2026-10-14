@@ -75,8 +75,10 @@
 - [x] 删除 UI 丢弃的控制网格/映射重建；P1 身份夹具 RED→GREEN，Draft 真实应用验证通过。
 - [x] 跑 fmt、clippy、WASM lib check；共享求解器变更按项目要求扩到 Release 回归，
   不运行无理由的全量 debug。
-- [ ] 隔离应用 Draft 生成与字段已验证，已提供用户入口；Standard / 参数修改与取消因
-  Unreal 预览遮挡等待前台安排，不能标记为通过。
+- [x] 隔离应用 Draft 生成与字段已验证，Standard 原生生成和 GPU 发布通过；入口已提供。
+- [x] 用户要求自行验证后，重跑键盘取消、同帧取消优先、旧图/缓存恢复的最小应用层契约，3 passed。
+- [ ] Standard 字段切换、原生窗口参数修改/取消点击复核：computer-use 连接在重置后
+  仍报 native pipe unavailable，保留此项，不以应用层测试替代窗口操作证据。
 - [x] 按 executing-plans 要求做一次独立最终审查：gpt-6-astra 审查无 Critical / Important / Minor。
 - [x] 提供代码与首轮测量，明确尚待 UI 验收；简化物理模型/拟牛顿路线未实施，剩余瓶颈见规格 §10.5。
 

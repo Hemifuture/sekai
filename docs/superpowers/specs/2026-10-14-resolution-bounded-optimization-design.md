@@ -1,7 +1,7 @@
 # 目标尺度下的物理近似与全链优化设计
 
 日期：2026-10-14。
-状态：**首轮代码与离线验证完成；Draft UI 自检通过，Standard / 取消自检及用户最终验收待完成。**
+状态：**首轮代码、离线验证、两档原生发布与取消应用层契约通过；窗口操作复核受工具连接故障限制，见 §10.8。**
 规则事实源：`../../../AGENTS.md` 的“产品边界：最终态与科学近似”修订。
 
 ## 1. 用户意图与成功标准
@@ -346,3 +346,23 @@ UI 已通过；用户最终验收同样待完成。
 标准，点击“按当前参数重建”；生成后检查高程、年均气温、年降水及河网。再修改档位
 重建并取消，预期保留上一张有效地图；重建完成后才整体替换为新地图。标准档应显示
 更细的权威地形，但不承诺更细的气候物理尺度。
+
+### 10.8 代理补充自验修订（2026-10-14）
+
+用户明确要求代理自行验证，继续完成可独立执行的证据收集。当前 computer-use 原生
+连接报 `native pipe is unavailable` / `os error 2`，重置 JavaScript 会话并重新
+初始化后仍失败；没有继续发送输入，也没有以后台测试冒充窗口点击。
+
+- 使用独立 `ui-storage-self-check-standard/app.ron` 设置 Standard / seed 42，运行
+  §10.7 同一个原生验证包，保留原 acceptance 配置。实际 Vulkan / RTX 4080 SUPER
+  发布日志为 `profile=Standard seed=42 elapsed_ms=33431.095 success=true`。
+  标准档完整生成并安装至 GPU 成功，窗口保留；这次单次观察不加入成对性能基准。
+- 重新运行现有最小 Release 应用层契约，3 passed：
+  `keyboard_activated_cancel_still_cancels_the_pending_build`、
+  `same_frame_cancel_precedes_successful_world_and_cache_commit`、
+  `pending_world_build_hides_the_old_map_until_rollback_or_publication`。
+  它们使用生产 egui 帧和取消处理，分别证明键盘激活、完成/取消同帧的优先级及旧图
+  恢复；同帧测试同时断言旧发布身份、缓存身份不变。这些局部风险无需再跑全链语料。
+- 证据位于仓外 `a9/ui-self-check-standard.log` 与 `a9/ui-self-check-*.log`。
+  本修订替代 §10.7 的“标准档生成尚未验证”状态；标准档字段切换和原生窗口中的
+  实际取消点击仍未复核。此前 Draft 字段检查与完整回归证据继续有效。
