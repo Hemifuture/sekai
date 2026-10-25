@@ -42,10 +42,11 @@ impl SurfaceWaterWorkingGeometry {
 
     pub(in crate::generators::natural) fn to_wire(
         &self,
-        surface: &SphericalSurfaceSnapshot,
+        stencil: &SurfaceWaterStencil<'_>,
         projected_elevation_m: &[f32],
         cancellation: &BuildCancellation,
     ) -> Result<SurfaceWaterGeometry, WaterVolumeSolveError> {
+        let surface = stencil.surface;
         let authoritative = SurfaceRef::for_spherical(surface);
         if self.surface_ref != authoritative {
             return Err(WaterVolumeSolveError::WorkingSurfaceMismatch {
@@ -53,8 +54,8 @@ impl SurfaceWaterWorkingGeometry {
                 authoritative,
             });
         }
-        let wire = solve_physical_sea_level_cancellable(
-            surface,
+        let wire = solve_wire_sea_level(
+            stencil,
             projected_elevation_m,
             self.total_water_volume_m3(),
             cancellation,
@@ -129,7 +130,7 @@ impl SurfaceWaterWorkingSolution {
 }
 
 pub(in crate::generators::natural) fn build_surface_water_working_geometry(
-    surface: &SphericalSurfaceSnapshot,
+    stencil: &SurfaceWaterStencil<'_>,
     elevation_m: &[f64],
     sea_level_m: f64,
     cancellation: &BuildCancellation,
@@ -137,19 +138,20 @@ pub(in crate::generators::natural) fn build_surface_water_working_geometry(
     if !sea_level_m.is_finite() {
         return Err(WaterVolumeSolveError::InvalidSeaLevel { found: sea_level_m });
     }
-    SurfaceWaterReconstruction::new(surface, elevation_m, cancellation)?
+    SurfaceWaterReconstruction::new(stencil, elevation_m, cancellation)?
         .build_working(sea_level_m, cancellation)
 }
 
 pub(in crate::generators::natural) fn solve_physical_sea_level_exact(
-    surface: &SphericalSurfaceSnapshot,
+    stencil: &SurfaceWaterStencil<'_>,
     elevation_m: &[f64],
     water_inventory_m3: f64,
     cancellation: &BuildCancellation,
 ) -> Result<SurfaceWaterWorkingSolution, WaterVolumeSolveError> {
     check_cancelled(cancellation)?;
     validate_inventory(water_inventory_m3)?;
-    let reconstruction = SurfaceWaterReconstruction::new(surface, elevation_m, cancellation)?;
+    let surface = stencil.surface;
+    let reconstruction = SurfaceWaterReconstruction::new(stencil, elevation_m, cancellation)?;
     let minimum = elevation_m
         .iter()
         .copied()
@@ -190,7 +192,8 @@ pub fn build_surface_water_geometry(
         .copied()
         .map(f64::from)
         .collect::<Vec<_>>();
-    SurfaceWaterReconstruction::new(surface, &exact_elevation, cancellation)?.build_wire(
+    let stencil = SurfaceWaterStencil::new(surface, cancellation)?;
+    SurfaceWaterReconstruction::new(&stencil, &exact_elevation, cancellation)?.build_wire(
         elevation_m,
         sea_level_m,
         cancellation,
@@ -232,12 +235,26 @@ pub fn solve_physical_sea_level_cancellable(
 ) -> Result<WaterVolumeSolution, WaterVolumeSolveError> {
     check_cancelled(cancellation)?;
     validate_inventory(water_inventory_m3)?;
+    let stencil = SurfaceWaterStencil::new(surface, cancellation)?;
+    solve_wire_sea_level(&stencil, elevation_m, water_inventory_m3, cancellation)
+}
+
+/// [`solve_physical_sea_level_cancellable`] on a stencil shared with other solves.
+fn solve_wire_sea_level(
+    stencil: &SurfaceWaterStencil<'_>,
+    elevation_m: &[f32],
+    water_inventory_m3: f64,
+    cancellation: &BuildCancellation,
+) -> Result<WaterVolumeSolution, WaterVolumeSolveError> {
+    check_cancelled(cancellation)?;
+    validate_inventory(water_inventory_m3)?;
+    let surface = stencil.surface;
     let exact_elevation = elevation_m
         .iter()
         .copied()
         .map(f64::from)
         .collect::<Vec<_>>();
-    let reconstruction = SurfaceWaterReconstruction::new(surface, &exact_elevation, cancellation)?;
+    let reconstruction = SurfaceWaterReconstruction::new(stencil, &exact_elevation, cancellation)?;
     let minimum = elevation_m
         .iter()
         .copied()
@@ -277,19 +294,63 @@ pub fn solve_physical_sea_level_cancellable(
     WaterVolumeSolution::from_geometry(geometry, water_inventory_m3)
 }
 
+/// Elevation-independent geometry of the piecewise-linear water reconstruction on one surface.
+///
+/// The fan areas and Shepard vertex weights depend only on the surface, so every water solve
+/// of a generation stage shares one stencil and only the elevations change between solves.
+#[derive(Debug)]
+pub(in crate::generators::natural) struct SurfaceWaterStencil<'surface> {
+    surface: &'surface SphericalSurfaceSnapshot,
+    fan_area_m2: Vec<f64>,
+    /// Shepard weight (inverse squared central angle) of each fan's first boundary vertex as
+    /// seen from the cell centroid, or `None` where that vertex is the centroid itself.
+    fan_vertex_weight: Vec<Option<f64>>,
+    /// Compensated total of the Shepard weights each vertex receives, summed in surface order.
+    vertex_weight_total: Vec<f64>,
+}
+
+impl<'surface> SurfaceWaterStencil<'surface> {
+    /// Measures the fan areas and Shepard weights of `surface` once.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WaterVolumeSolveError::Cancelled`] on cancellation and
+    /// [`WaterVolumeSolveError::InvalidFanTriangle`] for a degenerate cell fan.
+    pub(in crate::generators::natural) fn new(
+        surface: &'surface SphericalSurfaceSnapshot,
+        cancellation: &BuildCancellation,
+    ) -> Result<Self, WaterVolumeSolveError> {
+        check_cancelled(cancellation)?;
+        let (fan_vertex_weight, vertex_weight_total) = shepard_weights(surface, cancellation)?;
+        let fan_area_m2 = normalized_fan_areas(surface, cancellation)?;
+        Ok(Self {
+            surface,
+            fan_area_m2,
+            fan_vertex_weight,
+            vertex_weight_total,
+        })
+    }
+}
+
 struct SurfaceWaterReconstruction<'surface> {
     surface: &'surface SphericalSurfaceSnapshot,
     elevation_m: &'surface [f64],
     vertex_elevation_m: Vec<f64>,
-    fan_area_m2: Vec<f64>,
+    fan_area_m2: &'surface [f64],
+    /// Reconstructed elevations of each fan's two boundary vertices, in fan order, so the
+    /// level sweeps stream them instead of gathering through the vertex ids.
+    fan_vertex_elevation_m: Vec<[f64; 2]>,
+    /// Lowest of each cell's centre and boundary-node elevations.
+    cell_lowest_node_m: Vec<f64>,
 }
 
 impl<'surface> SurfaceWaterReconstruction<'surface> {
     fn new(
-        surface: &'surface SphericalSurfaceSnapshot,
+        stencil: &'surface SurfaceWaterStencil<'surface>,
         elevation_m: &'surface [f64],
         cancellation: &BuildCancellation,
     ) -> Result<Self, WaterVolumeSolveError> {
+        let surface = stencil.surface;
         check_cancelled(cancellation)?;
         if elevation_m.is_empty() {
             return Err(WaterVolumeSolveError::EmptySurface);
@@ -307,14 +368,30 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
             }
         }
 
-        let vertex_elevation_m = reconstruct_vertex_elevations(surface, elevation_m, cancellation)?;
-        let fan_area_m2 = normalized_fan_areas(surface, cancellation)?;
+        let vertex_elevation_m = reconstruct_vertex_elevations(stencil, elevation_m, cancellation)?;
+        let fan_area_m2 = stencil.fan_area_m2.as_slice();
+        let mut fan_vertex_elevation_m = Vec::with_capacity(fan_area_m2.len());
+        let mut cell_lowest_node_m = Vec::with_capacity(elevation_m.len());
+        for (cell, &center_m) in surface.cells().iter().zip(elevation_m) {
+            let mut lowest_m = center_m;
+            for side in 0..cell.boundary_vertices.len() {
+                let first = vertex_elevation_m[cell.boundary_vertices[side].raw() as usize];
+                let second = vertex_elevation_m[cell.boundary_vertices
+                    [(side + 1) % cell.boundary_vertices.len()]
+                .raw() as usize];
+                fan_vertex_elevation_m.push([first, second]);
+                lowest_m = lowest_m.min(first);
+            }
+            cell_lowest_node_m.push(lowest_m);
+        }
         check_cancelled(cancellation)?;
         Ok(Self {
             surface,
             elevation_m,
             vertex_elevation_m,
             fan_area_m2,
+            fan_vertex_elevation_m,
+            cell_lowest_node_m,
         })
     }
 
@@ -351,21 +428,29 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
         let mut fan = 0_usize;
         for (index, cell) in self.surface.cells().iter().enumerate() {
             poll_cancelled(index, cancellation)?;
+            let fan_end = fan + cell.boundary_vertices.len();
+            // At or below every node of the cell no fan is wet: each would integrate to
+            // (0, 0) and add `+0.0` to both sums, which leaves a compensated sum of
+            // non-negative terms bit for bit unchanged, so the whole cell is skipped.
+            if sea_level_m <= self.cell_lowest_node_m[index] {
+                fan = fan_end;
+                continue;
+            }
             let center_depth_m = sea_level_m - self.elevation_m[index];
-            for side in 0..cell.boundary_vertices.len() {
-                let first = cell.boundary_vertices[side].raw() as usize;
-                let second = cell.boundary_vertices[(side + 1) % cell.boundary_vertices.len()].raw()
-                    as usize;
+            for (&area_m2, &[first_m, second_m]) in self.fan_area_m2[fan..fan_end]
+                .iter()
+                .zip(&self.fan_vertex_elevation_m[fan..fan_end])
+            {
                 let depths = [
                     center_depth_m,
-                    sea_level_m - self.vertex_elevation_m[first],
-                    sea_level_m - self.vertex_elevation_m[second],
+                    sea_level_m - first_m,
+                    sea_level_m - second_m,
                 ];
                 let (wet_fraction, integrated_depth_m) = integrate_positive_linear_triangle(depths);
-                total.add(self.fan_area_m2[fan] * integrated_depth_m);
-                wet_area.add(self.fan_area_m2[fan] * wet_fraction);
-                fan += 1;
+                total.add(area_m2 * integrated_depth_m);
+                wet_area.add(area_m2 * wet_fraction);
             }
+            fan = fan_end;
         }
         check_cancelled(cancellation)?;
         Ok((total.total(), wet_area.total()))
@@ -472,15 +557,19 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
     }
 }
 
-fn reconstruct_vertex_elevations(
+/// Measures each fan's Shepard weight and every vertex's total weight, in surface order.
+fn shepard_weights(
     surface: &SphericalSurfaceSnapshot,
-    elevation_m: &[f64],
     cancellation: &BuildCancellation,
-) -> Result<Vec<f64>, WaterVolumeSolveError> {
-    let mut weighted_delta = vec![CompensatedSum::default(); surface.vertices().len()];
+) -> Result<(Vec<Option<f64>>, Vec<f64>), WaterVolumeSolveError> {
+    let mut fan_vertex_weight = Vec::with_capacity(
+        surface
+            .cells()
+            .iter()
+            .map(|cell| cell.boundary_vertices.len())
+            .sum(),
+    );
     let mut weights = vec![CompensatedSum::default(); surface.vertices().len()];
-    let mut anchor_elevation_m = vec![None; surface.vertices().len()];
-    let mut exact = vec![None; surface.vertices().len()];
     for (index, cell) in surface.cells().iter().enumerate() {
         poll_cancelled(index, cancellation)?;
         for vertex_id in &cell.boundary_vertices {
@@ -488,17 +577,42 @@ fn reconstruct_vertex_elevations(
                 .vertex(*vertex_id)
                 .expect("validated surface contains boundary vertex");
             let distance = central_angle(cell.centroid, vertex.position);
-            let vertex_index = vertex_id.raw() as usize;
             if distance == 0.0 {
-                exact[vertex_index] = Some(elevation_m[index]);
+                fan_vertex_weight.push(None);
             } else {
                 // Every sample shares one sphere radius, so inverse squared
                 // central angle produces the exact Shepard distance ratios.
                 let weight = 1.0 / (distance * distance);
-                let elevation = elevation_m[index];
-                let anchor = *anchor_elevation_m[vertex_index].get_or_insert(elevation);
-                weighted_delta[vertex_index].add(weight * (elevation - anchor));
-                weights[vertex_index].add(weight);
+                weights[vertex_id.raw() as usize].add(weight);
+                fan_vertex_weight.push(Some(weight));
+            }
+        }
+    }
+    let vertex_weight_total = weights.iter().map(CompensatedSum::total).collect();
+    Ok((fan_vertex_weight, vertex_weight_total))
+}
+
+fn reconstruct_vertex_elevations(
+    stencil: &SurfaceWaterStencil<'_>,
+    elevation_m: &[f64],
+    cancellation: &BuildCancellation,
+) -> Result<Vec<f64>, WaterVolumeSolveError> {
+    let surface = stencil.surface;
+    let mut weighted_delta = vec![CompensatedSum::default(); surface.vertices().len()];
+    let mut anchor_elevation_m = vec![None; surface.vertices().len()];
+    let mut exact = vec![None; surface.vertices().len()];
+    let mut fan_weights = stencil.fan_vertex_weight.iter();
+    for (index, cell) in surface.cells().iter().enumerate() {
+        poll_cancelled(index, cancellation)?;
+        for (vertex_id, weight) in cell.boundary_vertices.iter().zip(fan_weights.by_ref()) {
+            let vertex_index = vertex_id.raw() as usize;
+            match *weight {
+                None => exact[vertex_index] = Some(elevation_m[index]),
+                Some(weight) => {
+                    let elevation = elevation_m[index];
+                    let anchor = *anchor_elevation_m[vertex_index].get_or_insert(elevation);
+                    weighted_delta[vertex_index].add(weight * (elevation - anchor));
+                }
             }
         }
     }
@@ -509,7 +623,7 @@ fn reconstruct_vertex_elevations(
             value
         } else {
             anchor_elevation_m[index].unwrap_or(f64::NAN)
-                + weighted_delta[index].total() / weights[index].total()
+                + weighted_delta[index].total() / stencil.vertex_weight_total[index]
         };
         if !value.is_finite() {
             return Err(WaterVolumeSolveError::NonFiniteSolution { found: value });
@@ -803,6 +917,7 @@ impl CompensatedSum {
 mod tests {
     use super::{
         integrate_positive_linear_triangle, solve_physical_sea_level_exact, wet_line_fraction,
+        SurfaceWaterStencil,
     };
     use crate::engine::BuildCancellation;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
@@ -848,13 +963,14 @@ mod tests {
             .collect::<Vec<_>>();
         let inventory = surface.total_cell_area().get() * 12.5;
         let cancellation = BuildCancellation::new();
+        let stencil = SurfaceWaterStencil::new(&surface, &cancellation).unwrap();
 
         let exact =
-            solve_physical_sea_level_exact(&surface, &exact_elevation, inventory, &cancellation)
+            solve_physical_sea_level_exact(&stencil, &exact_elevation, inventory, &cancellation)
                 .unwrap();
         let wire = exact
             .geometry
-            .to_wire(&surface, &projected_elevation, &cancellation)
+            .to_wire(&stencil, &projected_elevation, &cancellation)
             .unwrap();
 
         wire.validate_against(&surface, &projected_elevation)
@@ -875,9 +991,10 @@ mod tests {
         elevation[0] = 10.0 + f64::from(f32::EPSILON) * 0.25;
         elevation[1] = 10.0 - f64::from(f32::EPSILON) * 0.25;
         let minimum = elevation.iter().copied().min_by(f64::total_cmp).unwrap();
+        let stencil = SurfaceWaterStencil::new(&surface, &BuildCancellation::new()).unwrap();
 
         let solution =
-            solve_physical_sea_level_exact(&surface, &elevation, 0.0, &BuildCancellation::new())
+            solve_physical_sea_level_exact(&stencil, &elevation, 0.0, &BuildCancellation::new())
                 .unwrap();
 
         assert_eq!(solution.geometry.sea_level_m.to_bits(), minimum.to_bits());

@@ -3,7 +3,7 @@ use thiserror::Error;
 
 use super::super::random::{LabeledSubstreams, RELIEF_HOTSPOT_MORPHOLOGY_LABEL};
 use super::super::surface_water_geometry::{
-    build_surface_water_working_geometry, solve_physical_sea_level_exact,
+    build_surface_water_working_geometry, solve_physical_sea_level_exact, SurfaceWaterStencil,
     SurfaceWaterWorkingGeometry,
 };
 use super::super::topology::{multi_source_distance, NaturalTopologyIndex};
@@ -64,6 +64,7 @@ impl PrimaryReliefWorkingState {
     fn to_snapshot(
         &self,
         surface: &SphericalSurfaceSnapshot,
+        surface_water: &SurfaceWaterStencil<'_>,
         substrate: &GeologicSubstrateSnapshot,
         relief_spec: &ReliefSpec,
         cancellation: &BuildCancellation,
@@ -76,7 +77,7 @@ impl PrimaryReliefWorkingState {
         let elevation_m = project_component_to_wire(&self.elevation_m);
         let surface_water_geometry =
             self.surface_water_geometry
-                .to_wire(surface, &elevation_m, cancellation)?;
+                .to_wire(surface_water, &elevation_m, cancellation)?;
         let physical_land_fraction = surface_water_geometry
             .global_land_area_fraction(surface)
             .map_err(WaterVolumeSolveError::from)?;
@@ -272,11 +273,16 @@ impl PrimaryReliefGenerator {
             .map(|cell| cell.area.get())
             .collect::<Vec<_>>();
         let earth_inventory = scaled_earth_ocean_inventory_m3(surface.total_cell_area().get())?;
+        let surface_water = SurfaceWaterStencil::new(surface, cancellation)?;
         let (water_inventory_m3, surface_water_geometry) = match relief_spec.sea_level_policy {
             SeaLevelPolicy::WaterInventory => {
                 let inventory = earth_inventory * f64::from(relief_spec.water_inventory_ratio);
-                let water =
-                    solve_physical_sea_level_exact(surface, &elevation_m, inventory, cancellation)?;
+                let water = solve_physical_sea_level_exact(
+                    &surface_water,
+                    &elevation_m,
+                    inventory,
+                    cancellation,
+                )?;
                 (inventory, water.into_geometry())
             }
             SeaLevelPolicy::TargetLandFraction => {
@@ -289,7 +295,7 @@ impl PrimaryReliefGenerator {
                     PrimaryReliefGenerationError::InvalidLandFractionSelection(error.to_string())
                 })?;
                 let geometry = build_surface_water_working_geometry(
-                    surface,
+                    &surface_water,
                     &elevation_m,
                     selection.sea_level_m,
                     cancellation,
@@ -307,7 +313,13 @@ impl PrimaryReliefGenerator {
             surface_water_geometry,
             requested_land_fraction: relief_spec.target_land_fraction,
         };
-        let snapshot = working.to_snapshot(surface, substrate, relief_spec, cancellation)?;
+        let snapshot = working.to_snapshot(
+            surface,
+            &surface_water,
+            substrate,
+            relief_spec,
+            cancellation,
+        )?;
         Ok((working, snapshot))
     }
 }
@@ -592,7 +604,7 @@ mod tests {
     use std::sync::OnceLock;
     use std::time::Instant;
 
-    use super::{LabeledSubstreams, PrimaryReliefGenerator};
+    use super::{LabeledSubstreams, PrimaryReliefGenerator, SurfaceWaterStencil};
     use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
     use crate::generators::natural::{
         solve_physical_sea_level, EvolvedTectonicGenerator, GeologicSubstrateGenerator,
@@ -760,7 +772,11 @@ mod tests {
         let projected = working
             .surface_water_geometry
             .to_wire(
-                fixture.bundle.authoritative_surface(),
+                &SurfaceWaterStencil::new(
+                    fixture.bundle.authoritative_surface(),
+                    &BuildCancellation::new(),
+                )
+                .unwrap(),
                 snapshot.elevation_m(),
                 &BuildCancellation::new(),
             )

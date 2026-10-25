@@ -16,7 +16,9 @@ use crate::generators::natural::formation::global_circulation::{
     GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalClimateForcing,
     GlobalClimateForcingBuilder, GlobalClimateForcingError, StartAtmosphereFasCorrection,
 };
-use crate::generators::natural::surface_water_geometry::solve_physical_sea_level_exact;
+use crate::generators::natural::surface_water_geometry::{
+    solve_physical_sea_level_exact, SurfaceWaterStencil,
+};
 use crate::world::natural::water_volume_relative_error;
 use crate::world::natural::{
     expected_surface_formation_dense_state_bytes, formation_annual_precipitation_mm,
@@ -108,8 +110,10 @@ impl SurfaceFormationGenerator {
         cancellation: &BuildCancellation,
     ) -> Result<SurfaceFormationClosureOutput, SurfaceFormationGenerationError> {
         let surface = inputs.surface;
+        // Every P5 water solve and wire projection shares this one surface stencil.
+        let surface_water = SurfaceWaterStencil::new(surface, cancellation)?;
         let start_process_inputs =
-            SurfaceProcessInputs::from_generation(inputs, inputs.initial_climate);
+            SurfaceProcessInputs::from_generation(inputs, inputs.initial_climate, &surface_water);
         let advance_report = advance_surface_processes(
             &mut state,
             start_process_inputs,
@@ -118,7 +122,7 @@ impl SurfaceFormationGenerator {
         )?;
         let (advance_summary, final_sediment_fields) = advance_report.into_parts();
         let final_terrain = state.project_final_terrain(
-            surface,
+            &surface_water,
             final_sediment_fields,
             inputs.relief.water_inventory_m3(),
             cancellation,
@@ -141,7 +145,7 @@ impl SurfaceFormationGenerator {
         )?;
         let terminal_diagnostics = recompute_surface_diagnostics(
             &state,
-            SurfaceProcessInputs::from_generation(inputs, &endpoint_climate),
+            SurfaceProcessInputs::from_generation(inputs, &endpoint_climate, &surface_water),
             cancellation,
         )?;
         let evolution_report = build_evolution_report(
@@ -177,6 +181,8 @@ impl SurfaceFormationGenerator {
 /// Borrowed physical inputs held fixed during one P5 advance window.
 pub(in crate::generators::natural) struct SurfaceProcessInputs<'a> {
     pub surface: &'a SphericalSurfaceSnapshot,
+    /// Water-reconstruction stencil of `surface`, shared by every solve of the window.
+    pub surface_water: &'a SurfaceWaterStencil<'a>,
     pub tectonics: &'a EvolvedTectonicSnapshot,
     pub substrate: &'a GeologicSubstrateSnapshot,
     pub climate: &'a GlobalCirculationSnapshot,
@@ -188,9 +194,11 @@ impl<'a> SurfaceProcessInputs<'a> {
     fn from_generation(
         inputs: SurfaceFormationInputs<'a>,
         climate: &'a GlobalCirculationSnapshot,
+        surface_water: &'a SurfaceWaterStencil<'a>,
     ) -> Self {
         Self {
             surface: inputs.surface,
+            surface_water,
             tectonics: inputs.tectonics,
             substrate: inputs.substrate,
             climate,
@@ -975,7 +983,7 @@ fn advance_surface_window(
         )?;
 
     let coast_water = solve_physical_sea_level_exact(
-        surface,
+        inputs.surface_water,
         state.current_elevation_exact_m(),
         inputs.water_inventory_m3,
         cancellation,
@@ -1070,7 +1078,7 @@ fn advance_surface_window(
     )?;
 
     let water = solve_physical_sea_level_exact(
-        surface,
+        inputs.surface_water,
         state.current_elevation_exact_m(),
         inputs.water_inventory_m3,
         cancellation,

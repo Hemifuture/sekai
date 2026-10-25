@@ -207,7 +207,9 @@ mod tests {
     use crate::generators::natural::foundation::tectonics::{
         generate_evolved_spherical_with_test_resample_observer, EvolvedPublicationError,
     };
-    use crate::generators::natural::surface_water_geometry::solve_physical_sea_level_exact;
+    use crate::generators::natural::surface_water_geometry::{
+        solve_physical_sea_level_exact, SurfaceWaterStencil,
+    };
     use crate::generators::natural::{ClimateWorkDomainArtifact, GlobalClimateForcingBuilder};
     use crate::generators::spatial::ProfileSurfaceBuilder;
     use crate::world::natural::{
@@ -432,6 +434,8 @@ mod tests {
         cancellation: &BuildCancellation,
     ) -> Result<OfflineReferenceOutput, CausalFormationGenerationError> {
         let surface = inputs.profile_bundle.authoritative_surface();
+        let surface_water = SurfaceWaterStencil::new(surface, cancellation)
+            .map_err(SurfaceFormationGenerationError::from)?;
         let total_steps = inputs.formation.timeline().step_count();
         let mut state: Option<FormationState> = None;
         let mut previous_steps = 0_u16;
@@ -494,7 +498,7 @@ mod tests {
                         Some(primary_working.elevation_exact_m().to_vec());
                     let current = state.as_mut().expect("the reference state was initialized");
                     let water = solve_physical_sea_level_exact(
-                        surface,
+                        &surface_water,
                         current.current_elevation_exact_m(),
                         primary_relief.water_inventory_m3(),
                         cancellation,
@@ -505,7 +509,7 @@ mod tests {
 
                     let start_forcing = if let Some(sediment) = retained_sediment.take() {
                         let start_terrain = current.project_final_terrain(
-                            surface,
+                            &surface_water,
                             sediment,
                             primary_relief.water_inventory_m3(),
                             cancellation,
@@ -565,13 +569,13 @@ mod tests {
                     };
                     let first = advance_surface_processes(
                         current,
-                        surface_process_inputs(formation_inputs, &start_climate),
+                        surface_process_inputs(formation_inputs, &start_climate, &surface_water),
                         half_window_years,
                         cancellation,
                     )?;
                     let (first_summary, midpoint_sediment) = first.into_parts();
                     let midpoint_terrain = current.project_final_terrain(
-                        surface,
+                        &surface_water,
                         midpoint_sediment,
                         primary_relief.water_inventory_m3(),
                         cancellation,
@@ -594,13 +598,17 @@ mod tests {
                     )?;
                     let second = advance_surface_processes(
                         current,
-                        surface_process_inputs(formation_inputs, &midpoint_climate),
+                        surface_process_inputs(
+                            formation_inputs,
+                            &midpoint_climate,
+                            &surface_water,
+                        ),
                         half_window_years,
                         cancellation,
                     )?;
                     let (second_summary, endpoint_sediment) = second.into_parts();
                     let endpoint_terrain = current.project_final_terrain(
-                        surface,
+                        &surface_water,
                         endpoint_sediment,
                         primary_relief.water_inventory_m3(),
                         cancellation,
@@ -719,7 +727,7 @@ mod tests {
         };
         let terminal_diagnostics = recompute_surface_diagnostics(
             &state,
-            surface_process_inputs(final_inputs, &final_climate),
+            surface_process_inputs(final_inputs, &final_climate, &surface_water),
             cancellation,
         )?;
         let evolution_report = build_evolution_report(
@@ -770,9 +778,11 @@ mod tests {
     fn surface_process_inputs<'a>(
         inputs: SurfaceFormationInputs<'a>,
         climate: &'a crate::world::natural::GlobalCirculationSnapshot,
+        surface_water: &'a SurfaceWaterStencil<'a>,
     ) -> SurfaceProcessInputs<'a> {
         SurfaceProcessInputs {
             surface: inputs.surface,
+            surface_water,
             tectonics: inputs.tectonics,
             substrate: inputs.substrate,
             climate,
@@ -1119,6 +1129,8 @@ mod timing_probe {
 mod endpoint_reuse_comparison {
     use std::time::Instant;
 
+    use crate::generators::natural::surface_water_geometry::SurfaceWaterStencil;
+
     use serde::Serialize;
 
     use super::super::global_circulation::{
@@ -1435,6 +1447,7 @@ mod endpoint_reuse_comparison {
             ProfileSurfaceBuilder::build(profile, Meters::new(6_371_000.0).unwrap(), &cancellation)
                 .unwrap();
         let surface = bundle.authoritative_surface();
+        let surface_water = SurfaceWaterStencil::new(surface, &cancellation).unwrap();
         let domain = ClimateWorkDomainBuilder::build(surface, profile, &cancellation).unwrap();
         let formation = ResolvedWorldFormation::new(
             RESOLVED_WORLD_FORMATION_SCHEMA_V1,
@@ -1532,6 +1545,7 @@ mod endpoint_reuse_comparison {
                 &mut state,
                 SurfaceProcessInputs {
                     surface,
+                    surface_water: &surface_water,
                     tectonics: &evolved,
                     substrate: &substrate,
                     climate: start_climate,
@@ -1545,7 +1559,7 @@ mod endpoint_reuse_comparison {
             .into_parts();
             let final_terrain = state
                 .project_final_terrain(
-                    surface,
+                    &surface_water,
                     final_sediment,
                     primary_relief.water_inventory_m3(),
                     &cancellation,
