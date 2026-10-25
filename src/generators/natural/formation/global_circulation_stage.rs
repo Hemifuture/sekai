@@ -4,10 +4,13 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use super::{ClimateWorkDomainBuildError, ClimateWorkDomainBuilder, NaturalQualityProfileArtifact};
+use super::{
+    ClimateWorkDomainBuildError, ClimateWorkDomainBuilder, FormationGeometry,
+    NaturalQualityProfileArtifact,
+};
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
-    Stage, StageError, StageId, StageInputs, StageRng,
+    PreparedArtifact, Stage, StageError, StageId, StageInputs, StageRng,
 };
 use crate::generators::spatial::SphericalSurfaceArtifact;
 use crate::world::natural::ClimateWorkDomainSnapshot;
@@ -106,8 +109,22 @@ impl StageInputs for ClimateWorkDomainStageInputs {
 }
 
 /// Builds the reusable P4 climate work domain.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ClimateWorkDomainStage;
+///
+/// A stage made [`Self::with_geometry`] publishes the geometry's prepared domain whenever its
+/// inputs are that geometry's profile and authoritative surface, instead of rebuilding it.
+#[derive(Debug, Clone, Default)]
+pub struct ClimateWorkDomainStage {
+    geometry: Option<Arc<FormationGeometry>>,
+}
+
+impl ClimateWorkDomainStage {
+    /// Creates the stage around prewarmed seed-independent geometry.
+    pub const fn with_geometry(geometry: Arc<FormationGeometry>) -> Self {
+        Self {
+            geometry: Some(geometry),
+        }
+    }
+}
 
 impl Stage for ClimateWorkDomainStage {
     type Inputs = ClimateWorkDomainStageInputs;
@@ -123,6 +140,12 @@ impl Stage for ClimateWorkDomainStage {
 
     fn namespace(&self) -> &'static str {
         "sekai.core"
+    }
+
+    fn prepared_output(&self, inputs: &Self::Inputs) -> Option<&PreparedArtifact<Self::Output>> {
+        self.geometry
+            .as_deref()?
+            .climate_domain_for(inputs.profile.profile(), inputs.surface.snapshot())
     }
 
     fn run(

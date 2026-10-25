@@ -12,7 +12,7 @@ fn work_scale_change_invalidates_the_domain_stage_cache() {
     use sekai::generators::natural::ClimateWorkDomainStage;
 
     // The profile artifact serializes its enum, not the resolved work scale.
-    assert_eq!(ClimateWorkDomainStage.version(), 2);
+    assert_eq!(ClimateWorkDomainStage::default().version(), 2);
 }
 
 fn source_surface() -> sekai::world::spatial::SphericalSurfaceSnapshot {

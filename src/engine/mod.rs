@@ -12,6 +12,7 @@ mod stage;
 
 pub use artifact::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, ContentHash,
+    PreparedArtifact,
 };
 pub use cache::{MemoryStageCache, StageCacheError, StageCacheKey};
 pub use cancellation::{BuildCancellation, BuildCancellationError};

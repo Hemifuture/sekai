@@ -2,6 +2,7 @@ use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -297,6 +298,66 @@ impl StoredArtifact {
     }
 }
 
+/// One artifact validated and content-hashed once, ready to enter any number of builds.
+///
+/// Validation and the semantic hash are pure functions of the immutable value, so a build
+/// that publishes a prepared artifact gets exactly the hash it would have computed itself,
+/// without repeating either step. Use it for values that do not depend on the root seed.
+pub struct PreparedArtifact<T> {
+    stored: StoredArtifact,
+    // `fn() -> T` keeps the marker `Send + Sync` whatever `T` is; the value itself lives
+    // behind the `Arc` inside `stored`.
+    artifact: PhantomData<fn() -> T>,
+}
+
+impl<T: Artifact> PreparedArtifact<T> {
+    /// Validates and stream-hashes `value` exactly as a build publishes a stage output.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArtifactError::Cancelled`] on cancellation, or the validation or
+    /// serialization failure a build would report for the same value.
+    pub fn new_cancellable(
+        value: T,
+        cancellation: &BuildCancellation,
+    ) -> Result<Self, ArtifactError> {
+        Ok(Self {
+            stored: StoredArtifact::new_cancellable(value, cancellation)?,
+            artifact: PhantomData,
+        })
+    }
+
+    /// Borrows the prepared value.
+    pub fn get(&self) -> &T {
+        self.stored
+            .value
+            .downcast_ref::<T>()
+            .expect("a prepared artifact stores exactly its own type")
+    }
+
+    pub(crate) fn stored(&self) -> &StoredArtifact {
+        &self.stored
+    }
+}
+
+impl<T> Clone for PreparedArtifact<T> {
+    fn clone(&self) -> Self {
+        Self {
+            stored: self.stored.clone(),
+            artifact: PhantomData,
+        }
+    }
+}
+
+impl<T> fmt::Debug for PreparedArtifact<T> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedArtifact")
+            .field("artifact_key", &self.stored.key)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Typed artifacts and semantic hashes published during one build.
 #[derive(Default)]
 pub struct BuildArtifacts {
@@ -344,6 +405,13 @@ impl BuildArtifacts {
 
     pub(crate) fn insert<T: Artifact>(&mut self, value: T) -> Result<(), ArtifactError> {
         ArtifactType::of::<T>().publish_into(StoredArtifact::new(value)?, self)
+    }
+
+    pub(crate) fn insert_prepared<T: Artifact>(
+        &mut self,
+        prepared: &PreparedArtifact<T>,
+    ) -> Result<(), ArtifactError> {
+        ArtifactType::of::<T>().publish_into(prepared.stored().clone(), self)
     }
 
     pub(crate) fn keys(&self) -> impl ExactSizeIterator<Item = ArtifactKey> + '_ {

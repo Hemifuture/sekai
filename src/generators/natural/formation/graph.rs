@@ -14,7 +14,7 @@ use super::super::quality::{
     QualityBuildError,
 };
 use super::super::{
-    ClimateWorkDomainArtifact, ClimateWorkDomainStage, ReliefSpecArtifact,
+    ClimateWorkDomainArtifact, ClimateWorkDomainStage, FormationGeometry, ReliefSpecArtifact,
     ResolvedClimateInputArtifact, ResolvedGeologicInputArtifact, ResolvedHydroErosionInputArtifact,
     ResolvedTectonicInputArtifact, ResolvedWorldFormationArtifact, SurfaceFormationGenerationError,
 };
@@ -260,8 +260,22 @@ impl StageInputs for CausalNaturalFormationStageInputs {
 }
 
 /// Runs the complete causal formation build and publishes exactly one artifact.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CausalNaturalFormationStage;
+///
+/// A stage made [`Self::with_geometry`] uses the geometry's P1 bundle whenever its inputs are
+/// that geometry's profile and authoritative surface, instead of completing the surface again.
+#[derive(Debug, Clone, Default)]
+pub struct CausalNaturalFormationStage {
+    geometry: Option<Arc<FormationGeometry>>,
+}
+
+impl CausalNaturalFormationStage {
+    /// Creates the stage around prewarmed seed-independent geometry.
+    pub const fn with_geometry(geometry: Arc<FormationGeometry>) -> Self {
+        Self {
+            geometry: Some(geometry),
+        }
+    }
+}
 
 impl Stage for CausalNaturalFormationStage {
     type Inputs = CausalNaturalFormationStageInputs;
@@ -287,15 +301,25 @@ impl Stage for CausalNaturalFormationStage {
     ) -> Result<Self::Output, StageError> {
         rng.check_cancelled().map_err(|_| cancelled())?;
         let cancellation = rng.cancellation_signal();
-        let profile_bundle = ProfileSurfaceBuilder::complete(
-            inputs.profile.profile(),
-            inputs.surface.snapshot(),
-            &cancellation,
-        )
-        .map_err(profile_failure)?;
+        let prepared_bundle = self.geometry.as_deref().and_then(|geometry| {
+            geometry.profile_bundle_for(inputs.profile.profile(), inputs.surface.snapshot())
+        });
+        let completed_bundle;
+        let profile_bundle = match prepared_bundle {
+            Some(bundle) => bundle,
+            None => {
+                completed_bundle = ProfileSurfaceBuilder::complete(
+                    inputs.profile.profile(),
+                    inputs.surface.snapshot(),
+                    &cancellation,
+                )
+                .map_err(profile_failure)?;
+                &completed_bundle
+            }
+        };
         let artifact = NaturalFormationBundleArtifact::generate(
             CausalNaturalFormationInputs {
-                profile_bundle: &profile_bundle,
+                profile_bundle,
                 quality_profile: inputs.profile.profile(),
                 tectonic_spec: inputs.resolved_tectonic.input().spec(),
                 formation: inputs.formation.formation(),
@@ -316,6 +340,30 @@ impl Stage for CausalNaturalFormationStage {
 
 /// Builds the sole production graph for final natural formation.
 pub fn causal_natural_formation_graph() -> Result<StageGraph, GraphError> {
+    formation_graph(
+        ClimateWorkDomainStage::default(),
+        CausalNaturalFormationStage::default(),
+    )
+}
+
+/// Builds the same graph around prewarmed seed-independent geometry.
+///
+/// Its stages publish the prepared climate domain and use the P1 bundle of `geometry` whenever
+/// a build's profile and surface are the geometry's, so the build result is identical to
+/// [`causal_natural_formation_graph`] with the geometry work already done.
+pub fn causal_natural_formation_graph_with_geometry(
+    geometry: Arc<FormationGeometry>,
+) -> Result<StageGraph, GraphError> {
+    formation_graph(
+        ClimateWorkDomainStage::with_geometry(Arc::clone(&geometry)),
+        CausalNaturalFormationStage::with_geometry(geometry),
+    )
+}
+
+fn formation_graph(
+    domain: ClimateWorkDomainStage,
+    formation: CausalNaturalFormationStage,
+) -> Result<StageGraph, GraphError> {
     StageGraphBuilder::new()
         .external::<NaturalQualityProfileArtifact>()
         .external::<ResolvedTectonicInputArtifact>()
@@ -325,8 +373,8 @@ pub fn causal_natural_formation_graph() -> Result<StageGraph, GraphError> {
         .external::<ResolvedClimateInputArtifact>()
         .external::<ResolvedHydroErosionInputArtifact>()
         .external::<SphericalSurfaceArtifact>()
-        .stage(ClimateWorkDomainStage)
-        .stage(CausalNaturalFormationStage)
+        .stage(domain)
+        .stage(formation)
         .build()
 }
 

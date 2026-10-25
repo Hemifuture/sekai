@@ -42,7 +42,8 @@ pub use climate_rule_input::{
 pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
 pub use fine_shoreline::FineShoreline;
 pub use formation::{
-    annual_precipitation_total_bias, causal_natural_formation_graph, classify_substrate_bedrock,
+    annual_precipitation_total_bias, causal_natural_formation_graph,
+    causal_natural_formation_graph_with_geometry, classify_substrate_bedrock,
     climate_state_formation_residual, climate_state_rms_difference, compare_climate_states,
     compare_formation_procedure_identities, continental_airy_elevation_m,
     formation_procedure_identity_matches, gdh1_ocean_depth_m, global_circulation_model_fingerprint,
@@ -59,7 +60,8 @@ pub use formation::{
     ClimateWorkDomainBuildError, ClimateWorkDomainBuilder, ClimateWorkDomainStage,
     ClimateWorkDomainStageInputs, CoastGenerationError, CoastalExchange, CoastalExchangeStep,
     CoastalInputs, EvolvedTectonicGenerationError, EvolvedTectonicGenerator, ExplicitRk3Integrator,
-    FormationCycleComparisonReport, FormationHydrologyGenerationError, FormationHydrologyGenerator,
+    FormationCycleComparisonReport, FormationGeometry, FormationGeometryError,
+    FormationGeometryKey, FormationHydrologyGenerationError, FormationHydrologyGenerator,
     FormationProcedureAgreement, FormationProcedureIdentity, FormationRunOutcome,
     GeologicSubstrateGenerationError, GeologicSubstrateGenerator, GlobalCirculationGenerationError,
     GlobalCirculationGenerator, GlobalCirculationPhase, GlobalClimateForcing,

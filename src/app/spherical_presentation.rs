@@ -20,8 +20,9 @@ use crate::engine::{
     GraphError, MemoryStageCache,
 };
 use crate::generators::natural::{
-    causal_natural_formation_graph, spherical_natural_foundation_graph, AuthorConstraintsArtifact,
-    ClimateSpecArtifact, GeologicSpecArtifact, HydroErosionSpecArtifact,
+    causal_natural_formation_graph, causal_natural_formation_graph_with_geometry,
+    spherical_natural_foundation_graph, AuthorConstraintsArtifact, ClimateSpecArtifact,
+    FormationGeometry, GeologicSpecArtifact, HydroErosionSpecArtifact,
     NaturalQualityProfileArtifact, ReliefSpecArtifact, ResolvedClimateInput,
     ResolvedClimateInputArtifact, ResolvedGeologicInput, ResolvedGeologicInputArtifact,
     ResolvedHydroErosionInput, ResolvedHydroErosionInputArtifact, ResolvedTectonicInput,
@@ -735,8 +736,10 @@ impl PublishedSphericalPresentation {
     ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
         build_spherical_formation_candidate_with_lineage(
             root_seed,
-            quality_profile,
-            surface,
+            FormationGeometryInput::Surface {
+                quality_profile,
+                surface,
+            },
             formation,
             tectonic,
             relief,
@@ -1611,8 +1614,10 @@ pub fn build_spherical_formation_candidate_for_view(
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
     build_spherical_formation_candidate_with_lineage(
         root_seed,
-        quality_profile,
-        surface,
+        FormationGeometryInput::Surface {
+            quality_profile,
+            surface,
+        },
         formation,
         tectonic,
         relief,
@@ -1626,12 +1631,23 @@ pub fn build_spherical_formation_candidate_for_view(
     )
 }
 
+/// The seed-independent geometry one formation build starts from.
+#[derive(Clone, Copy)]
+enum FormationGeometryInput<'a> {
+    /// Only the authoritative surface; the graph builds the rest itself.
+    Surface {
+        quality_profile: NaturalQualityProfile,
+        surface: &'a SphericalSurfaceSnapshot,
+    },
+    /// Prewarmed geometry whose prepared parts the graph publishes as they are.
+    Prepared(&'a Arc<FormationGeometry>),
+}
+
 /// Formation-candidate builder that carries an explicit replacement lineage.
 #[allow(clippy::too_many_arguments)]
 fn build_spherical_formation_candidate_with_lineage(
     root_seed: RootSeed,
-    quality_profile: NaturalQualityProfile,
-    surface: &SphericalSurfaceSnapshot,
+    geometry: FormationGeometryInput<'_>,
     formation: &WorldFormationSpec,
     tectonic: &TectonicSpec,
     relief: &ReliefSpec,
@@ -1643,16 +1659,39 @@ fn build_spherical_formation_candidate_with_lineage(
     lineage: WorldCandidateLineage,
     cancellation: &BuildCancellation,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
-    let external = build_spherical_formation_external_artifacts(
-        root_seed,
-        quality_profile,
-        surface,
-        formation,
-        tectonic,
-        relief,
-        geologic,
-    )?;
-    let outcome = BuildEngine::new(causal_natural_formation_graph()?).build_with_cancellation(
+    let (external, graph) = match geometry {
+        FormationGeometryInput::Surface {
+            quality_profile,
+            surface,
+        } => (
+            build_spherical_formation_external_artifacts(
+                root_seed,
+                quality_profile,
+                surface,
+                formation,
+                tectonic,
+                relief,
+                geologic,
+            )?,
+            causal_natural_formation_graph()?,
+        ),
+        FormationGeometryInput::Prepared(geometry) => {
+            let mut external = formation_spec_external_artifacts(
+                root_seed,
+                geometry.profile(),
+                formation,
+                tectonic,
+                relief,
+                geologic,
+            )?;
+            external.insert_prepared(geometry.surface_artifact())?;
+            (
+                external,
+                causal_natural_formation_graph_with_geometry(Arc::clone(geometry))?,
+            )
+        }
+    };
+    let outcome = BuildEngine::new(graph).build_with_cancellation(
         root_seed,
         external,
         cache,
@@ -1707,6 +1746,12 @@ pub enum SphericalWorldBuildTarget {
         /// The owned authoritative profile surface.
         surface: SphericalSurfaceSnapshot,
     },
+    /// Formation-product chain on prewarmed seed-independent geometry; the result is
+    /// identical to [`Self::Formation`] on the geometry's profile and surface.
+    PreparedFormation {
+        /// The geometry of the selected profile and radius.
+        geometry: Arc<FormationGeometry>,
+    },
     /// Legacy natural-foundation chain on an authored space specification.
     LegacyFoundation {
         /// The authored spherical space specification.
@@ -1742,8 +1787,10 @@ pub fn run_spherical_world_build(
             surface,
         } => build_spherical_formation_candidate_with_lineage(
             request.root_seed,
-            quality_profile,
-            &surface,
+            FormationGeometryInput::Surface {
+                quality_profile,
+                surface: &surface,
+            },
             &request.formation,
             &request.tectonic,
             &request.relief,
@@ -1755,6 +1802,22 @@ pub fn run_spherical_world_build(
             lineage,
             cancellation,
         ),
+        SphericalWorldBuildTarget::PreparedFormation { geometry } => {
+            build_spherical_formation_candidate_with_lineage(
+                request.root_seed,
+                FormationGeometryInput::Prepared(&geometry),
+                &request.formation,
+                &request.tectonic,
+                &request.relief,
+                &request.geologic,
+                cache,
+                request.view_state,
+                &request.requested_state,
+                &clock,
+                lineage,
+                cancellation,
+            )
+        }
         SphericalWorldBuildTarget::LegacyFoundation { space } => {
             let external = build_spherical_external_artifacts(
                 &space,
@@ -1795,6 +1858,27 @@ pub fn build_spherical_formation_external_artifacts(
     relief: &ReliefSpec,
     geologic: &GeologicSpec,
 ) -> Result<ExternalArtifacts, SphericalPresentationError> {
+    let mut external = formation_spec_external_artifacts(
+        root_seed,
+        quality_profile,
+        formation,
+        tectonic,
+        relief,
+        geologic,
+    )?;
+    external.insert(SphericalSurfaceArtifact::new(surface.clone()))?;
+    Ok(external)
+}
+
+/// Every formation external artifact except the authoritative surface.
+fn formation_spec_external_artifacts(
+    root_seed: RootSeed,
+    quality_profile: NaturalQualityProfile,
+    formation: &WorldFormationSpec,
+    tectonic: &TectonicSpec,
+    relief: &ReliefSpec,
+    geologic: &GeologicSpec,
+) -> Result<ExternalArtifacts, SphericalPresentationError> {
     let resolved_formation =
         WorldFormationGenerator::resolve_for_roll(formation, (root_seed.raw() % 100) as u32)?;
     let mut external = ExternalArtifacts::new();
@@ -1819,7 +1903,6 @@ pub fn build_spherical_formation_external_artifacts(
             HydroErosionSpec::default(),
         )?,
     ))?;
-    external.insert(SphericalSurfaceArtifact::new(surface.clone()))?;
     Ok(external)
 }
 

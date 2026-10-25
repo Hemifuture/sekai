@@ -4,6 +4,7 @@ mod causal;
 mod climate_work_domain;
 mod evolved_tectonics;
 mod geologic_substrate;
+mod geometry;
 pub(in crate::generators::natural) mod global_circulation;
 mod global_circulation_stage;
 mod graph;
@@ -24,12 +25,14 @@ pub use geologic_substrate::{
     SEDIMENTARY_FRACTURE_MAX, SEDIMENTARY_SUBSIDENCE_THRESHOLD_MM_PER_YEAR,
     VOLCANIC_COVER_INFLUENCE_THRESHOLD,
 };
+pub use geometry::{FormationGeometry, FormationGeometryError, FormationGeometryKey};
 pub use global_circulation_stage::{
     ClimateWorkDomainArtifact, ClimateWorkDomainStage, ClimateWorkDomainStageInputs,
 };
 pub use graph::{
-    causal_natural_formation_graph, CausalNaturalFormationStage, CausalNaturalFormationStageInputs,
-    NaturalFormationBundleArtifact, NaturalQualityProfileArtifact,
+    causal_natural_formation_graph, causal_natural_formation_graph_with_geometry,
+    CausalNaturalFormationStage, CausalNaturalFormationStageInputs, NaturalFormationBundleArtifact,
+    NaturalQualityProfileArtifact,
 };
 pub use primary_relief::{
     continental_airy_elevation_m, gdh1_ocean_depth_m, oceanic_isostatic_elevation_m,
