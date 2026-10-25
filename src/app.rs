@@ -1323,12 +1323,6 @@ impl TemplateApp {
                                 hydrology.drainage_area_km2()[segment.from().raw() as usize]
                             })
                             .collect(),
-                        shoreline: crate::generators::natural::FineShoreline::new(
-                            document.surface(),
-                            hydrology.surface_water(),
-                            hydrology.lakes(),
-                            sea_level_m,
-                        ),
                     });
                     let selection = amplified_mesh::initial_selection(&detail);
                     let mut cache = amplified_mesh::BatchCache::default();
@@ -2945,15 +2939,6 @@ mod natural_app_tests {
                 river_cells: Vec::new(),
                 river_orders: Vec::new(),
                 river_drainage_area_km2: Vec::new(),
-                shoreline: crate::generators::natural::FineShoreline::new(
-                    &surface,
-                    &crate::world::natural::SurfaceWaterField::from_kinds(vec![
-                        crate::world::natural::SurfaceWaterKind::DryLand;
-                        count
-                    ]),
-                    &[],
-                    0.0,
-                ),
             }),
             initial_hash: 0,
         }

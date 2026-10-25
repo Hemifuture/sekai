@@ -752,7 +752,7 @@ mod tests {
         ];
         let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(11))
             .unwrap()
-            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
+            .with_hydrology(&surface, &segments, &dry_surface_water(&surface), &[])
             .unwrap();
         (evaluator, surface)
     }
@@ -780,7 +780,12 @@ mod tests {
         water[to.raw() as usize] = to_water;
         let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(13))
             .unwrap()
-            .with_rivers(&surface, &[segment], &SurfaceWaterField::from_kinds(water))
+            .with_hydrology(
+                &surface,
+                &[segment],
+                &SurfaceWaterField::from_kinds(water),
+                &[],
+            )
             .unwrap();
         (evaluator, surface, edge_index)
     }

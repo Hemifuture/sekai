@@ -52,7 +52,7 @@ impl FineShoreline {
     ///
     /// The classifier; a cell missing from the hydrology contributes no
     /// candidate, which leaves its leaves dry.
-    pub fn new(
+    pub(super) fn new(
         surface: &SphericalSurfaceSnapshot,
         water: &SurfaceWaterField,
         lakes: &[Lake],
@@ -121,6 +121,26 @@ impl FineShoreline {
         Self {
             row_start,
             candidates,
+        }
+    }
+
+    /// The classifier of a world without published water: every row is
+    /// empty, so every leaf is dry and every cell is inland.
+    pub(super) fn without_water(cell_count: usize) -> Self {
+        Self {
+            row_start: vec![0; cell_count + 1],
+            candidates: Vec::new(),
+        }
+    }
+
+    /// Whether `cell` sees no water body at all — neither its own nor an
+    /// edge neighbour's — so none of its leaves can ever be water (the
+    /// LOD-1 spec §3.2 inland partition).
+    pub(super) fn is_inland(&self, cell: CellId) -> bool {
+        let index = cell.raw() as usize;
+        match (self.row_start.get(index), self.row_start.get(index + 1)) {
+            (Some(start), Some(end)) => start == end,
+            _ => true,
         }
     }
 

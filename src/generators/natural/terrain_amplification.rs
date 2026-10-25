@@ -430,8 +430,10 @@ impl TerrainAmplifier {
         })
     }
 
-    /// Assembles the amplifier straight from the published formation product.
-    pub fn from_formation_product(
+    /// Assembles the amplifier from the published formation product's
+    /// fields; the river network attaches separately through
+    /// [`Self::with_rivers`].
+    pub(super) fn from_formation_fields(
         inputs: FormationDerivationInputs<'_>,
         root_seed: RootSeed,
     ) -> Result<Self, TerrainAmplificationError> {
@@ -463,11 +465,6 @@ impl TerrainAmplifier {
                 orogeny_age_myr: compatibility.orogeny_age_myr(),
             },
             root_seed,
-        )?
-        .with_rivers(
-            surface,
-            formation.hydrology().river_segments(),
-            formation.hydrology().surface_water(),
         )
     }
 

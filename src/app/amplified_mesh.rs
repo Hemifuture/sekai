@@ -31,8 +31,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::generators::natural::{
-    FineShoreline, HierarchicalEvaluator, HierarchicalPath, PrimitiveValue,
-    HIERARCHICAL_PATH_DEPTH_MAX,
+    HierarchicalEvaluator, HierarchicalPath, PrimitiveValue, HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::view::{
     project_unit_direction, AmplifiedSurfaceMesh, GlobeCamera, MapScreenTransform, ProjectionPoint,
@@ -96,8 +95,6 @@ pub(super) struct AmplifiedDetailContext {
     pub(super) river_orders: Vec<u8>,
     /// Per reach: P5 contributing area at its origin, for Horton main-stem tracing.
     pub(super) river_drainage_area_km2: Vec<f32>,
-    /// The per-leaf water classification that colors the terrain.
-    pub(super) shoreline: FineShoreline,
 }
 
 /// One renderable subtree: the leaves `extra` levels below
@@ -985,7 +982,10 @@ fn flat_color(context: &AmplifiedDetailContext, cell: CellId, value: PrimitiveVa
         value.elevation_m,
         context.sea_level_m,
         context.display_radius_m,
-        context.shoreline.classify(cell, value.elevation_m),
+        context
+            .evaluator
+            .shoreline()
+            .classify(cell, value.elevation_m),
     );
     let components = base.components();
     [
@@ -1101,17 +1101,13 @@ mod tests {
             orogeny_kind: &kinds,
             orogeny_age_myr: &zeros,
         };
-        AmplifiedDetailContext {
-            evaluator: HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7)).unwrap(),
-            sea_level_m: 0.0,
-            display_radius_m: 2_000.0,
-            river_cells: Vec::new(),
-            river_orders: Vec::new(),
-            river_drainage_area_km2: Vec::new(),
-            // Exercise the actual mesh binding and its cache with all three
-            // water classes, rather than only testing the palette in isolation.
-            shoreline: FineShoreline::new(
+        // Exercise the actual mesh binding and its cache with all three
+        // water classes, rather than only testing the palette in isolation.
+        let evaluator = HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7))
+            .unwrap()
+            .with_hydrology(
                 &surface,
+                &[],
                 &SurfaceWaterField::from_kinds(
                     (0..count)
                         .map(|index| match index % 3 {
@@ -1134,8 +1130,15 @@ mod tests {
                     None,
                 )
                 .unwrap()],
-                0.0,
-            ),
+            )
+            .unwrap();
+        AmplifiedDetailContext {
+            evaluator,
+            sea_level_m: 0.0,
+            display_radius_m: 2_000.0,
+            river_cells: Vec::new(),
+            river_orders: Vec::new(),
+            river_drainage_area_km2: Vec::new(),
         }
     }
 
@@ -1225,13 +1228,14 @@ mod tests {
         ];
         let evaluator = HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7))
             .unwrap()
-            .with_rivers(
+            .with_hydrology(
                 &surface,
                 &segments,
                 &SurfaceWaterField::from_kinds(vec![
                     SurfaceWaterKind::DryLand;
                     surface.cells().len()
                 ]),
+                &[],
             )
             .unwrap();
         AmplifiedDetailContext {
@@ -1247,12 +1251,6 @@ mod tests {
                 .map(|segment| segment.strahler_order())
                 .collect(),
             river_drainage_area_km2: vec![1.0, 4.0, 2.0],
-            shoreline: FineShoreline::new(
-                &surface,
-                &SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
-                &[],
-                0.0,
-            ),
         }
     }
 

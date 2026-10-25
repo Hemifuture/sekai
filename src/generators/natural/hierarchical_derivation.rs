@@ -18,6 +18,7 @@
 
 use blake3::Hasher;
 
+use super::fine_shoreline::FineShoreline;
 use super::hierarchical_rivers::{fresh_reach_path_caches, ReachPathCache};
 use super::surface_water_geometry::reconstruct_vertex_elevations;
 use super::terrain_amplification::{
@@ -28,10 +29,10 @@ use super::terrain_amplification::{
 };
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    RiverSegment, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    Lake, RiverSegment, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
     FORMATION_SHELF_BREAK_DEPTH_M,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
+use crate::world::spatial::{spherical_triangle_area_unit, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, RootSeed};
 
 /// Domain separator for every v2 canonical seed (spec §2.1).
@@ -43,8 +44,9 @@ pub const HIERARCHICAL_PATH_DEPTH_MAX: usize = 16;
 /// every change to the derived values the player sees and hashed into
 /// [`HierarchicalEvaluator::probe_fingerprint`]. The seed domain above
 /// stays fixed, so a bump never reshuffles the L2+ seeds. Version 1 is the
-/// T1 v2 derivation before LOD-1; 2 adopts the D1 P1 vertex anchors.
-const T1_DERIVATION_VERSION: u16 = 2;
+/// T1 v2 derivation before LOD-1; 2 adopts the D1 P1 vertex anchors; 3 the
+/// D2 inland average-interpolating centroids.
+const T1_DERIVATION_VERSION: u16 = 3;
 /// Frozen hierarchical probe count (spec §6).
 pub const HIERARCHICAL_PROBE_COUNT: usize = 256;
 /// Frozen probe path depths (spec §6): one probe block per depth.
@@ -226,6 +228,9 @@ pub struct HierarchicalEvaluator {
     /// accelerate — every point is the pure derivation's bit-exact
     /// value, deepened lazily as queries demand).
     river_paths: Vec<ReachPathCache>,
+    /// The one per-leaf water classifier of this world (LOD-1 spec §3.4):
+    /// display colors, river clipping, and picking all read it.
+    shoreline: FineShoreline,
     root_seed_raw: u64,
     // Self-contained copies of the validated surface geometry.
     ring_offsets: Vec<u32>,
@@ -234,6 +239,8 @@ pub struct HierarchicalEvaluator {
     cell_site: Vec<UnitVector3>,
     cell_centroid: Vec<UnitVector3>,
     cell_conditions: Vec<Conditions>,
+    /// Per-cell L1 centroid anchors (LOD-1 spec §3.2 D2).
+    centroid_value_m: Vec<f64>,
     vertex_position: Vec<UnitVector3>,
     vertex_value_m: Vec<f64>,
 }
@@ -250,28 +257,93 @@ impl HierarchicalEvaluator {
     }
 
     /// Assembles the engine straight from the published formation
-    /// product, river network included.
+    /// product, hydrology (water bodies and river network) included.
     pub fn from_formation_product(
         inputs: FormationDerivationInputs<'_>,
         root_seed: RootSeed,
     ) -> Result<Self, TerrainAmplificationError> {
         let surface = inputs.surface;
-        let amplifier = TerrainAmplifier::from_formation_product(inputs, root_seed)?;
-        Self::from_amplifier(amplifier, surface, root_seed)
+        let hydrology = inputs.formation.hydrology();
+        let amplifier = TerrainAmplifier::from_formation_fields(inputs, root_seed)?;
+        Self::from_amplifier(amplifier, surface, root_seed)?.with_hydrology(
+            surface,
+            hydrology.river_segments(),
+            hydrology.surface_water(),
+            hydrology.lakes(),
+        )
     }
 
-    /// Attaches the published river network for §4 corridor suppression.
-    pub fn with_rivers(
+    /// Attaches the published P5 hydrology: the water bodies that the fine
+    /// shoreline classifies leaves against (T1 v2.2 §5.1) and the river
+    /// network for §4 corridor suppression.
+    ///
+    /// # Arguments
+    ///
+    /// * `surface` - The authoritative surface the hydrology indexes.
+    /// * `segments` - The published river segments, in reach order.
+    /// * `surface_water` - The published per-cell water classification.
+    /// * `lakes` - The published lakes (members and surfaces).
+    ///
+    /// # Errors
+    ///
+    /// Returns the river-network validation errors of
+    /// [`TerrainAmplifier::with_rivers`].
+    pub fn with_hydrology(
         mut self,
         surface: &SphericalSurfaceSnapshot,
         segments: &[RiverSegment],
         surface_water: &SurfaceWaterField,
+        lakes: &[Lake],
     ) -> Result<Self, TerrainAmplificationError> {
+        let sea_level_m = self.amplifier.conditioning().sea_level_m as f32;
+        self.shoreline = FineShoreline::new(surface, surface_water, lakes, sea_level_m);
+        self.centroid_value_m = self.centroid_anchor_values();
         self.amplifier = self
             .amplifier
             .with_rivers(surface, segments, surface_water)?;
         self.river_paths = fresh_reach_path_caches(self.amplifier.river_reaches().len());
         Ok(self)
+    }
+
+    /// The per-leaf water classifier of this world's published water
+    /// bodies (T1 v2.2 §5.1) — the single instance every consumer reads.
+    pub fn shoreline(&self) -> &FineShoreline {
+        &self.shoreline
+    }
+
+    /// The L1 centroid anchors for the current water bodies (LOD-1 spec
+    /// §3.2 D2). A cell that sees a water body keeps its own value — the
+    /// P1 sub-cell node P5 publishes its water geometry from. An inland
+    /// cell, for which P5 publishes no sub-cell geometry, takes the
+    /// average-interpolating centroid `c' = 3·z − 2·v̄` (Sweldens &
+    /// Schröder 1996), `v̄` the fan-area-weighted mean of the sector edge
+    /// midpoints, so its fan-area-weighted L1 mean is exactly `z`.
+    fn centroid_anchor_values(&self) -> Vec<f64> {
+        let elevation_m = self.amplifier.conditioning().elevation_m;
+        (0..self.cell_conditions.len())
+            .map(|index| {
+                let z = f64::from(elevation_m[index]);
+                if !self.shoreline.is_inland(CellId::from_raw(index as u32)) {
+                    return z;
+                }
+                let (start, len) = self.ring_bounds(index as u32);
+                let centroid = self.cell_centroid[index];
+                let (mut edge_mean_m, mut area) = (0.0_f64, 0.0_f64);
+                for side in 0..len {
+                    let near = self.ring_vertices[start + side] as usize;
+                    let far = self.ring_vertices[start + (side + 1) % len] as usize;
+                    let weight = spherical_triangle_area_unit(
+                        centroid,
+                        self.vertex_position[near],
+                        self.vertex_position[far],
+                    );
+                    edge_mean_m +=
+                        weight * 0.5 * (self.vertex_value_m[near] + self.vertex_value_m[far]);
+                    area += weight;
+                }
+                3.0 * z - 2.0 * edge_mean_m / area
+            })
+            .collect()
     }
 
     fn from_amplifier(
@@ -315,8 +387,10 @@ impl HierarchicalEvaluator {
             (conditions, vertex_value_m)
         };
 
-        Ok(Self {
+        let mut engine = Self {
             river_paths: fresh_reach_path_caches(amplifier.river_reaches().len()),
+            shoreline: FineShoreline::without_water(cells.len()),
+            centroid_value_m: Vec::new(),
             amplifier,
             root_seed_raw: root_seed.raw(),
             ring_offsets,
@@ -331,7 +405,9 @@ impl HierarchicalEvaluator {
                 .map(|vertex| vertex.position)
                 .collect(),
             vertex_value_m,
-        })
+        };
+        engine.centroid_value_m = engine.centroid_anchor_values();
+        Ok(engine)
     }
 
     /// The L0 cell primitive value: identically the T0 published
@@ -562,9 +638,7 @@ impl HierarchicalEvaluator {
             corners: [
                 Anchor {
                     position: self.cell_centroid[cell_index as usize],
-                    value_m: f64::from(
-                        self.amplifier.conditioning().elevation_m[cell_index as usize],
-                    ),
+                    value_m: self.centroid_value_m[cell_index as usize],
                     seed: self.anchor_seed(b"c", cell_index),
                 },
                 self.vertex_anchor(near),
@@ -1163,6 +1237,92 @@ mod tests {
         );
     }
 
+    /// The synthetic water publication: every cell below sea level is
+    /// ocean, so a fixture has inland, coastal, and ocean cells.
+    fn ocean_below_sea_level(fields: &SyntheticFields) -> SurfaceWaterField {
+        SurfaceWaterField::from_kinds(
+            fields
+                .elevation
+                .iter()
+                .map(|&elevation| {
+                    if elevation < 0.0 {
+                        SurfaceWaterKind::Ocean
+                    } else {
+                        SurfaceWaterKind::DryLand
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    fn wet_evaluator() -> (HierarchicalEvaluator, SphericalSurfaceSnapshot) {
+        let surface = test_surface();
+        let fields = SyntheticFields::new(&surface);
+        let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(42))
+            .unwrap()
+            .with_hydrology(&surface, &[], &ocean_below_sea_level(&fields), &[])
+            .unwrap();
+        (evaluator, surface)
+    }
+
+    /// LOD-1 spec §3.2 D2 and §4 I3/I6: an inland cell's area-weighted L1
+    /// fan mean equals its P5 value within the floating-point bound (f64
+    /// recursive summation `γ_n` over the anchor magnitudes, Higham 2002
+    /// §4.2, plus half an f32 ulp of the largest published face); a cell
+    /// that sees water keeps the P1 centroid node bit-exactly; and only
+    /// cells whose leaves can never be water get the correction.
+    #[test]
+    fn inland_fans_average_to_the_cell_value_and_near_water_fans_keep_p1() {
+        let (evaluator, surface) = wet_evaluator();
+        let mut inland = 0;
+        let mut near_water = 0;
+        for cell in surface.cells() {
+            let index = cell.id.raw() as usize;
+            let z = f64::from(evaluator.cell_value(cell.id).elevation_m);
+            if !evaluator.shoreline().is_inland(cell.id) {
+                near_water += 1;
+                assert_eq!(evaluator.centroid_value_m[index].to_bits(), z.to_bits());
+                continue;
+            }
+            inland += 1;
+            assert_eq!(
+                evaluator.shoreline().classify(cell.id, ELEVATION_MIN_M),
+                SurfaceWaterKind::DryLand
+            );
+            let sectors = evaluator.sector_count(cell.id);
+            let (mut weighted, mut area, mut largest_face) = (0.0_f64, 0.0_f64, 0.0_f32);
+            let mut anchor_magnitude = evaluator.centroid_value_m[index].abs();
+            let (start, len) = evaluator.ring_bounds(cell.id.raw());
+            for &vertex in &evaluator.ring_vertices[start..start + len] {
+                anchor_magnitude =
+                    anchor_magnitude.max(evaluator.vertex_value_m[vertex as usize].abs());
+            }
+            for sector in 0..sectors as u8 {
+                let [a, b, c] = evaluator.sector_corners(cell.id, sector);
+                let weight = crate::world::spatial::spherical_triangle_area_unit(a, b, c);
+                let face = evaluator.value(cell.id, sector, &[]).elevation_m;
+                weighted += weight * f64::from(face);
+                area += weight;
+                largest_face = largest_face.max(face.abs());
+            }
+            let terms = (4 * sectors + 4) as f64;
+            let unit_roundoff = f64::EPSILON / 2.0;
+            let gamma = terms * unit_roundoff / (1.0 - terms * unit_roundoff);
+            let half_ulp =
+                0.5 * f64::from(f32::from_bits(largest_face.to_bits() + 1) - largest_face);
+            let bound = 3.0 * gamma * anchor_magnitude + half_ulp;
+            let residual = (weighted / area - z).abs();
+            assert!(
+                residual <= bound,
+                "cell {index}: inland fan mean misses the cell value by {residual} > {bound}"
+            );
+        }
+        assert!(
+            inland > 0 && near_water > 0,
+            "{inland} inland, {near_water} near water"
+        );
+    }
+
     /// Spec §7 invariant 2: both cells sharing an L0 boundary edge derive
     /// the shared-edge midpoints — seed, value, and position — byte for
     /// byte identically, two levels deep, and adjacent sectors of one
@@ -1320,7 +1480,7 @@ mod tests {
         ];
         let carved = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(9))
             .unwrap()
-            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
+            .with_hydrology(&surface, &segments, &dry_surface_water(&surface), &[])
             .unwrap();
 
         // The carve surface descends along the chain (M1 module criteria
@@ -1364,13 +1524,17 @@ mod tests {
     /// stair coastline itself is quantized by whole percentage points, so
     /// the statistic would measure fixture coarseness, not derivation
     /// drift. The real product tier is gated in
-    /// `tests/hierarchical_product_gates.rs`.
+    /// `tests/hierarchical_product_gates.rs`. The fixture publishes its
+    /// ocean like the product does: without published water every cell is
+    /// inland (LOD-1 spec §3.2), and the coast would not be a coast.
     #[test]
     fn deep_land_fraction_matches_l0() {
         let surface = surface_with(642);
         let fields = SyntheticFields::new(&surface);
-        let evaluator =
-            HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(42)).unwrap();
+        let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(42))
+            .unwrap()
+            .with_hydrology(&surface, &[], &ocean_below_sea_level(&fields), &[])
+            .unwrap();
         let total = 16_384_usize;
         let mut l0_land = 0_u32;
         let mut deep_land = 0_u32;

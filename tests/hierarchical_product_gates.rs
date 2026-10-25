@@ -25,10 +25,10 @@ use support::causal_formation::{
 };
 
 /// Draft seed-42 probe fingerprint (spec A4 formula with the LOD-1 §3.6
-/// version prefix) at `T1_DERIVATION_VERSION` 2: the L1 boundary-vertex
-/// anchors became P5's P1 vertex elevations (T1 v2 spec amendment A16).
+/// version prefix) at `T1_DERIVATION_VERSION` 3: P1 vertex anchors (T1 v2
+/// spec amendment A16) and inland average-interpolating centroids (A17).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "386b6e5acefdbd986d4c5eb2d8ff619399b8aeeeb0690ace0bf7f22dd3e92027";
+    "94a882af46b9e0ea4c973b5f9ba291a8a096f4dd500413abd12318be94bdb3c9";
 
 fn evaluator() -> HierarchicalEvaluator {
     evaluator_for(causal_formation_fixture())
@@ -102,33 +102,18 @@ fn l0_cells_reproduce_the_published_elevation_bit_exactly() {
 #[test]
 fn deep_land_fraction_stays_within_one_point_of_l0() {
     let evaluator = evaluator();
-    let shoreline = shoreline();
+    let shoreline = evaluator.shoreline();
     let total = 16_384_usize;
     let (mut l0_land, mut deep_land) = (0_u32, 0_u32);
     for index in 0..total {
         let probe = fibonacci_probe(index, total);
-        l0_land += u32::from(is_land(&evaluator, &shoreline, probe, 0));
-        deep_land += u32::from(is_land(&evaluator, &shoreline, probe, 6));
+        l0_land += u32::from(is_land(&evaluator, shoreline, probe, 0));
+        deep_land += u32::from(is_land(&evaluator, shoreline, probe, 6));
     }
     let drift = (f64::from(l0_land) - f64::from(deep_land)).abs() / total as f64;
     let report = format!("drift {drift} (L0 land {l0_land}, level-6 land {deep_land} of {total})");
     eprintln!("fine-shoreline land {report}");
     assert!(drift <= 0.01, "land fraction {report}");
-}
-
-fn shoreline() -> FineShoreline {
-    shoreline_for(causal_formation_fixture())
-}
-
-fn shoreline_for(fixture: &CausalFormationFixture) -> FineShoreline {
-    let formation = fixture.artifact.bundle().surface_formation();
-    let hydrology = formation.hydrology();
-    FineShoreline::new(
-        &fixture.surface,
-        hydrology.surface_water(),
-        hydrology.lakes(),
-        formation.terrain_fields().sea_level_m(),
-    )
 }
 
 fn is_land(
@@ -234,7 +219,7 @@ fn fine_water_body_area_probe_standard() {
 
 fn fine_water_body_area(fixture: &CausalFormationFixture, tier: &str) {
     let evaluator = evaluator_for(fixture);
-    let shoreline = shoreline_for(fixture);
+    let shoreline = evaluator.shoreline();
     let formation = fixture.artifact.bundle().surface_formation();
     let p1_ocean = formation
         .terrain_fields()
@@ -536,7 +521,7 @@ fn river_mouth_probe_standard() {
 
 fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
     let evaluator = evaluator_for(fixture);
-    let shoreline = shoreline_for(fixture);
+    let shoreline = evaluator.shoreline();
     let hydrology = fixture.artifact.bundle().surface_formation().hydrology();
     let water = hydrology.surface_water();
     let cells = fixture.surface.cells();
@@ -544,7 +529,7 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
     let segments = hydrology.river_segments();
     for level in [6_u8, 10] {
         let wet = |direction: UnitVector3| {
-            displayed_kind(&evaluator, &shoreline, direction, level) != SurfaceWaterKind::DryLand
+            displayed_kind(&evaluator, shoreline, direction, level) != SurfaceWaterKind::DryLand
         };
         let tallies: Vec<(bool, MouthTally)> = segments
             .par_iter()
@@ -703,7 +688,7 @@ fn pick_display_probe_standard() {
 
 fn pick_display(fixture: &CausalFormationFixture, tier: &str) {
     let evaluator = evaluator_for(fixture);
-    let shoreline = shoreline_for(fixture);
+    let shoreline = evaluator.shoreline();
     let water = fixture
         .artifact
         .bundle()
