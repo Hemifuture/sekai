@@ -4,6 +4,7 @@ mod climate;
 mod climate_rule_input;
 mod connectivity;
 mod erosion;
+mod fine_shoreline;
 mod fractal;
 mod geologic_rule_input;
 mod geology;
@@ -39,6 +40,7 @@ pub use climate_rule_input::{
     RuleClimateResolutionStage, RuleClimateResolutionStageInputs,
 };
 pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
+pub use fine_shoreline::FineShoreline;
 pub use formation::{
     annual_precipitation_total_bias, causal_natural_formation_graph, classify_substrate_bedrock,
     climate_state_formation_residual, climate_state_rms_difference, compare_climate_states,

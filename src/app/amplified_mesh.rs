@@ -2,8 +2,9 @@
 //!
 //! The visible surface is a mosaic of T1 v2 hierarchical primitives: every
 //! leaf triangle is one data atom rendered as one solid patch whose color
-//! uses the published water class and the land hypsometric palette, carried
-//! by a dedicated provoking vertex and flat-interpolated on the GPU.
+//! uses its fine-shoreline water class (T1 v2.2 §5.1) and the land
+//! hypsometric palette, carried by a dedicated provoking vertex and
+//! flat-interpolated on the GPU.
 //!
 //! A *selection* replaces the M1 uniform global depth (Ulrich 2002 chunked
 //! LOD) on a physical ladder: levels halve the spec §5 primitive edge from
@@ -30,13 +31,13 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::generators::natural::{
-    HierarchicalEvaluator, HierarchicalPath, PrimitiveValue, HIERARCHICAL_PATH_DEPTH_MAX,
+    FineShoreline, HierarchicalEvaluator, HierarchicalPath, PrimitiveValue,
+    HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::view::{
     project_unit_direction, AmplifiedSurfaceMesh, GlobeCamera, MapScreenTransform, ProjectionPoint,
     RiverPolylineSegment, SphericalPresentationViewState, SphericalProjection, SphericalViewMode,
 };
-use crate::world::natural::SurfaceWaterField;
 use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
 
@@ -95,8 +96,8 @@ pub(super) struct AmplifiedDetailContext {
     pub(super) river_orders: Vec<u8>,
     /// Per reach: P5 contributing area at its origin, for Horton main-stem tracing.
     pub(super) river_drainage_area_km2: Vec<f32>,
-    /// The same validated water classification used to clip river mouths.
-    pub(super) surface_water: SurfaceWaterField,
+    /// The per-leaf water classification that colors the terrain.
+    pub(super) shoreline: FineShoreline,
 }
 
 /// One renderable subtree: the leaves `extra` levels below
@@ -977,16 +978,14 @@ fn midpoint_index(
     Some(index)
 }
 
-/// One leaf's water-aware color, preserving the authoritative cell boundary.
+/// One leaf's water-aware color: the shoreline is the water-surface
+/// contour of the derived field, so it refines with every level.
 fn flat_color(context: &AmplifiedDetailContext, cell: CellId, value: PrimitiveValue) -> [u8; 4] {
     let base = crate::view::terrain_water_color(
         value.elevation_m,
         context.sea_level_m,
         context.display_radius_m,
-        context
-            .surface_water
-            .get(cell.raw() as usize)
-            .expect("validated water covers the mesh"),
+        context.shoreline.classify(cell, value.elevation_m),
     );
     let components = base.components();
     [
@@ -1068,7 +1067,8 @@ mod tests {
     use crate::generators::natural::{AmplificationFieldsView, LocatedPrimitive};
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::view::{MapCamera, SphericalProjectionKind};
-    use crate::world::natural::{SphericalOrogenyKind, SurfaceWaterKind};
+    use crate::world::natural::{Lake, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind};
+    use crate::world::LakeId;
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
 
     fn test_context() -> AmplifiedDetailContext {
@@ -1110,14 +1110,31 @@ mod tests {
             river_drainage_area_km2: Vec::new(),
             // Exercise the actual mesh binding and its cache with all three
             // water classes, rather than only testing the palette in isolation.
-            surface_water: SurfaceWaterField::from_kinds(
-                (0..count)
-                    .map(|index| match index % 3 {
-                        0 => SurfaceWaterKind::DryLand,
-                        1 => SurfaceWaterKind::Ocean,
-                        _ => SurfaceWaterKind::Lake,
-                    })
-                    .collect(),
+            shoreline: FineShoreline::new(
+                &surface,
+                &SurfaceWaterField::from_kinds(
+                    (0..count)
+                        .map(|index| match index % 3 {
+                            0 => SurfaceWaterKind::DryLand,
+                            1 => SurfaceWaterKind::Ocean,
+                            _ => SurfaceWaterKind::Lake,
+                        })
+                        .collect(),
+                ),
+                &[Lake::new(
+                    LakeId::from_raw(0),
+                    (0..count)
+                        .filter(|index| index % 3 == 2)
+                        .map(|index| CellId::from_raw(index as u32))
+                        .collect(),
+                    500.0,
+                    1.0,
+                    1.0,
+                    None,
+                    None,
+                )
+                .unwrap()],
+                0.0,
             ),
         }
     }
@@ -1230,7 +1247,12 @@ mod tests {
                 .map(|segment| segment.strahler_order())
                 .collect(),
             river_drainage_area_km2: vec![1.0, 4.0, 2.0],
-            surface_water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
+            shoreline: FineShoreline::new(
+                &surface,
+                &SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
+                &[],
+                0.0,
+            ),
         }
     }
 

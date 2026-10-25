@@ -8,10 +8,11 @@
 mod support;
 
 use sekai::generators::natural::{
-    fibonacci_probe, FormationDerivationInputs, HierarchicalEvaluator,
+    fibonacci_probe, FineShoreline, FormationDerivationInputs, HierarchicalEvaluator,
+    LocatedPrimitive,
 };
-use sekai::world::natural::{ELEVATION_MAX_M, ELEVATION_MIN_M};
-use sekai::world::spatial::{audited_float_platform, spherical_triangle_area_unit};
+use sekai::world::natural::{SurfaceWaterKind, ELEVATION_MAX_M, ELEVATION_MIN_M};
+use sekai::world::spatial::{audited_float_platform, spherical_triangle_area_unit, UnitVector3};
 use sekai::world::{CellId, RootSeed};
 use support::causal_formation::causal_formation_fixture;
 
@@ -65,31 +66,119 @@ fn l0_cells_reproduce_the_published_elevation_bit_exactly() {
     }
 }
 
-/// Spec §7 invariant 6 on the product: the level-6 land fraction stays within
-/// one percentage point of L0 over the same 16,384 Fibonacci probes as the
-/// unit test. Red when restored (T1 v2.2 spec §1.8); stage 1 must turn it
-/// green and remove the ignore, never widen the threshold.
+/// T1 v2.2 spec §3.3.5 / §5.2.2: with land and water decided by the §5.1
+/// fine-shoreline rule, the level-6 land fraction stays within one
+/// percentage point of L0 over the same 16,384 Fibonacci probes as the unit
+/// test. Never widen the threshold.
 #[test]
-#[ignore = "red until T1 v2.2 stage 1: measured drift 0.0139 on Draft seed 42 (spec §1.8)"]
 fn deep_land_fraction_stays_within_one_point_of_l0() {
     let evaluator = evaluator();
-    let sea_level = causal_formation_fixture()
-        .artifact
-        .bundle()
-        .surface_formation()
-        .terrain_fields()
-        .sea_level_m();
+    let shoreline = shoreline();
     let total = 16_384_usize;
     let (mut l0_land, mut deep_land) = (0_u32, 0_u32);
     for index in 0..total {
         let probe = fibonacci_probe(index, total);
-        l0_land += u32::from(evaluator.sample(probe, 0).elevation_m >= sea_level);
-        deep_land += u32::from(evaluator.sample(probe, 6).elevation_m >= sea_level);
+        l0_land += u32::from(is_land(&evaluator, &shoreline, probe, 0));
+        deep_land += u32::from(is_land(&evaluator, &shoreline, probe, 6));
     }
     let drift = (f64::from(l0_land) - f64::from(deep_land)).abs() / total as f64;
-    assert!(
-        drift <= 0.01,
-        "land fraction drift {drift} (L0 land {l0_land}, level-6 land {deep_land} of {total})"
+    let report = format!("drift {drift} (L0 land {l0_land}, level-6 land {deep_land} of {total})");
+    eprintln!("fine-shoreline land {report}");
+    assert!(drift <= 0.01, "land fraction {report}");
+}
+
+fn shoreline() -> FineShoreline {
+    let fixture = causal_formation_fixture();
+    let formation = fixture.artifact.bundle().surface_formation();
+    let hydrology = formation.hydrology();
+    FineShoreline::new(
+        &fixture.surface,
+        hydrology.surface_water(),
+        hydrology.lakes(),
+        formation.terrain_fields().sea_level_m(),
+    )
+}
+
+fn is_land(
+    evaluator: &HierarchicalEvaluator,
+    shoreline: &FineShoreline,
+    probe: UnitVector3,
+    level: u8,
+) -> bool {
+    let cell = match evaluator.locate(probe, 0) {
+        LocatedPrimitive::Cell(cell) => cell,
+        LocatedPrimitive::Triangle { cell, .. } => cell,
+    };
+    shoreline.classify(cell, evaluator.sample(probe, level).elevation_m)
+        == SurfaceWaterKind::DryLand
+}
+
+/// T1 v2.2 spec §5.2.3: per water body, the level-6 fine-shoreline wet
+/// area over the published P5 member area (threshold still to be measured
+/// and pinned). Level-6 leaves are weighted equally inside a sector, as in
+/// the aggregate probe. Prints numbers; no gate.
+#[test]
+#[ignore = "release-only offline area probe (T1 v2.2 spec §5.2.3)"]
+fn fine_water_body_area_probe() {
+    let evaluator = evaluator();
+    let shoreline = shoreline();
+    let fixture = causal_formation_fixture();
+    let hydrology = fixture.artifact.bundle().surface_formation().hydrology();
+    let water = hydrology.surface_water();
+    let (mut ocean_p5, mut ocean_fine, mut lake_p5, mut lake_fine) = (0.0, 0.0, 0.0, 0.0);
+    let mut lake_of = vec![None; fixture.surface.cells().len()];
+    for (slot, lake) in hydrology.lakes().iter().enumerate() {
+        for cell in lake.cells() {
+            lake_of[cell.raw() as usize] = Some(slot);
+        }
+    }
+    let mut per_lake = vec![(0.0_f64, 0.0_f64); hydrology.lakes().len()];
+    for (index, own_lake) in lake_of.iter().enumerate() {
+        let cell = CellId::from_raw(index as u32);
+        let kind = water
+            .get(index)
+            .expect("validated water covers the surface");
+        for sector in 0..evaluator.sector_count(cell) as u8 {
+            let [a, b, c] = evaluator.sector_corners(cell, sector);
+            let weight = spherical_triangle_area_unit(a, b, c);
+            let (mut ocean, mut lake, mut count) = (0_u32, 0_u32, 0_u32);
+            evaluator.for_each_leaf_value(cell, sector, &[], 5, &mut |leaf| {
+                match shoreline.classify(cell, leaf.elevation_m) {
+                    SurfaceWaterKind::Ocean => ocean += 1,
+                    SurfaceWaterKind::Lake => lake += 1,
+                    SurfaceWaterKind::DryLand => {}
+                }
+                count += 1;
+            });
+            ocean_fine += weight * f64::from(ocean) / f64::from(count);
+            lake_fine += weight * f64::from(lake) / f64::from(count);
+            match kind {
+                SurfaceWaterKind::Ocean => ocean_p5 += weight,
+                SurfaceWaterKind::Lake => {
+                    lake_p5 += weight;
+                    if let Some(slot) = *own_lake {
+                        per_lake[slot].0 += weight;
+                    }
+                }
+                SurfaceWaterKind::DryLand => {}
+            }
+            // Attribute fine lake leaves to the root's own lake only; ring
+            // leaves of a neighbouring lake are counted in the totals.
+            if let Some(slot) = *own_lake {
+                per_lake[slot].1 += weight * f64::from(lake) / f64::from(count);
+            }
+        }
+    }
+    eprintln!("[fine water] ocean fine/P5 {:.4}", ocean_fine / ocean_p5);
+    eprintln!(
+        "[fine water] lakes fine/P5 {:.4} (all lake leaves incl. ring)",
+        lake_fine / lake_p5
+    );
+    let mut ratios: Vec<f64> = per_lake.iter().map(|(p5, fine)| fine / p5).collect();
+    eprintln!(
+        "[fine water] {} lakes, own-cell wet/P5 | {}",
+        ratios.len(),
+        quantiles(&mut ratios)
     );
 }
 
