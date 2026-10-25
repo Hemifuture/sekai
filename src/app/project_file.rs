@@ -847,21 +847,18 @@ mod tests {
     }
 
     #[test]
-    fn explicit_upgrade_copy_preserves_source_identity_and_bytes() {
+    fn version_one_recipe_requires_explicit_upgrade_copy_and_keeps_source_bytes() {
+        // Recipes written before the epoch-2 bump carry version 1; everything else
+        // matches, so only the epoch can keep them from opening as `Exact`.
         let mut file = project(WorldPipeline::Formation);
         let current = file.generator.clone();
-        file.generator.stages[0].version += 10;
-        file.generator
-            .profile_plan
-            .as_mut()
-            .unwrap()
-            .climate_face_resolution += 1;
+        file.generator.product_recipe_version = 1;
         let source = encode_project(&file).unwrap();
         let decoded = decode_project(&source).unwrap();
-        assert!(matches!(
+        assert_eq!(
             compare_generator(&decoded.generator, &current),
-            Compatibility::UpgradeRequired(_)
-        ));
+            Compatibility::UpgradeRequired(vec!["product recipe version".to_owned()])
+        );
         let upgraded = upgrade_copy(&decoded, current.clone());
         assert_eq!(upgraded.upgraded_from, Some(file.generator.clone()));
         assert_eq!(upgraded.generator, current);
