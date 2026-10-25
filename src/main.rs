@@ -37,7 +37,7 @@ fn native_viewport_app_id(
     acceptance_viewport: Option<&str>,
 ) -> Option<&'static str> {
     native_acceptance_viewport_requested(frame_stats, acceptance_viewport)
-        .then_some("sekai-frame-stats-acceptance")
+        .then_some("sekai-a10-climate-preview")
 }
 
 // When compiling natively:

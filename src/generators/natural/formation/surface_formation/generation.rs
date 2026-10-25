@@ -131,14 +131,20 @@ impl SurfaceFormationGenerator {
             inputs.domain,
             cancellation,
         )?;
-        let (endpoint_climate, _) = GlobalCirculationGenerator::generate_endpoint(
-            surface,
-            inputs.domain,
-            &forcing,
-            inputs.initial_climate,
-            start_correction,
-            cancellation,
-        )?;
+        // a10-climate-ui-preview: the reduced climate replaces the endpoint P4.
+        let _ = start_correction;
+        let endpoint_climate =
+            crate::generators::natural::formation::reduced_climate::publish::generate_reduced_snapshot(
+                surface,
+                inputs.domain,
+                &forcing,
+                inputs.climate_spec,
+                (
+                    final_terrain.current_elevation_m(),
+                    final_terrain.surface_water_geometry(),
+                ),
+                cancellation,
+            );
         let terminal_diagnostics = recompute_surface_diagnostics(
             &state,
             SurfaceProcessInputs::from_generation(inputs, &endpoint_climate),

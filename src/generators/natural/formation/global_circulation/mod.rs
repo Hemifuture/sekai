@@ -46,7 +46,6 @@ pub use generation::{
     GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalCirculationPhase,
 };
 pub use imex::ImexCrankNicolsonIntegrator;
-#[cfg(test)]
 pub(crate) use project::{
     project_intensive_scalar_cancellable, project_monthly_extensive_rate_cancellable,
     project_monthly_intensive_scalar_cancellable, project_monthly_tangent_vectors_cancellable,

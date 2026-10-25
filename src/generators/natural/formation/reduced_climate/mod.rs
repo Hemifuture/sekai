@@ -26,6 +26,7 @@
 
 #[cfg(test)]
 mod probe;
+pub(in crate::generators::natural) mod publish;
 
 use rayon::prelude::*;
 

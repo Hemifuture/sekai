@@ -101,14 +101,20 @@ impl CausalNaturalFormationGenerator {
             inputs.climate_domain,
             cancellation,
         )?;
-        let (start_climate, start_correction) =
-            GlobalCirculationGenerator::generate_capturing_start_correction(
-                surface,
-                inputs.climate_domain,
-                &start_forcing,
-                ClimateModelProfile::C2LayeredV1,
-                cancellation,
-            )?;
+        // a10-climate-ui-preview: the reduced climate replaces the start P4.
+        let start_climate = super::reduced_climate::publish::generate_reduced_snapshot(
+            surface,
+            inputs.climate_domain,
+            &start_forcing,
+            inputs.climate_spec,
+            (
+                primary_relief.elevation_m(),
+                primary_relief.surface_water_geometry(),
+            ),
+            cancellation,
+        );
+        let start_correction: Option<super::global_circulation::StartAtmosphereFasCorrection> =
+            None;
         let closure = SurfaceFormationGenerator::generate_from_exact_state(
             SurfaceFormationInputs {
                 surface,

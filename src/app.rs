@@ -1465,6 +1465,7 @@ impl TemplateApp {
             .take()
             .expect("the pending world build completion was staged");
         let was_replacement = pending.replacement;
+        let preview_started_at = pending.started_at;
         let cancellation = pending.cancellation;
         let retained_stage_cache = pending.retained_stage_cache;
         let WorldBuildCompletion {
@@ -1503,6 +1504,11 @@ impl TemplateApp {
                         MigrationFailurePoint::None,
                     )
                 };
+                eprintln!(
+                    "a10_preview_publish elapsed_ms={:.1} success={}",
+                    preview_started_at.elapsed().as_secs_f64() * 1_000.0,
+                    install.is_ok()
+                );
                 self.stage_cache = settle_world_build_stage_cache(
                     stage_cache,
                     retained_stage_cache,
