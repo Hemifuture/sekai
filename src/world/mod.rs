@@ -2,6 +2,7 @@ pub mod fields;
 pub mod natural;
 pub mod spatial;
 
+pub(crate) mod fingerprint;
 mod ids;
 mod serde_bounded;
 mod spec;

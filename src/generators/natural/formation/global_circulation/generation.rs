@@ -532,7 +532,8 @@ impl GlobalCirculationGenerator {
         let remap_report = remap_report(domain, published_precipitation_relative_error)?;
         observer(GlobalCirculationPhase::FinalValidationStarted);
         let cancelled = || cancellation.is_cancelled();
-        let state_fingerprint = fields.fingerprint_cancellable(&cancelled)?;
+        let fields = fields.seal_cancellable(&cancelled)?;
+        let state_fingerprint = *fields.state_fingerprint();
         observer(GlobalCirculationPhase::StateFingerprintCompleted);
         // A8b §6.2: only a guess that actually came from the start solve is
         // recorded; a rejected injection keeps today's v1 identity.

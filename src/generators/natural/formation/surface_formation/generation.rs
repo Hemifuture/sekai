@@ -1406,14 +1406,21 @@ fn input_fingerprint<T: Serialize>(
 ) -> Result<[u8; 32], SurfaceFormationGenerationError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain);
-    let mut writer = CancellableHashWriter {
-        hasher: &mut hasher,
-        cancellation,
-        pending: 0,
-        cancelled: false,
-    };
-    let result = serde_json::to_writer(&mut writer, value);
-    let cancelled = writer.cancelled;
+    // serde_json writes one token at a time; batching them keeps BLAKE3 on its bulk path
+    // (the digest only depends on the byte stream, not on how it is split).
+    let mut writer = io::BufWriter::with_capacity(
+        FINGERPRINT_POLL_BYTES,
+        CancellableHashWriter {
+            hasher: &mut hasher,
+            cancellation,
+            pending: 0,
+            cancelled: false,
+        },
+    );
+    let result = serde_json::to_writer(&mut writer, value)
+        .and_then(|()| writer.flush().map_err(serde_json::Error::io));
+    let cancelled = writer.get_ref().cancelled;
+    drop(writer);
     result.map_err(|error| {
         if cancelled {
             SurfaceFormationGenerationError::Cancelled
