@@ -1,0 +1,1195 @@
+//! Ignored Release probe for the A10 reduced-order climate prototype.
+//!
+//! `SEKAI_A10_PROFILE=draft|standard` selects the profile (seed 42) and
+//! `SEKAI_A10_DIR` the output directory for the JSON evidence. The probe
+//! builds the production chain once (baseline P4 start, P5, endpoint P4),
+//! then evaluates the reduced model on (a) the baseline endpoint forcing, for
+//! a climate-only comparison and timing, and (b) its own start -> P5 ->
+//! endpoint chain, for the downstream P5 effect.
+//!
+//! The probe wraps reduced fields in a C2-shaped `GlobalCirculationSnapshot`
+//! only so production consumers (P5 kernels, hydrology, the P4 quality
+//! evaluator) can read them unchanged. The wrapper carries the production
+//! model fingerprint and placeholder vertical fields; it never leaves the
+//! probe and is not a proposed schema.
+
+use std::time::Instant;
+
+use serde_json::{json, Value};
+
+use super::{
+    dot, norm, solve_reduced_climate, vapour_column_mass_kg_m2, OutgoingLongwaveClosure,
+    ReducedGrid, ReducedInputs, ReducedWorkClimate,
+};
+use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
+use crate::generators::natural::formation::global_circulation::{
+    global_circulation_model_fingerprint, project_intensive_scalar_cancellable,
+    project_monthly_extensive_rate_cancellable, project_monthly_intensive_scalar_cancellable,
+    project_monthly_tangent_vectors_cancellable, GlobalClimateForcing,
+    SELECTED_PRODUCTION_INTEGRATOR,
+};
+use crate::generators::natural::formation::surface_formation::generation::{
+    advance_surface_processes, SurfaceProcessInputs,
+};
+use crate::generators::natural::formation::surface_formation::FormationState;
+use crate::generators::natural::random::LabeledSubstreams;
+use crate::generators::natural::{
+    quality, ClimateWorkDomainBuilder, EvolvedTectonicGenerator, FormationHydrologyGenerator,
+    GeologicSubstrateGenerator, GlobalCirculationGenerator, GlobalClimateForcingBuilder,
+    PrimaryReliefGenerator, SurfaceFormationGenerator, SurfaceFormationInputs,
+};
+use crate::generators::spatial::{remap_intensive_f32, ProfileSurfaceBuilder};
+use crate::world::natural::{
+    atmospheric_reference_surface_height_m, expected_global_circulation_dense_state_bytes,
+    planetary_albedo_from_surface, saturation_specific_humidity_kg_kg, ClimateBudgetReport,
+    ClimateCapabilitySet, ClimateCheckpoint, ClimateLayerLayout, ClimateModelProfile,
+    ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport, ClimateSpec,
+    ClimateWorkDomainSnapshot, GeologicSpec, GlobalCirculationFields, GlobalCirculationSnapshot,
+    HydroErosionSpec, MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile,
+    NaturalQualityReport, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
+    SphericalHydrologySnapshot, SurfaceWaterGeometry, TectonicSpec, WorldFormationPreset,
+    CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
+    GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP, GLOBAL_CIRCULATION_SCHEMA_V2,
+    RESOLVED_WORLD_FORMATION_SCHEMA_V1, SURFACE_FORMATION_HORIZON_YEARS,
+};
+use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, SurfaceRef};
+use crate::world::{Meters, RootSeed};
+
+const MONTHS: usize = CLIMATE_MONTH_COUNT;
+const TIMING_REPETITIONS: usize = 5;
+
+type Monthly = Vec<[f32; MONTHS]>;
+type MonthlyVector = Vec<[[f32; 3]; MONTHS]>;
+
+/// Published (authoritative-surface) climate as consumed downstream.
+struct Published {
+    wind: MonthlyVector,
+    current: MonthlyVector,
+    air: Monthly,
+    sst: Monthly,
+    albedo: Vec<f32>,
+    asr: Monthly,
+    olr: Monthly,
+    humidity: Monthly,
+    evaporation: Monthly,
+    precipitation: Monthly,
+    orographic: Monthly,
+    sea_height: Monthly,
+}
+
+/// Authoritative reference heights `h_c` and the scheme-C work mean `H = M h`.
+fn reference_heights(
+    domain: &ClimateWorkDomainSnapshot,
+    elevation_m: &[f32],
+    water: &SurfaceWaterGeometry,
+) -> (Vec<f64>, Vec<f64>) {
+    let sea = water.sea_level_m();
+    let h_c: Vec<f32> = elevation_m
+        .iter()
+        .zip(water.ocean_area_fraction())
+        .map(|(&z, &ocean)| atmospheric_reference_surface_height_m(z - sea, 1.0 - ocean) as f32)
+        .collect();
+    let work =
+        remap_intensive_f32(domain.source_to_climate(), &h_c).expect("reference height remap");
+    (
+        h_c.iter().map(|&v| f64::from(v)).collect(),
+        work.iter().map(|&v| f64::from(v)).collect(),
+    )
+}
+
+fn to_monthly(values: &[[f64; MONTHS]]) -> Monthly {
+    values.iter().map(|m| m.map(|v| v as f32)).collect()
+}
+
+fn to_monthly_vector(values: &[[[f64; 3]; MONTHS]]) -> MonthlyVector {
+    values
+        .iter()
+        .map(|m| m.map(|v| v.map(|c| c as f32)))
+        .collect()
+}
+
+/// Projects every published field, applying the LOD-2 scheme-C lapse-rate
+/// projection to air temperature and RH-preserving humidity (LOD-2 §3.1, §11.4).
+fn project_all(
+    surface: &SphericalSurfaceSnapshot,
+    domain: &ClimateWorkDomainSnapshot,
+    forcing: &GlobalClimateForcing,
+    inputs: &ReducedInputs,
+    work: &ReducedWorkClimate,
+    cell_heights: &[f64],
+    cancellation: &BuildCancellation,
+) -> Published {
+    let mut published = project_for_p5(surface, domain, forcing, work, cancellation);
+    let theta = project_monthly_intensive_scalar_cancellable(
+        domain,
+        &to_monthly(&work.theta_c),
+        cancellation,
+    )
+    .expect("theta projection")
+    .into_values();
+    let air: Monthly = theta
+        .iter()
+        .zip(cell_heights)
+        .map(|(months, h)| {
+            months.map(|t| (f64::from(t) - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * h) as f32)
+        })
+        .collect();
+    let relative_humidity: Vec<[f64; MONTHS]> = work
+        .specific_humidity
+        .iter()
+        .zip(&work.air_temperature_c)
+        .map(|(q, t)| std::array::from_fn(|m| q[m] / saturation_specific_humidity_kg_kg(t[m])))
+        .collect();
+    let rh = project_monthly_intensive_scalar_cancellable(
+        domain,
+        &to_monthly(&relative_humidity),
+        cancellation,
+    )
+    .expect("rh projection")
+    .into_values();
+    let humidity: Monthly = rh
+        .iter()
+        .zip(&air)
+        .map(|(r, t)| {
+            std::array::from_fn(|m| {
+                (f64::from(r[m]) * saturation_specific_humidity_kg_kg(f64::from(t[m]))) as f32
+            })
+        })
+        .collect();
+    let extensive = |values: &[[f64; MONTHS]]| {
+        project_monthly_extensive_rate_cancellable(domain, &to_monthly(values), cancellation)
+            .expect("extensive projection")
+            .into_values()
+    };
+    let intensive = |values: &[[f64; MONTHS]]| {
+        project_monthly_intensive_scalar_cancellable(domain, &to_monthly(values), cancellation)
+            .expect("intensive projection")
+            .into_values()
+    };
+    let asr: Vec<[f64; MONTHS]> = inputs.monthly_absorbed_shortwave_w_m2.clone();
+    let albedo_work: Vec<f32> = inputs.surface_albedo.iter().map(|&v| v as f32).collect();
+    published.air = air;
+    published.sst = intensive(&work.sea_surface_temperature_c);
+    published.albedo =
+        project_intensive_scalar_cancellable(domain, &albedo_work, cancellation).expect("albedo");
+    published.asr = extensive(&asr);
+    published.olr = extensive(&work.outgoing_longwave_w_m2);
+    published.humidity = humidity;
+    published.evaporation = extensive(&work.evaporation_mm_day);
+    published.orographic = extensive(&work.orographic_precipitation_mm_day);
+    published.sea_height = intensive(&work.sea_surface_height_m);
+    published
+}
+
+/// Projects only what P5 reads (precipitation, wind, ocean current).
+fn project_for_p5(
+    surface: &SphericalSurfaceSnapshot,
+    domain: &ClimateWorkDomainSnapshot,
+    forcing: &GlobalClimateForcing,
+    work: &ReducedWorkClimate,
+    cancellation: &BuildCancellation,
+) -> Published {
+    let precipitation = project_monthly_extensive_rate_cancellable(
+        domain,
+        &to_monthly(&work.precipitation_mm_day),
+        cancellation,
+    )
+    .expect("precipitation projection")
+    .into_values();
+    let wind = project_monthly_tangent_vectors_cancellable(
+        domain,
+        surface,
+        &to_monthly_vector(&work.wind_m_s),
+        cancellation,
+    )
+    .expect("wind projection");
+    let mut current = project_monthly_tangent_vectors_cancellable(
+        domain,
+        surface,
+        &to_monthly_vector(&work.ocean_current_m_s),
+        cancellation,
+    )
+    .expect("current projection");
+    for (vectors, &land) in current.iter_mut().zip(forcing.source_publishes_land()) {
+        if land == 1.0 {
+            *vectors = [[0.0; 3]; MONTHS];
+        }
+    }
+    let n = surface.cells().len();
+    Published {
+        wind,
+        current,
+        air: vec![[0.0; MONTHS]; n],
+        sst: vec![[0.0; MONTHS]; n],
+        albedo: vec![0.0; n],
+        asr: vec![[0.0; MONTHS]; n],
+        olr: vec![[0.0; MONTHS]; n],
+        humidity: vec![[0.0; MONTHS]; n],
+        evaporation: vec![[0.0; MONTHS]; n],
+        precipitation,
+        orographic: vec![[0.0; MONTHS]; n],
+        sea_height: vec![[0.0; MONTHS]; n],
+    }
+}
+
+fn published_from_snapshot(snapshot: &GlobalCirculationSnapshot) -> Published {
+    let f = snapshot.fields();
+    Published {
+        wind: f.near_surface_wind_m_s().values().to_vec(),
+        current: f.surface_ocean_current_m_s().values().to_vec(),
+        air: f.monthly_air_temperature_c().values().to_vec(),
+        sst: f.monthly_sea_surface_temperature_c().values().to_vec(),
+        albedo: f.surface_albedo().to_vec(),
+        asr: f.monthly_absorbed_shortwave_w_m2().values().to_vec(),
+        olr: f.monthly_outgoing_longwave_w_m2().values().to_vec(),
+        humidity: f.monthly_specific_humidity().values().to_vec(),
+        evaporation: f.monthly_evaporation_mm_day().values().to_vec(),
+        precipitation: f.monthly_precipitation_mm_day().values().to_vec(),
+        orographic: f
+            .monthly_orographic_precipitation_mm_day()
+            .values()
+            .to_vec(),
+        sea_height: f.monthly_sea_surface_height_anomaly_m().values().to_vec(),
+    }
+}
+
+/// Global budget numbers on the work grid (production `final_cycle_budget`
+/// semantics: area-month means, CERES planetary albedo of the surface albedo).
+fn budget_report(
+    grid: &ReducedGrid,
+    forcing: &GlobalClimateForcing,
+    inputs: &ReducedInputs,
+    work: &ReducedWorkClimate,
+) -> ClimateBudgetReport {
+    let (mut asr, mut olr, mut incoming, mut reflected, mut weight) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for cell in 0..grid.cell_count() {
+        let area = grid.area_m2[cell];
+        let planetary = planetary_albedo_from_surface(inputs.surface_albedo[cell]);
+        for month in 0..MONTHS {
+            asr += area * inputs.monthly_absorbed_shortwave_w_m2[cell][month];
+            olr += area * work.outgoing_longwave_w_m2[cell][month];
+            let top = EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2
+                * f64::from(forcing.monthly_insolation_fraction()[cell][month]);
+            incoming += area * top;
+            reflected += area * top * planetary;
+            weight += area;
+        }
+    }
+    let d = &work.diagnostics;
+    ClimateBudgetReport::new_with_climatology(
+        0.0,
+        0.0,
+        d.water_relative_imbalance,
+        d.toa_relative_error,
+        0.0,
+        d.evaporation_global_mean_mm_day,
+        d.precipitation_global_mean_mm_day,
+        asr / weight,
+        olr / weight,
+        reflected / incoming,
+    )
+    .expect("reduced budget passes the production report validation")
+}
+
+/// Wraps published fields into the C2-shaped snapshot read by P5 and quality.
+/// Vertical fields are placeholders: the upper wind is the near-surface
+/// steering wind (the proposed replacement for the orographic gates), shear
+/// and heights are zero, thermocline fields copy the SST.
+fn wrap(
+    surface: &SphericalSurfaceSnapshot,
+    domain: &ClimateWorkDomainSnapshot,
+    forcing: &GlobalClimateForcing,
+    published: &Published,
+    budget: ClimateBudgetReport,
+) -> GlobalCirculationSnapshot {
+    let n = surface.cells().len();
+    let zeros: Monthly = vec![[0.0; MONTHS]; n];
+    let profile = ClimateModelProfile::C2LayeredV1;
+    let thermocline_depth: Monthly = vec![[900.0; MONTHS]; n];
+    let scalar = |v: &Monthly| MonthlyScalarField::from_values(v.clone()).expect("finite scalar");
+    let vector =
+        |v: &MonthlyVector| MonthlyVector3Field::from_values(v.clone()).expect("finite vector");
+    let fields = GlobalCirculationFields::new_c2(
+        vector(&published.wind),
+        vector(&published.wind),
+        vector(&vec![[[0.0; 3]; MONTHS]; n]),
+        vector(&published.current),
+        scalar(&published.air),
+        scalar(&published.sst),
+        published.albedo.clone(),
+        scalar(&published.asr),
+        scalar(&published.olr),
+        scalar(&published.sst),
+        scalar(&thermocline_depth),
+        scalar(&published.humidity),
+        scalar(&published.evaporation),
+        scalar(&published.precipitation),
+        scalar(&published.orographic),
+        scalar(&zeros),
+        scalar(&zeros),
+        scalar(&published.sea_height),
+        scalar(&zeros),
+        scalar(&published.sst),
+    )
+    .expect("C2-shaped probe fields");
+    let checkpoint = ClimateCheckpoint::new(
+        domain.profile(),
+        profile,
+        SELECTED_PRODUCTION_INTEGRATOR,
+        *domain.climate_grid_fingerprint(),
+        *forcing.fingerprint(),
+        global_circulation_model_fingerprint(profile),
+        *blake3::hash(b"sekai.a10-reduced-climate-probe.v1").as_bytes(),
+        ClimateQuantizationId::DeterministicF64V1,
+        MONTHS as u32,
+        fields.fingerprint(),
+    )
+    .expect("probe checkpoint");
+    let solve = ClimateSolveReport::new(
+        1,
+        MONTHS as u64,
+        MONTHS as u64 * GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP,
+        0,
+        0.0,
+        0.0,
+        0.0,
+        expected_global_circulation_dense_state_bytes(domain.profile(), profile, n as u32)
+            .expect("dense bytes"),
+    )
+    .expect("probe solve report");
+    let forward = domain.source_to_climate();
+    let reverse = domain.climate_to_source();
+    let remap = ClimateRemapReport::new(
+        forward.solve_stats().max_source_margin_relative_error(),
+        forward.solve_stats().max_target_margin_relative_error(),
+        reverse.solve_stats().max_source_margin_relative_error(),
+        reverse.solve_stats().max_target_margin_relative_error(),
+        0.0,
+        forward.overlap_count() as u32,
+        reverse.overlap_count() as u32,
+    )
+    .expect("probe remap report");
+    let snapshot = GlobalCirculationSnapshot::new(
+        GLOBAL_CIRCULATION_SCHEMA_V2,
+        SurfaceRef::from_validated_spherical(surface).expect("surface ref"),
+        ClimateLayerLayout::for_profile(profile),
+        SELECTED_PRODUCTION_INTEGRATOR,
+        ClimateCapabilitySet::for_profile(profile),
+        checkpoint,
+        solve,
+        budget,
+        remap,
+        fields,
+    )
+    .expect("probe snapshot");
+    snapshot
+        .validate_against(surface)
+        .expect("probe snapshot binds the authoritative surface");
+    snapshot
+}
+
+fn metrics_json(report: &NaturalQualityReport) -> Value {
+    Value::Object(
+        report
+            .metrics()
+            .iter()
+            .map(|m| {
+                (
+                    m.id().name().to_owned(),
+                    json!({
+                        "status": format!("{:?}", m.status()),
+                        "value": m.value(),
+                        "min": m.bounds().min(),
+                        "max": m.bounds().max(),
+                        "samples": m.sample_count(),
+                    }),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn annual(values: &[f32; MONTHS]) -> f64 {
+    values.iter().map(|&v| f64::from(v)).sum::<f64>() / MONTHS as f64
+}
+
+fn annual_vector(values: &[[f32; 3]; MONTHS]) -> [f64; 3] {
+    let mut sum = [0.0; 3];
+    for v in values {
+        for (s, c) in sum.iter_mut().zip(v) {
+            *s += f64::from(*c) / MONTHS as f64;
+        }
+    }
+    sum
+}
+
+/// Area-weighted RMS, bias, and pattern correlation of two cell fields.
+fn compare_scalar(areas: &[f64], mask: &[bool], a: &[f64], b: &[f64]) -> Value {
+    let (mut w, mut sa, mut sb) = (0.0, 0.0, 0.0);
+    for i in 0..a.len() {
+        if mask[i] {
+            w += areas[i];
+            sa += areas[i] * a[i];
+            sb += areas[i] * b[i];
+        }
+    }
+    let (ma, mb) = (sa / w, sb / w);
+    let (mut sq, mut cov, mut va, mut vb) = (0.0, 0.0, 0.0, 0.0);
+    for i in 0..a.len() {
+        if mask[i] {
+            let (da, db) = (a[i] - ma, b[i] - mb);
+            sq += areas[i] * (a[i] - b[i]).powi(2);
+            cov += areas[i] * da * db;
+            va += areas[i] * da * da;
+            vb += areas[i] * db * db;
+        }
+    }
+    json!({
+        "reduced_mean": ma,
+        "baseline_mean": mb,
+        "bias": ma - mb,
+        "rms_difference": (sq / w).sqrt(),
+        "baseline_spatial_std": (vb / w).sqrt(),
+        "reduced_spatial_std": (va / w).sqrt(),
+        "pattern_correlation": cov / (va.sqrt() * vb.sqrt()).max(f64::MIN_POSITIVE),
+    })
+}
+
+fn zonal_profile(surface: &SphericalSurfaceSnapshot, values: &[f64]) -> Vec<f64> {
+    let mut sums = [0.0_f64; 18];
+    let mut weights = [0.0_f64; 18];
+    for (cell, v) in surface.cells().iter().zip(values) {
+        let lat = cell.centroid.components()[2].asin().to_degrees();
+        let band = (((lat + 90.0) / 10.0).floor() as usize).min(17);
+        sums[band] += cell.area.get() * v;
+        weights[band] += cell.area.get();
+    }
+    sums.iter()
+        .zip(weights)
+        .map(|(s, w)| s / w.max(f64::MIN_POSITIVE))
+        .collect()
+}
+
+/// Climate-only comparison on the authoritative surface.
+fn compare_published(
+    surface: &SphericalSurfaceSnapshot,
+    land: &[bool],
+    reduced: &Published,
+    baseline: &Published,
+) -> Value {
+    let areas: Vec<f64> = surface.cells().iter().map(|c| c.area.get()).collect();
+    let all = vec![true; areas.len()];
+    let field = |p: &Published, pick: &dyn Fn(&Published, usize) -> f64| -> Vec<f64> {
+        (0..areas.len()).map(|i| pick(p, i)).collect()
+    };
+    let air = |p: &Published, i: usize| annual(&p.air[i]);
+    let precipitation = |p: &Published, i: usize| annual(&p.precipitation[i]);
+    let east_wind = |p: &Published, i: usize| {
+        let (east, _) = canonical_east_north_basis(surface.cells()[i].centroid);
+        dot(annual_vector(&p.wind[i]), east)
+    };
+    let north_wind = |p: &Published, i: usize| {
+        let (_, north) = canonical_east_north_basis(surface.cells()[i].centroid);
+        dot(annual_vector(&p.wind[i]), north)
+    };
+    let jul_minus_jan = |p: &Published, i: usize| f64::from(p.air[i][6] - p.air[i][0]);
+    let sst_jul_minus_jan = |p: &Published, i: usize| f64::from(p.sst[i][6] - p.sst[i][0]);
+    let current_speed = |p: &Published, i: usize| norm(annual_vector(&p.current[i]));
+    let mut monthly_t = 0.0;
+    let mut monthly_p = 0.0;
+    let mut wind_vector = 0.0;
+    let mut total = 0.0;
+    for (i, area) in areas.iter().enumerate() {
+        for m in 0..MONTHS {
+            monthly_t += area * f64::from(reduced.air[i][m] - baseline.air[i][m]).powi(2);
+            monthly_p += area
+                * f64::from(reduced.precipitation[i][m] - baseline.precipitation[i][m]).powi(2);
+            let d: Vec<f64> = (0..3)
+                .map(|c| f64::from(reduced.wind[i][m][c] - baseline.wind[i][m][c]))
+                .collect();
+            wind_vector += area * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        }
+        total += area * MONTHS as f64;
+    }
+    let ocean: Vec<bool> = land.iter().map(|l| !l).collect();
+    json!({
+        "annual_air_temperature_c": compare_scalar(&areas, &all, &field(reduced, &air), &field(baseline, &air)),
+        "annual_air_temperature_c_land": compare_scalar(&areas, land, &field(reduced, &air), &field(baseline, &air)),
+        "annual_precipitation_mm_day": compare_scalar(&areas, &all, &field(reduced, &precipitation), &field(baseline, &precipitation)),
+        "annual_precipitation_mm_day_land": compare_scalar(&areas, land, &field(reduced, &precipitation), &field(baseline, &precipitation)),
+        "annual_east_wind_m_s": compare_scalar(&areas, &all, &field(reduced, &east_wind), &field(baseline, &east_wind)),
+        "annual_north_wind_m_s": compare_scalar(&areas, &all, &field(reduced, &north_wind), &field(baseline, &north_wind)),
+        "air_jul_minus_jan_c": compare_scalar(&areas, &all, &field(reduced, &jul_minus_jan), &field(baseline, &jul_minus_jan)),
+        "sst_jul_minus_jan_c_ocean": compare_scalar(&areas, &ocean, &field(reduced, &sst_jul_minus_jan), &field(baseline, &sst_jul_minus_jan)),
+        "annual_current_speed_m_s_ocean": compare_scalar(&areas, &ocean, &field(reduced, &current_speed), &field(baseline, &current_speed)),
+        "monthly_air_temperature_rms_c": (monthly_t / total).sqrt(),
+        "monthly_precipitation_rms_mm_day": (monthly_p / total).sqrt(),
+        "monthly_wind_vector_rms_m_s": (wind_vector / total).sqrt(),
+        "zonal_10deg_south_to_north": {
+            "air_reduced": zonal_profile(surface, &field(reduced, &air)),
+            "air_baseline": zonal_profile(surface, &field(baseline, &air)),
+            "precipitation_reduced": zonal_profile(surface, &field(reduced, &precipitation)),
+            "precipitation_baseline": zonal_profile(surface, &field(baseline, &precipitation)),
+            "east_wind_reduced": zonal_profile(surface, &field(reduced, &east_wind)),
+            "east_wind_baseline": zonal_profile(surface, &field(baseline, &east_wind)),
+            "north_wind_reduced": zonal_profile(surface, &field(reduced, &north_wind)),
+            "north_wind_baseline": zonal_profile(surface, &field(baseline, &north_wind)),
+            "air_jul_minus_jan_reduced": zonal_profile(surface, &field(reduced, &jul_minus_jan)),
+            "air_jul_minus_jan_baseline": zonal_profile(surface, &field(baseline, &jul_minus_jan)),
+        },
+    })
+}
+
+/// River-network and runoff differences of two hydrology products.
+fn compare_hydrology(
+    surface: &SphericalSurfaceSnapshot,
+    reduced: &SphericalHydrologySnapshot,
+    baseline: &SphericalHydrologySnapshot,
+) -> Value {
+    let areas: Vec<f64> = surface.cells().iter().map(|c| c.area.get()).collect();
+    let (mut both, mut same) = (0usize, 0usize);
+    for (a, b) in reduced.flow_receiver().iter().zip(baseline.flow_receiver()) {
+        if let (Some(a), Some(b)) = (a, b) {
+            both += 1;
+            same += usize::from(a == b);
+        }
+    }
+    let runoff_km3 = |h: &SphericalHydrologySnapshot| {
+        h.annual_local_runoff_mm()
+            .iter()
+            .zip(&areas)
+            .map(|(r, a)| f64::from(*r) / 1.0e3 * a / 1.0e9)
+            .sum::<f64>()
+    };
+    let qb = baseline.mean_annual_discharge_m3_s();
+    let qr = reduced.mean_annual_discharge_m3_s();
+    let mut sorted: Vec<f32> = qb.iter().copied().filter(|q| *q > 0.0).collect();
+    sorted.sort_by(f32::total_cmp);
+    let threshold = sorted.get(sorted.len() * 9 / 10).copied().unwrap_or(0.0);
+    let mut ratios: Vec<f64> = qb
+        .iter()
+        .zip(qr)
+        .filter(|(b, r)| **b >= threshold && **b > 0.0 && **r > 0.0)
+        .map(|(b, r)| (f64::from(*r) / f64::from(*b)).log10())
+        .collect();
+    ratios.sort_by(f64::total_cmp);
+    let pick = |q: f64| {
+        ratios
+            .get(((ratios.len() as f64 - 1.0) * q) as usize)
+            .copied()
+    };
+    let lakes = |h: &SphericalHydrologySnapshot| h.lakes().len();
+    json!({
+        "routed_cells_both": both,
+        "identical_flow_receiver_fraction": same as f64 / both.max(1) as f64,
+        "river_segments_reduced": reduced.river_segments().len(),
+        "river_segments_baseline": baseline.river_segments().len(),
+        "lakes_reduced": lakes(reduced),
+        "lakes_baseline": lakes(baseline),
+        "annual_runoff_km3_reduced": runoff_km3(reduced),
+        "annual_runoff_km3_baseline": runoff_km3(baseline),
+        "top_decile_discharge_threshold_m3_s": threshold,
+        "top_decile_discharge_log10_ratio_p10_p50_p90": [pick(0.1), pick(0.5), pick(0.9)],
+        "top_decile_discharge_cells": ratios.len(),
+    })
+}
+
+fn median(values: &mut [f64]) -> f64 {
+    values.sort_by(f64::total_cmp);
+    values[values.len() / 2]
+}
+
+#[test]
+#[ignore = "release-only A10 reduced-climate probe"]
+fn a10_reduced_climate_probe() {
+    let profile = match std::env::var("SEKAI_A10_PROFILE").as_deref() {
+        Ok("standard") => NaturalQualityProfile::Standard,
+        _ => NaturalQualityProfile::Draft,
+    };
+    let out_dir = std::path::PathBuf::from(
+        std::env::var("SEKAI_A10_DIR")
+            .unwrap_or_else(|_| "D:/hemifuture-probes/a10-climate-reduced".into()),
+    );
+    std::fs::create_dir_all(&out_dir).expect("output directory");
+    let longwave = match std::env::var("SEKAI_A10_OLR").as_deref() {
+        Ok("budyko") => OutgoingLongwaveClosure::BudykoTransEbm,
+        _ => OutgoingLongwaveClosure::ProductionGray,
+    };
+    let log = |line: String| eprintln!("[a10 {profile:?} {longwave:?}] {line}");
+    let cancellation = BuildCancellation::new();
+    let total = Instant::now();
+
+    let started = Instant::now();
+    let bundle = ProfileSurfaceBuilder::build(
+        profile,
+        Meters::new(6_371_000.0).expect("radius"),
+        &cancellation,
+    )
+    .expect("P1");
+    let domain =
+        ClimateWorkDomainBuilder::build(bundle.authoritative_surface(), profile, &cancellation)
+            .expect("domain");
+    log(format!(
+        "P1 + climate domain {:.3} s (seed-independent)",
+        started.elapsed().as_secs_f64()
+    ));
+    let started = Instant::now();
+    let grid = crate::generators::natural::circulation::CubedSphereGrid::new(
+        domain.face_resolution(),
+        domain.climate_surface().radius().get(),
+    )
+    .expect("grid");
+    let reduced_grid = ReducedGrid::new(&grid);
+    let grid_seconds = started.elapsed().as_secs_f64();
+    log(format!(
+        "reduced grid precompute {grid_seconds:.4} s (seed-independent), cells {}",
+        reduced_grid.cell_count()
+    ));
+
+    let formation = ResolvedWorldFormation::new(
+        RESOLVED_WORLD_FORMATION_SCHEMA_V1,
+        WorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::Continents,
+    )
+    .expect("formation");
+    let (tectonic_spec, geologic_spec, relief_spec) = (
+        TectonicSpec::default(),
+        GeologicSpec::default(),
+        ReliefSpec::default(),
+    );
+    let climate_spec = ClimateSpec::default();
+    let surface_spec = HydroErosionSpec::default();
+    let mut rng = StageRng::from_seed(derive_stage_seed(
+        RootSeed::new(42),
+        StageIdentity::new("natural.causal-formation", 5, "sekai.core"),
+    ));
+    let streams = LabeledSubstreams::capture(&mut rng);
+    let surface = bundle.authoritative_surface();
+    let evolved = EvolvedTectonicGenerator::generate_from_streams(
+        &bundle,
+        &tectonic_spec,
+        &formation,
+        &streams,
+    )
+    .expect("P2");
+    let substrate = GeologicSubstrateGenerator::generate_from_streams(
+        surface,
+        &evolved,
+        &geologic_spec,
+        &formation,
+        &streams,
+    )
+    .expect("P3 substrate");
+    let (primary_working, relief) = PrimaryReliefGenerator::generate_working_from_streams(
+        surface,
+        &evolved,
+        &substrate,
+        &relief_spec,
+        &streams,
+        &cancellation,
+    )
+    .expect("P3 relief");
+    let state = FormationState::from_primary_working(&primary_working).expect("P5 state");
+    let land_mask: Vec<bool> = relief
+        .surface_water_geometry()
+        .ocean_area_fraction()
+        .iter()
+        .map(|o| *o < 0.5)
+        .collect();
+    log(format!(
+        "P2+P3 done at {:.1} s",
+        total.elapsed().as_secs_f64()
+    ));
+
+    // Baseline: production chain.
+    let started = Instant::now();
+    let start_forcing = GlobalClimateForcingBuilder::build(
+        surface,
+        &relief,
+        substrate.relative_permeability(),
+        &climate_spec,
+        &domain,
+        &cancellation,
+    )
+    .expect("start forcing");
+    let start_forcing_seconds = started.elapsed().as_secs_f64();
+    let started = Instant::now();
+    let (baseline_start, start_correction) =
+        GlobalCirculationGenerator::generate_capturing_start_correction(
+            surface,
+            &domain,
+            &start_forcing,
+            ClimateModelProfile::C2LayeredV1,
+            &cancellation,
+        )
+        .expect("baseline start P4");
+    let baseline_start_seconds = started.elapsed().as_secs_f64();
+    let started = Instant::now();
+    let closure = SurfaceFormationGenerator::generate_from_exact_state(
+        SurfaceFormationInputs {
+            surface,
+            quality_profile: profile,
+            tectonics: &evolved,
+            substrate: &substrate,
+            relief: &relief,
+            domain: &domain,
+            climate_spec: &climate_spec,
+            initial_climate: &baseline_start,
+            formation_spec: &surface_spec,
+        },
+        state.clone(),
+        start_correction.as_ref(),
+        &cancellation,
+    )
+    .expect("baseline P5 closure");
+    drop(start_correction);
+    let baseline_closure_seconds = started.elapsed().as_secs_f64();
+    let (baseline_surface, baseline_end, baseline_end_forcing) = closure.into_parts();
+    let baseline_terrain = baseline_surface.terrain_fields();
+    log(format!(
+        "baseline: start forcing {start_forcing_seconds:.3} s, start P4 {baseline_start_seconds:.3} s, P5+endpoint {baseline_closure_seconds:.3} s"
+    ));
+    let baseline_quality = quality::evaluate_global_circulation_quality_for_formation_cancellable(
+        surface,
+        baseline_terrain,
+        &baseline_end_forcing,
+        &baseline_end,
+        &cancellation,
+    )
+    .expect("baseline quality");
+    let baseline_published = published_from_snapshot(&baseline_end);
+    // Baseline re-evaluated with the steering-wind orographic gates for parity.
+    let baseline_steering = wrap(
+        surface,
+        &domain,
+        &baseline_end_forcing,
+        &baseline_published,
+        *baseline_end.budget_report(),
+    );
+    let baseline_steering_quality =
+        quality::evaluate_global_circulation_quality_for_formation_cancellable(
+            surface,
+            baseline_terrain,
+            &baseline_end_forcing,
+            &baseline_steering,
+            &cancellation,
+        )
+        .expect("baseline steering quality");
+
+    // (a) Reduced model on the baseline endpoint forcing: timing and climate-only comparison.
+    let started = Instant::now();
+    let mut forcing_times = Vec::new();
+    for _ in 0..3 {
+        let t = Instant::now();
+        let _ = GlobalClimateForcingBuilder::build_for_formation_terrain(
+            surface,
+            baseline_terrain,
+            substrate.relative_permeability(),
+            &climate_spec,
+            &domain,
+            &cancellation,
+        )
+        .expect("endpoint forcing rebuild");
+        forcing_times.push(t.elapsed().as_secs_f64());
+    }
+    let endpoint_forcing_seconds = median(&mut forcing_times);
+    let _ = started;
+    let mut timing = serde_json::Map::new();
+    let evaluate = |parallel: bool| {
+        let t0 = Instant::now();
+        let (cell_heights, work_heights) = reference_heights(
+            &domain,
+            baseline_terrain.current_elevation_m(),
+            baseline_terrain.surface_water_geometry(),
+        );
+        let t1 = Instant::now();
+        let inputs = ReducedInputs::from_forcing(
+            &reduced_grid,
+            &baseline_end_forcing,
+            &climate_spec,
+            work_heights,
+            longwave,
+        );
+        let t2 = Instant::now();
+        let work = solve_reduced_climate(&reduced_grid, &inputs, parallel);
+        let t3 = Instant::now();
+        let p5_only = project_for_p5(
+            surface,
+            &domain,
+            &baseline_end_forcing,
+            &work,
+            &cancellation,
+        );
+        let t4 = Instant::now();
+        let published = project_all(
+            surface,
+            &domain,
+            &baseline_end_forcing,
+            &inputs,
+            &work,
+            &cell_heights,
+            &cancellation,
+        );
+        let t5 = Instant::now();
+        let budget = budget_report(&reduced_grid, &baseline_end_forcing, &inputs, &work);
+        let snapshot = wrap(surface, &domain, &baseline_end_forcing, &published, budget);
+        let t6 = Instant::now();
+        drop(p5_only);
+        let seconds = [
+            (t1 - t0).as_secs_f64(),
+            (t2 - t1).as_secs_f64(),
+            (t3 - t2).as_secs_f64(),
+            (t4 - t3).as_secs_f64(),
+            (t5 - t4).as_secs_f64(),
+            (t6 - t5).as_secs_f64(),
+        ];
+        (seconds, inputs, work, published, snapshot)
+    };
+    let labels = [
+        "reference_height_remap",
+        "inputs_albedo_asr_gradient",
+        "work_domain_solve",
+        "projection_p5_fields_only",
+        "projection_all_fields_lod2",
+        "snapshot_wrap_validate_probe_only",
+    ];
+    let mut serial = vec![Vec::new(); labels.len()];
+    let mut parallel = vec![Vec::new(); labels.len()];
+    let mut last = None;
+    for repetition in 0..TIMING_REPETITIONS {
+        for &is_parallel in &[false, true] {
+            let (seconds, inputs, work, published, snapshot) = evaluate(is_parallel);
+            let target = if is_parallel {
+                &mut parallel
+            } else {
+                &mut serial
+            };
+            for (bucket, s) in target.iter_mut().zip(seconds) {
+                bucket.push(s);
+            }
+            if repetition == TIMING_REPETITIONS - 1 && !is_parallel {
+                last = Some((inputs, work, published, snapshot));
+            }
+        }
+    }
+    for (label, (s, p)) in labels
+        .iter()
+        .zip(serial.iter_mut().zip(parallel.iter_mut()))
+    {
+        timing.insert(
+            (*label).to_owned(),
+            json!({ "serial_median_s": median(s), "parallel_median_s": median(p), "serial_all": s, "parallel_all": p }),
+        );
+    }
+    timing.insert(
+        "endpoint_forcing_build_median_s".into(),
+        json!(endpoint_forcing_seconds),
+    );
+    timing.insert("start_forcing_build_s".into(), json!(start_forcing_seconds));
+    timing.insert("reduced_grid_precompute_s".into(), json!(grid_seconds));
+    timing.insert("baseline_start_p4_s".into(), json!(baseline_start_seconds));
+    timing.insert(
+        "baseline_p5_plus_endpoint_p4_s".into(),
+        json!(baseline_closure_seconds),
+    );
+    let (inputs_b, work_b, published_b, snapshot_b) = last.expect("timed evaluation");
+    let quality_b = quality::evaluate_global_circulation_quality_for_formation_cancellable(
+        surface,
+        baseline_terrain,
+        &baseline_end_forcing,
+        &snapshot_b,
+        &cancellation,
+    )
+    .expect("reduced quality on baseline forcing");
+    let climate_only = compare_published(surface, &land_mask, &published_b, &baseline_published);
+    log(format!(
+        "reduced on baseline forcing: {:?}",
+        work_b.diagnostics
+    ));
+
+    // Scheme-C L0 lapse correction evidence: dry-land neighbour lapse.
+    let lapse = neighbour_lapse(
+        surface,
+        baseline_terrain.current_elevation_m(),
+        &land_mask,
+        &published_b,
+        &baseline_published,
+    );
+
+    // Climate-only effect on P5 hydrology (same baseline terrain).
+    let hydrology_baseline = FormationHydrologyGenerator::generate(
+        surface,
+        baseline_terrain,
+        &substrate,
+        &baseline_end,
+        &surface_spec,
+        &cancellation,
+    )
+    .expect("baseline hydrology");
+    let hydrology_climate_only = FormationHydrologyGenerator::generate(
+        surface,
+        baseline_terrain,
+        &substrate,
+        &snapshot_b,
+        &surface_spec,
+        &cancellation,
+    )
+    .expect("reduced-climate hydrology on baseline terrain");
+
+    // (b) Reduced chain: start -> P5 advance -> endpoint.
+    let chain = Instant::now();
+    let (start_cells, start_work_heights) = reference_heights(
+        &domain,
+        relief.elevation_m(),
+        relief.surface_water_geometry(),
+    );
+    let start_inputs = ReducedInputs::from_forcing(
+        &reduced_grid,
+        &start_forcing,
+        &climate_spec,
+        start_work_heights,
+        longwave,
+    );
+    let start_work = solve_reduced_climate(&reduced_grid, &start_inputs, false);
+    let start_published = project_all(
+        surface,
+        &domain,
+        &start_forcing,
+        &start_inputs,
+        &start_work,
+        &start_cells,
+        &cancellation,
+    );
+    let start_snapshot = wrap(
+        surface,
+        &domain,
+        &start_forcing,
+        &start_published,
+        budget_report(&reduced_grid, &start_forcing, &start_inputs, &start_work),
+    );
+    let start_quality = quality::evaluate_global_circulation_quality(
+        surface,
+        &relief,
+        &start_forcing,
+        &start_snapshot,
+    )
+    .expect("reduced start quality");
+    let mut reduced_state = state.clone();
+    let advance = advance_surface_processes(
+        &mut reduced_state,
+        SurfaceProcessInputs {
+            surface,
+            tectonics: &evolved,
+            substrate: &substrate,
+            climate: &start_snapshot,
+            formation_spec: &surface_spec,
+            water_inventory_m3: relief.water_inventory_m3(),
+        },
+        SURFACE_FORMATION_HORIZON_YEARS,
+        &cancellation,
+    )
+    .expect("reduced P5 advance");
+    let (_, sediment) = advance.into_parts();
+    let reduced_terrain = reduced_state
+        .project_final_terrain(
+            surface,
+            sediment,
+            relief.water_inventory_m3(),
+            &cancellation,
+        )
+        .expect("reduced final terrain");
+    let end_forcing = GlobalClimateForcingBuilder::build_for_formation_terrain(
+        surface,
+        &reduced_terrain,
+        substrate.relative_permeability(),
+        &climate_spec,
+        &domain,
+        &cancellation,
+    )
+    .expect("reduced endpoint forcing");
+    let (end_cells, end_work_heights) = reference_heights(
+        &domain,
+        reduced_terrain.current_elevation_m(),
+        reduced_terrain.surface_water_geometry(),
+    );
+    let end_inputs = ReducedInputs::from_forcing(
+        &reduced_grid,
+        &end_forcing,
+        &climate_spec,
+        end_work_heights,
+        longwave,
+    );
+    let end_work = solve_reduced_climate(&reduced_grid, &end_inputs, false);
+    let end_published = project_all(
+        surface,
+        &domain,
+        &end_forcing,
+        &end_inputs,
+        &end_work,
+        &end_cells,
+        &cancellation,
+    );
+    let end_snapshot = wrap(
+        surface,
+        &domain,
+        &end_forcing,
+        &end_published,
+        budget_report(&reduced_grid, &end_forcing, &end_inputs, &end_work),
+    );
+    let chain_seconds = chain.elapsed().as_secs_f64();
+    let end_quality = quality::evaluate_global_circulation_quality_for_formation_cancellable(
+        surface,
+        &reduced_terrain,
+        &end_forcing,
+        &end_snapshot,
+        &cancellation,
+    )
+    .expect("reduced endpoint quality");
+    let hydrology_chain = FormationHydrologyGenerator::generate(
+        surface,
+        &reduced_terrain,
+        &substrate,
+        &end_snapshot,
+        &surface_spec,
+        &cancellation,
+    )
+    .expect("reduced chain hydrology");
+    let areas: Vec<f64> = surface.cells().iter().map(|c| c.area.get()).collect();
+    let (mut sq, mut max_abs, mut w) = (0.0_f64, 0.0_f64, 0.0_f64);
+    for ((a, b), area) in reduced_terrain
+        .current_elevation_m()
+        .iter()
+        .zip(baseline_terrain.current_elevation_m())
+        .zip(&areas)
+    {
+        let d = f64::from(a - b);
+        sq += area * d * d;
+        w += area;
+        max_abs = max_abs.max(d.abs());
+    }
+    let start_compare = compare_published(
+        surface,
+        &land_mask,
+        &start_published,
+        &published_from_snapshot(&baseline_start),
+    );
+
+    let summary = json!({
+        "profile": format!("{profile:?}"),
+        "longwave_closure": longwave,
+        "work_grid_annual": work_grid_dump(&reduced_grid, &inputs_b, &work_b),
+        "seed": 42,
+        "authoritative_cells": surface.cells().len(),
+        "work_cells": reduced_grid.cell_count(),
+        "vapour_column_mass_kg_m2": vapour_column_mass_kg_m2(),
+        "timing": Value::Object(timing),
+        "chain_seconds_including_p5_and_two_reduced_solves": chain_seconds,
+        "reduced_on_baseline_forcing": {
+            "diagnostics": work_b.diagnostics,
+            "budget": snapshot_b.budget_report(),
+            "quality": metrics_json(&quality_b),
+            "climate_only_vs_baseline_endpoint": climate_only,
+            "dry_land_neighbour_lapse": lapse,
+            "hydrology_climate_only_vs_baseline": compare_hydrology(surface, &hydrology_climate_only, &hydrology_baseline),
+            "albedo_global_mean_work": inputs_b.surface_albedo.iter().zip(&reduced_grid.area_m2).map(|(a, w)| a * w).sum::<f64>()
+                / reduced_grid.area_m2.iter().sum::<f64>(),
+        },
+        "baseline": {
+            "quality": metrics_json(&baseline_quality),
+            "quality_with_steering_wind_orography": metrics_json(&baseline_steering_quality),
+            "budget": baseline_end.budget_report(),
+        },
+        "reduced_chain": {
+            "start_diagnostics": start_work.diagnostics,
+            "end_diagnostics": end_work.diagnostics,
+            "start_quality_vs_relief": metrics_json(&start_quality),
+            "end_quality": metrics_json(&end_quality),
+            "start_vs_baseline_start": start_compare,
+            "final_elevation_rms_difference_m": (sq / w).sqrt(),
+            "final_elevation_max_abs_difference_m": max_abs,
+            "hydrology_vs_baseline": compare_hydrology(surface, &hydrology_chain, &hydrology_baseline),
+        },
+        "total_probe_seconds": total.elapsed().as_secs_f64(),
+    });
+    let path = out_dir.join(format!(
+        "probe-{}-{}.json",
+        format!("{profile:?}").to_lowercase(),
+        format!("{longwave:?}").to_lowercase()
+    ));
+    std::fs::write(&path, serde_json::to_string_pretty(&summary).expect("json"))
+        .expect("write summary");
+    log(format!("wrote {}", path.display()));
+}
+
+/// Dry-land neighbour effective lapse rate (OLS dT/dz) and zero-dT share among
+/// |dz| >= 300 m pairs, as in the LOD-2 audit.
+fn neighbour_lapse(
+    surface: &SphericalSurfaceSnapshot,
+    elevation: &[f32],
+    land: &[bool],
+    reduced: &Published,
+    baseline: &Published,
+) -> Value {
+    let stats = |p: &Published| {
+        let (mut sxy, mut sxx, mut big, mut zero) = (0.0_f64, 0.0_f64, 0usize, 0usize);
+        for edge in surface.edges() {
+            let (a, b) = (edge.cells[0].raw() as usize, edge.cells[1].raw() as usize);
+            if !(land[a] && land[b]) {
+                continue;
+            }
+            let dz = f64::from(elevation[a] - elevation[b]) / 1000.0;
+            let dt = annual(&p.air[a]) - annual(&p.air[b]);
+            sxy += dz * dt;
+            sxx += dz * dz;
+            if dz.abs() >= 0.3 {
+                big += 1;
+                zero += usize::from(dt == 0.0);
+            }
+        }
+        json!({ "ols_k_per_km": sxy / sxx, "large_dz_pairs": big, "zero_dt_pairs": zero })
+    };
+    json!({ "reduced_lod2_c": stats(reduced), "baseline_current_p4": stats(baseline) })
+}
+
+/// Annual work-grid fields for offline pattern analysis.
+fn work_grid_dump(grid: &ReducedGrid, inputs: &ReducedInputs, work: &ReducedWorkClimate) -> Value {
+    let mean = |m: &[f64; MONTHS]| m.iter().sum::<f64>() / MONTHS as f64;
+    let mean_vector = |m: &[[f64; 3]; MONTHS]| {
+        let mut s = [0.0; 3];
+        for v in m {
+            for c in 0..3 {
+                s[c] += v[c] / MONTHS as f64;
+            }
+        }
+        s
+    };
+    let rows: Vec<Value> = (0..grid.cell_count())
+        .map(|c| {
+            let east = grid.east[c];
+            let north = super::cross(grid.center[c], east);
+            let wind = mean_vector(&work.wind_m_s[c]);
+            let current = mean_vector(&work.ocean_current_m_s[c]);
+            json!([
+                grid.latitude_rad[c].to_degrees(),
+                grid.center[c][1].atan2(grid.center[c][0]).to_degrees(),
+                inputs.land_fraction[c],
+                inputs.reference_height_m[c],
+                mean(&work.air_temperature_c[c]),
+                work.air_temperature_c[c][6] - work.air_temperature_c[c][0],
+                mean(&work.precipitation_mm_day[c]),
+                mean(&work.evaporation_mm_day[c]),
+                dot(wind, east),
+                dot(wind, north),
+                dot(current, east),
+                dot(current, north),
+                mean(&work.sea_surface_height_m[c]),
+            ])
+        })
+        .collect();
+    json!({
+        "columns": ["lat", "lon", "land", "ref_height_m", "air_c", "air_jul_minus_jan_c",
+            "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m"],
+        "rows": rows,
+    })
+}
