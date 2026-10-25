@@ -381,3 +381,118 @@ UI 已通过；用户最终验收同样待完成。
 过半 |Δz|≥300 m 邻对落在同一气候工作格内、温差为 0。这说明本轮共同工作域
 需要直减率类降尺度配套；该配套归入上述后续规格，不在本修订内实现，也不改变
 §10.1 的选择与 §10.5 的计时记录。
+
+### 10.10 修订：权威表面与 P4 快照在信任边界只完整校验一次（2026-10-25）
+
+落实 §5 第 4 条“同一不可变对象可在信任边界验证一次”。只读差距分析（仓外
+`D:/hemifuture-probes/perf-gap-20261025/report.txt`）测得原生请求至 GPU 发布中，
+`SphericalSurfaceSnapshot::validate`（完整拓扑、几何与指纹重算）每次构建对各表面共
+调用 124 次，其中权威表面 90 次，Draft 约 3.3 s、Standard 约 13.5 s。P4 的
+`GlobalCirculationSnapshot` 有同样的重复（见下文 P4 一段）。本修订不改变任何产物，
+阶段身份版本不升。
+
+**调用点。** 把 `validate` / `validate_cancellable` 临时改名后由编译器枚举，生产代码
+共 65 处（含旧 foundation 链）。原生构建实际触发其中 27 处消费者站点（另有构造边界本身
+2 处），主要是
+`SurfaceRef::try_for_spherical`（权威表面 36 次，另含控制表面 3 次、气候表面 6 次）、
+旧 `SphericalTectonicSnapshot::validate_against`（7）、P5 水面几何与海平面重建
+（`world/natural/surface_water_geometry.rs` 7+2，`generators/natural/surface_water_geometry.rs` 7）、
+`EvolvedTectonicSnapshot::validate_against`（6）、地形与基底 `validate_against`
+及 `land_fraction_constraint_tolerance`（4+2+1）、地幔（4）、气候工作域对嵌套气候表面
+（4）、P1 complete、引擎表面 artifact、quality 证据与 P5 输入各 1 次。
+
+**信任边界。** 以构造约束表达“已验证”（King 2019，parse, don't validate；先例 A8
+`70791e5`、`4f32353`）：
+
+- `SphericalSurfaceSnapshot` 只有三个入口：`new`、crate 内 `new_cancellable` 与反序列化。
+  反序列化改经私有 `SphericalSurfaceSnapshotWire` 的 `try_from`，原样收下记录（不重排、
+  不重算指纹）后完整校验一次。字段只在 `world::spatial` 内可见，构造后不再修改；
+  `validate`、`validate_cancellable` 与 `try_total_cell_area` 收为 `pub(super)`，只供
+  上述边界使用。因此持有该类型的值就是有效性的证明。
+- 之后的消费者只做常数时间的身份绑定：`SurfaceRef::try_for_spherical` 读取已存指纹与
+  分配大小（合并原 `from_validated_spherical`），各 `validate_against` 只比对
+  `SurfaceRef`、半径和计数；`SphericalSurfaceArtifact::validate` 不再重审已证明有效的
+  表面；气候工作域不再重审嵌套气候表面与源表面。
+- 删除只由重审产生、现已不可达的错误分支：共 32 个 `#[from] SphericalSurfaceValidationError`
+  包装变体（含 `SurfaceRefError::InvalidSphericalSnapshot`、`NaturalSurfaceError::InvalidSpherical`）、
+  `ProfileSurfaceBuildError::Invalid{Authoritative,Control}Surface`、
+  `ClimateWorkDomainBuildError::InvalidSource` 及三个 P5 过程的 `map_surface_error`。
+  `validate_against` 与 `validate_against_validated_surface` 两组入口现已同义，保留原名，
+  不在本修订内合并。
+
+**P4 快照。** `GlobalCirculationSnapshot` 本来就只能经 `new` / `new_cancellable` 与反序列化
+（`Self::new`）得到，字段私有、构造后不变，但同一快照每次构建仍被完整校验 7 次（构造 2 次，
+另有 4 次嵌在 `validate_against` 里、1 次在 bundle `validate` 里），每次都重算全场状态指纹。
+按同一原则：`validate_against` 不再先跑 `validate_impl`，只查跨对象事实（表面身份绑定、
+检查点网格指纹、风与洋流的切向性）；bundle 校验不再重审气候成员（其表面绑定与检查点指纹
+仍由 `validate_bindings` 查）；`validate` / `validate_cancellable` 已无消费者，删除，只保留
+构造边界调用的私有 `validate_impl`。原生计数（Draft / Standard 各 seed 42）：
+
+| | `validate_impl` | 状态指纹 | `validate_against`（含嵌套） |
+| --- | --- | --- | --- |
+| 改动前 Draft | 7 次 / 410 ms | 9 次 / 483 ms | 4 次 / 256 ms |
+| 改动后 Draft | 2 次 / 119 ms | 4 次 / 218 ms | 4 次 / 22 ms |
+| 改动前 Standard | 7 次 / 1,622 ms | 9 次 / 1,910 ms | 4 次 / 963 ms |
+| 改动后 Standard | 2 次 / 462 ms | 4 次 / 844 ms | 4 次 / 35 ms |
+
+（`validate_impl` 的耗时含它内部的一次状态指纹。）现在每次求解只在构造边界完整校验一次。
+剩下的重复是：生成器先算一次状态指纹写入检查点，构造边界校验又算一次来核对，每次求解
+约 54 / 211 ms（Draft / Standard）。去掉它需要改为由构造函数自己计算指纹并生成检查点，
+属于改动构造边界本身，不在本修订内做。
+
+**失败语义。** 生产链只经构造产生表面，从不反序列化表面，因此对生产链能产生的输入
+没有任何失败路径或错误码变化。损坏输入不再被接受后留待首个消费者以其自身错误码拒绝，
+而是在反序列化边界即被拒绝，错误文案即 `SphericalSurfaceValidationError` 的原文案。
+原以“反序列化后 `validate()`”断言具体错误的契约测试改为断言反序列化错误等于（或以）
+该变体文案（开头）；新增窄单元测试
+`artifact_deserialization_rejects_a_corrupted_surface`（引擎 artifact 不再重审，嵌套表面
+须在反序列化即被拒），`surface_ref_contracts` 的过期指纹用例改为在表面边界被拒。
+删除只验证未校验快照求和溢出的 `fallible_total_cell_area_reports_unvalidated_sum_overflow`：
+该状态已无法从公共 API 得到。
+
+**逐位等价。** 临时 Release 探针（未提交，仓外 `a10_identity_probe.rs.txt`）按生产因果图
+对两档 seed 42 构建，改动前（`daba519`）后完全一致：
+
+| 档位 | 表面指纹 | 构建结果哈希 | bundle 哈希（= JSON blake3） | 层级探针指纹 |
+| --- | --- | --- | --- | --- |
+| Draft | `0d09df7a…806f2e` | `da870182…cf25a5` | `afcde3fe…caa0522`（86,902,550 B） | `7df42191…954a6c3f` |
+| Standard | `4247616b…c09e84` | `dd55f8d5…e9e1372` | `b4978e65…3e83ced`（336,825,943 B） | `e5d4fbd8…5c821387` |
+
+Draft 层级探针指纹即 `tests/hierarchical_product_gates.rs` 的冻结金样。完整值见仓外
+`identity-baseline.txt` / `identity-candidate2.txt`（只改表面时的中间版本 `identity-candidate.txt`
+同样一致）。两档原生构建均成功发布到 GPU。
+
+**同机成对计时。** 原生 Release、无 RUSTFLAGS、严格串行。两个二进制只差本修订的改动，
+都打同一套临时计时插桩（`a10-timing-instrumentation.patch` 加 `instrument_p4.py`：请求 / 发布
+标记、表面校验站点计数、P4 快照校验计数）。每档先预热一次，再交替跑三对，取请求至 GPU
+发布的中位数。本轮开跑前负载 0–10%，没有其他编译或测试进程：
+
+| 档位 | 改动前三次（ms） | 改动后三次（ms） | 中位数变化 |
+| --- | --- | --- | --- |
+| Draft | 14,660 / 14,505 / 14,453 | 10,790 / 10,822 / 10,798 | 14,505 → 10,798，−3,707（−25.6%） |
+| Standard | 34,133 / 34,146 / 34,590 | 18,993 / 19,465 / 19,053 | 34,146 → 19,053，−15,093（−44.2%） |
+
+表面完整校验从每次构建 124 次（Draft 3.33 s / Standard 13.98 s）降到 10 次（0.06 / 0.21 s）。
+剩下的 10 次全部在构造边界：权威、控制表面各 1 次，气候立方球表面 7 次（2400 格，每次
+约 3 ms，属于后续几何缓存的范围），一个 150 格表面 1 次。
+
+更早一轮只含表面改动的成对计时（`native-summary.txt`）为 Draft 14,601 → 11,110 ms、
+Standard 37,709 → 20,391 ms。那一轮改动前 Draft 第 1 次与 Standard 第 2 次开跑时另有 rustc
+在跑，Standard 三次离散 14%，所以不用作结论。原始日志、清单和汇总都在仓外
+`D:/hemifuture-probes/a10-validate-once/`（`native-summary-2.*` 是本表）。
+
+**验证。** 改动碰到共享的表面类型、引擎 artifact 与 P4 快照，按测试范围纪律跑 Release 全量：
+`cargo test --release --all-targets --all-features --no-fail-fast -- --test-threads=1`，
+1,321 passed、0 failed、57 ignored。第一次并行运行时 lib 单测二进制与
+`spherical_presentation_integration` 卡住（CPU 时间不再增长，属已知的并发创建 GPU 设备问题），
+因此终止后改为串行重跑全量。并行那次另暴露 `spherical_artifact_wrappers_round_trip_with_strict_validation`
+仍按旧语义期望 artifact 校验返回 `spherical-spatial.invalid-snapshot`；已改为断言嵌套表面在
+反序列化边界以同一文案被拒。`spherical-spatial.invalid-snapshot` 仍用于构建器产出无效表面的
+错误映射。门禁 `cargo fmt --all -- --check`、
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`、
+`cargo check --target wasm32-unknown-unknown --all-features --lib` 均通过。编译期间 rustc 多次
+`STATUS_ACCESS_VIOLATION`，用 `-j6` 重试后通过，与差距报告记录的现象相同。没有独立审查。
+
+**用户验证步骤。** 本修订不改变界面与产物，只缩短等待。启动 Sekai，在左侧“质量档位”分别
+选草稿 / 标准，点击“按当前参数重建”，预期地图与改动前一致（高程、年均气温、年降水、
+河网），从点击到地图出现的等待明显变短。最终验收仍由用户在 UI 上完成。
