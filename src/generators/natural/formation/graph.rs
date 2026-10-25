@@ -142,21 +142,20 @@ impl NaturalFormationBundleArtifact {
             &output.surface,
             cancellation,
         )?;
-        let bundle =
-            NaturalFormationBundle::from_validated_siblings(NaturalFormationBundleParts {
-                schema_version: NATURAL_FORMATION_BUNDLE_SCHEMA_V1,
-                surface_ref: SurfaceRef::for_spherical(surface),
-                timeline: inputs.formation.timeline(),
-                tectonics: output.evolved_tectonics,
-                substrate: output.geologic_substrate,
-                primary_relief: output.primary_relief,
-                climate: output.final_climate,
-                surface_formation: output.surface,
-                tectonic_quality,
-                primary_relief_quality,
-                climate_quality,
-                surface_quality,
-            })?;
+        let bundle = NaturalFormationBundle::new(NaturalFormationBundleParts {
+            schema_version: NATURAL_FORMATION_BUNDLE_SCHEMA_V1,
+            surface_ref: SurfaceRef::for_spherical(surface),
+            timeline: inputs.formation.timeline(),
+            tectonics: output.evolved_tectonics,
+            substrate: output.geologic_substrate,
+            primary_relief: output.primary_relief,
+            climate: output.final_climate,
+            surface_formation: output.surface,
+            tectonic_quality,
+            primary_relief_quality,
+            climate_quality,
+            surface_quality,
+        })?;
         let artifact = Self { bundle };
         // Publication revalidates the whole product; checking the evidence
         // here keeps its failures on this stage's product error code.
