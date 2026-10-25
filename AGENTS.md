@@ -20,6 +20,10 @@
   `formation_elevation_from_components` 一个实现；设计真相在
   `docs/superpowers/specs/`（冻结后只能以显式"修订"条目变更）；运行时
   身份真相是 artifact 指纹。
+- **改变产物必须升版本（用户指令，2026-10-25）**：任何改变已发布产物的提交
+  （生成结果、产物 schema 或其上游输入），都必须提升对应阶段身份版本；
+  配方兼容判定所依赖的生成器版本随之提升。只重钉指纹或金样而不升版本，
+  会让旧配方被判“完全兼容”却重建出另一个世界，视为缺陷。
 - 测试必须复用生产侧助手而不是重新实现算法（先例：
   `elevation_display_radius_m` 被测试直接引用）。
 - 文档与注释不复述代码中的数值，引用常量名；面板/图例文案由字段注册表
@@ -84,10 +88,14 @@
   诊断式平衡、参数化、较少层数、固定工作分辨率、较低耦合频率及有界近似求解。
   可替换现有方程组；设计须明确保留的过程、被近似或省略的过程、适用域和
   下游影响。现有层数、轨迹、求解器与逐位旧结果都不是必须保留的产品要求。
-- **分辨率是适用域的一部分**：先声明支持的档位、物理尺度与最终字段消费者，
-  再选算法和误差预算。物理工作网格可独立于显示细分；更细显示不自动触发更贵
-  的物理。只验证声明支持域，不追求任意网格下相同结果、无限加密收敛或未解析
-  尺度的真实性；不得把不支持的尺度静默宣称为有效。
+- **分辨率是适用域的一部分，且包含 LOD（用户指令，2026-10-25）**：支持域是
+  每个档位从 L0 格元到显示叶片的整条层级，不是单一网格。先声明支持的档位、
+  层级范围、物理尺度与最终字段消费者，再选算法和误差预算。全球物理在粗工作域
+  求解，更细层级不重跑全球物理，而以有出处、低成本的物理降尺度从粗解与派生
+  高程派生；纯插值或整格继承只在其误差对该层可见结果无影响时允许，并须声明。
+  玩家在任一支持层级看到的海岸、水体、河网、地形与气候字段须相互自洽，层级
+  聚合与父层守恒/一致，点击读数与显示同源。不追求任意网格下相同结果、无限
+  加密收敛或未解析尺度的真实性；不得把不支持的尺度静默宣称为有效。
 - 默认选择满足最终地图需求的最低成本方案。每项额外精度必须有可见质量或
   下游消费者收益；不足以影响目标尺度结果的细节不计算。完整时间轨迹收敛、
   历史保存、多级加密和高成本参考解不得默认成为每次构建的发布门禁。
@@ -482,8 +490,13 @@ budgets, valid domains, artifact identity, and final-state consistency. Model
 reduction, diagnostic balances, parameterization, fewer layers, fixed work grids,
 and cheaper coupling or solvers may replace the existing equations. Additional
 precision requires demonstrated final-map or downstream benefit; arbitrary-grid
-agreement and unresolved detail are not requirements. Display refinement need
-not increase physical resolution. Compare changes offline with suitable analytic,
+agreement and unresolved detail are not requirements. The supported domain
+includes the LOD hierarchy from L0 cells to display leaves (2026-10-25): global
+physics stays on coarse work domains, while finer levels derive physically
+consistent detail through sourced, cheap downscaling, with conservative
+aggregation and picking that matches the display. Any commit that changes a
+published artifact must bump the owning stage identity version, never only
+re-pin fingerprints. Compare changes offline with suitable analytic,
 controlled, observational, or higher-cost evidence; the old model is a baseline,
 not automatically truth. Explicitly revise model-specific gates and measure new
 error budgets before pinning them. Optimize the entire path in measured cost
