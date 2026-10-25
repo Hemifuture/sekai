@@ -36,6 +36,8 @@ enum WaterBody {
 pub struct FineShoreline {
     row_start: Vec<u32>,
     candidates: Vec<WaterCandidate>,
+    /// Per cell: the surface of the water body owning the cell, if any.
+    own_surface_m: Vec<Option<f32>>,
 }
 
 impl FineShoreline {
@@ -91,10 +93,12 @@ impl FineShoreline {
 
         let mut row_start = Vec::with_capacity(cell_count + 1);
         let mut candidates = Vec::new();
+        let mut own_surface_m = Vec::with_capacity(cell_count);
         let mut ring = Vec::new();
         for (cell, record) in surface.cells().iter().enumerate() {
             row_start.push(candidates.len() as u32);
             let own = body_of(cell);
+            own_surface_m.push(own.map(|(_, candidate)| candidate.surface_m));
             if let Some((_, candidate)) = own {
                 candidates.push(candidate);
             }
@@ -121,6 +125,7 @@ impl FineShoreline {
         Self {
             row_start,
             candidates,
+            own_surface_m,
         }
     }
 
@@ -130,7 +135,18 @@ impl FineShoreline {
         Self {
             row_start: vec![0; cell_count + 1],
             candidates: Vec::new(),
+            own_surface_m: vec![None; cell_count],
         }
+    }
+
+    /// The surface of the P5 water body owning `cell` (ocean: the formal
+    /// sea level; lake: its published surface), or `None` on dry land —
+    /// the erosion base level of the LOD-1 spec §3.3 D3.
+    pub(super) fn own_surface_m(&self, cell: CellId) -> Option<f32> {
+        self.own_surface_m
+            .get(cell.raw() as usize)
+            .copied()
+            .flatten()
     }
 
     /// Whether `cell` sees no water body at all — neither its own nor an
@@ -142,6 +158,20 @@ impl FineShoreline {
             (Some(start), Some(end)) => start == end,
             _ => true,
         }
+    }
+
+    /// The highest surface among the water bodies `cell` sees, if any: a
+    /// leaf of `cell` is dry exactly when its value is at least this.
+    pub(super) fn highest_surface_m(&self, cell: CellId) -> Option<f32> {
+        let index = cell.raw() as usize;
+        let (Some(&start), Some(&end)) = (self.row_start.get(index), self.row_start.get(index + 1))
+        else {
+            return None;
+        };
+        self.candidates[start as usize..end as usize]
+            .iter()
+            .map(|candidate| candidate.surface_m)
+            .max_by(f32::total_cmp)
     }
 
     /// Classifies one derived leaf of `cell` by its derived elevation.

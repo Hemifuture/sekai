@@ -25,10 +25,11 @@ use support::causal_formation::{
 };
 
 /// Draft seed-42 probe fingerprint (spec A4 formula with the LOD-1 §3.6
-/// version prefix) at `T1_DERIVATION_VERSION` 3: P1 vertex anchors (T1 v2
-/// spec amendment A16) and inland average-interpolating centroids (A17).
+/// version prefix) at `T1_DERIVATION_VERSION` 4: P1 vertex anchors (T1 v2
+/// spec amendment A16), inland average-interpolating centroids (A17), and
+/// base-level beds with fine-dry river clipping (A18).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "94a882af46b9e0ea4c973b5f9ba291a8a096f4dd500413abd12318be94bdb3c9";
+    "234ebbd4de2e1f11ad55964b544bffd74019028db4546b13a28244a4555bcde1";
 
 fn evaluator() -> HierarchicalEvaluator {
     evaluator_for(causal_formation_fixture())
@@ -497,16 +498,23 @@ struct MouthTally {
     overlap_km: Vec<f64>,
     gap_km: Vec<f64>,
     gap_never: u32,
+    /// Reaches drawing no line at all (the fine water reaches the dry
+    /// cell's centreline within one vertex of its start).
+    undrawn: u32,
     drawn_vertices: u64,
     drawn_wet_vertices: u64,
+    /// Drawn polyline pieces of the reach (LOD-1 §8: clipping may split a
+    /// dry→dry reach where it crosses fine water).
+    pieces: usize,
 }
 
 /// LOD-1 spec §1.2 / §4 I8 (T0 baseline, T3 re-measure): every P5 reach
 /// joining a dry cell and a water body, at display levels 6 and 10. The
 /// drawn polyline is the production `river_path` at the display depth
-/// `level − 1`, each vertex classified by the production fine shoreline on
-/// the production leaf value under it. Dry→dry reaches report their drawn
-/// vertices on fine water too. Prints numbers; no gate.
+/// `level − 1` (its pieces in flow order), each vertex classified by the
+/// production fine shoreline on the production leaf value under it.
+/// Dry→dry reaches report their drawn vertices on fine water and their
+/// piece counts too. Prints numbers and the cold timing; no gate.
 #[test]
 #[ignore = "release-only offline estuary probe (LOD-1 spec §4 I8)"]
 fn river_mouth_probe() {
@@ -528,6 +536,7 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
     let radius_km = evaluator.radius_m() / 1_000.0;
     let segments = hydrology.river_segments();
     for level in [6_u8, 10] {
+        let started = std::time::Instant::now();
         let wet = |direction: UnitVector3| {
             displayed_kind(&evaluator, shoreline, direction, level) != SurfaceWaterKind::DryLand
         };
@@ -539,7 +548,9 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
                 let to = segment.to().raw() as usize;
                 let dry = |index: usize| water.get(index) == Some(SurfaceWaterKind::DryLand);
                 let mut tally = MouthTally::default();
-                let drawn = evaluator.river_path(reach as u32, level - 1);
+                let pieces = evaluator.river_path(reach as u32, level - 1);
+                tally.pieces = pieces.len();
+                let drawn = pieces.concat();
                 let flags: Vec<bool> = drawn.iter().map(|&point| wet(point)).collect();
                 let mut path: Vec<[f64; 3]> =
                     drawn.iter().map(|point| point.components()).collect();
@@ -591,6 +602,7 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
                 }
                 // The drawn line against the fine shoreline.
                 if path.is_empty() {
+                    tally.undrawn = 1;
                     return Some((true, tally));
                 }
                 if let Some(first_wet) = flags.iter().position(|&flag| flag) {
@@ -617,12 +629,15 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
                 Some((true, tally))
             })
             .collect();
+        let elapsed = started.elapsed().as_secs_f64();
         let mut mouth = MouthTally::default();
         let (mut inner_vertices, mut inner_wet) = (0_u64, 0_u64);
+        let mut inner_pieces = [0_u32; 4];
         for (is_mouth, tally) in tallies {
             if !is_mouth {
                 inner_vertices += tally.drawn_vertices;
                 inner_wet += tally.drawn_wet_vertices;
+                inner_pieces[tally.pieces.min(3)] += 1;
                 continue;
             }
             mouth.reaches += tally.reaches;
@@ -632,6 +647,7 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
             mouth.overlap_km.extend(tally.overlap_km);
             mouth.gap_km.extend(tally.gap_km);
             mouth.gap_never += tally.gap_never;
+            mouth.undrawn += tally.undrawn;
             mouth.drawn_vertices += tally.drawn_vertices;
             mouth.drawn_wet_vertices += tally.drawn_wet_vertices;
         }
@@ -654,10 +670,11 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
             quantiles(&mut mouth.overlap_km)
         );
         eprintln!(
-            "{tag} drawn end dry (gap km) {} | {}; never meets water {}",
+            "{tag} drawn end dry (gap km) {} | {}; never meets water {}; no line drawn {}",
             mouth.gap_km.len(),
             quantiles(&mut mouth.gap_km),
-            mouth.gap_never
+            mouth.gap_never,
+            mouth.undrawn
         );
         eprintln!(
             "{tag} drawn vertices on fine water: mouth reaches {:.2}% of {}; dry->dry reaches \
@@ -665,6 +682,11 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
             100.0 * mouth.drawn_wet_vertices as f64 / mouth.drawn_vertices.max(1) as f64,
             mouth.drawn_vertices,
             100.0 * inner_wet as f64 / inner_vertices.max(1) as f64
+        );
+        eprintln!(
+            "{tag} dry->dry reaches by drawn pieces: 0 {} | 1 {} | 2 {} | 3+ {}; probe wall \
+             {elapsed:.1} s (cold paths, parallel)",
+            inner_pieces[0], inner_pieces[1], inner_pieces[2], inner_pieces[3]
         );
     }
 }

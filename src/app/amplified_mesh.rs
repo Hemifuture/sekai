@@ -1047,15 +1047,17 @@ pub(super) fn build_river_polylines(
             .evaluator
             .river_width_m(reach as u32)
             .expect("the reach metadata is evaluator-aligned");
-        let path = context
+        for piece in context
             .evaluator
-            .river_path(reach as u32, level.saturating_sub(1));
-        for pair in path.windows(2) {
-            polylines.push(RiverPolylineSegment {
-                start: pair[0].components(),
-                end: pair[1].components(),
-                width_m,
-            });
+            .river_path(reach as u32, level.saturating_sub(1))
+        {
+            for pair in piece.windows(2) {
+                polylines.push(RiverPolylineSegment {
+                    start: pair[0].components(),
+                    end: pair[1].components(),
+                    width_m,
+                });
+            }
         }
     }
     polylines
@@ -1070,6 +1072,16 @@ mod tests {
     use crate::world::natural::{Lake, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind};
     use crate::world::LakeId;
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
+
+    /// Drawn segments of one reach at one depth, across its pieces.
+    fn segment_count(context: &AmplifiedDetailContext, reach: u32, depth: u8) -> usize {
+        context
+            .evaluator
+            .river_path(reach, depth)
+            .iter()
+            .map(|piece| piece.len() - 1)
+            .sum()
+    }
 
     fn test_context() -> AmplifiedDetailContext {
         let surface = GeodesicVoronoiBuilder::build_cancellable(
@@ -1262,7 +1274,7 @@ mod tests {
         let coarse = build_river_polylines(&context, &uniform_selection(&context, 1));
         let coarse_expected: usize = [1, 2]
             .into_iter()
-            .map(|reach| context.evaluator.river_path(reach, 0).len() - 1)
+            .map(|reach| segment_count(&context, reach, 0))
             .sum();
         assert_eq!(
             coarse.len(),
@@ -1271,20 +1283,20 @@ mod tests {
         );
         // The selected headwater is reach 2 (larger area), although reach 0
         // has greater discharge and hydraulic width. This catches wrong UI binding.
-        let trunk_segments = context.evaluator.river_path(1, 0).len() - 1;
+        let trunk_segments = segment_count(&context, 1, 0);
         assert_eq!(
             coarse[trunk_segments].start,
-            context.evaluator.river_path(2, 0)[0].components()
+            context.evaluator.river_path(2, 0)[0][0].components()
         );
         let deeper = build_river_polylines(&context, &uniform_selection(&context, 4));
         let deep_expected: usize = (0..context.evaluator.river_reach_count() as u32)
-            .map(|reach| context.evaluator.river_path(reach, 3).len() - 1)
+            .map(|reach| segment_count(&context, reach, 3))
             .sum();
         assert_eq!(deeper.len(), deep_expected);
         let again = build_river_polylines(&context, &uniform_selection(&context, 4));
         assert_eq!(deeper, again, "polylines are deterministic");
         // Chain junction stays welded: reach 0 ends where reach 1 begins.
-        let first_reach_segments = context.evaluator.river_path(0, 3).len() - 1;
+        let first_reach_segments = segment_count(&context, 0, 3);
         let mid = deeper[first_reach_segments - 1].end;
         assert_eq!(mid, deeper[first_reach_segments].start);
     }
@@ -1295,7 +1307,7 @@ mod tests {
         let polylines = build_river_polylines(&context, &uniform_selection(&context, 4));
         let mut cursor = 0;
         for reach in 0..context.evaluator.river_reach_count() as u32 {
-            let segment_count = context.evaluator.river_path(reach, 3).len() - 1;
+            let segment_count = segment_count(&context, reach, 3);
             let width_m = context
                 .evaluator
                 .river_width_m(reach)
@@ -1329,10 +1341,9 @@ mod tests {
         // Reach 0 renders at its deeper endpoint (level 4 → depth 3)
         // although its other endpoint sits at level 1; the other reaches
         // stay at their portal-split depth-zero paths.
-        let expected = context.evaluator.river_path(0, 3).len() - 1
-            + context.evaluator.river_path(1, 0).len()
-            - 1
-            + context.evaluator.river_path(2, 0).len()
+        let expected = segment_count(&context, 0, 3) + segment_count(&context, 1, 0) + 1 - 1
+            + segment_count(&context, 2, 0)
+            + 1
             - 1;
         assert_eq!(polylines.len(), expected);
     }

@@ -471,15 +471,31 @@ impl TerrainAmplifier {
     /// Attaches the published river network for §7 carving (amendment A4).
     ///
     /// Node beds are the T0 elevations minus a hydraulic-geometry incision
-    /// depth, made monotone along flow by a running minimum in topological
-    /// order; reaches interpolate those beds linearly, so a carved bed can
-    /// never rise downstream, and carving as a whole only ever lowers the
-    /// surface through `min` — it can never dam.
+    /// depth, floored at the erosion base level — the surface of the first
+    /// water body downstream (LOD-1 spec §3.3 D3, Powell 1875) — with water
+    /// nodes resting on their own surface, then made monotone along flow by
+    /// a running minimum in topological order; reaches interpolate those
+    /// beds linearly, so a carved bed can never rise downstream, and
+    /// carving as a whole only ever lowers the surface through `min` — it
+    /// can never dam.
+    ///
+    /// # Arguments
+    ///
+    /// * `surface` - The authoritative surface the network indexes.
+    /// * `segments` - The published river segments, in reach order.
+    /// * `surface_water` - The published per-cell water classification.
+    /// * `water_surface_m` - The surface of the water body owning a cell,
+    ///   if any (ocean: the formal sea level; lake: its spill surface).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for out-of-range, non-adjacent, or cyclic segments.
     pub fn with_rivers(
         mut self,
         surface: &SphericalSurfaceSnapshot,
         segments: &[RiverSegment],
         surface_water: &SurfaceWaterField,
+        water_surface_m: &dyn Fn(CellId) -> Option<f64>,
     ) -> Result<Self, TerrainAmplificationError> {
         if segments.is_empty() {
             return Ok(self);
@@ -508,10 +524,6 @@ impl TerrainAmplifier {
             *upstream_count.entry(segment.to().raw()).or_insert(0) += 1;
             upstream_count.entry(segment.from().raw()).or_insert(0);
         }
-        let mut bed_m: BTreeMap<u32, f64> = depth_m
-            .iter()
-            .map(|(&node, &depth)| (node, f64::from(self.elevation_m[node as usize]) - depth))
-            .collect();
         let mut outgoing: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
         for (index, segment) in segments.iter().enumerate() {
             outgoing
@@ -519,36 +531,70 @@ impl TerrainAmplifier {
                 .or_default()
                 .push(index);
         }
-        let mut queue: Vec<u32> = upstream_count
+        // Kahn topological order of the network nodes.
+        let mut order: Vec<u32> = upstream_count
             .iter()
             .filter(|(_, &count)| count == 0)
             .map(|(&node, _)| node)
             .collect();
         let mut remaining = upstream_count.clone();
         let mut head = 0;
-        while head < queue.len() {
-            let node = queue[head];
+        while head < order.len() {
+            let node = order[head];
             head += 1;
-            let node_bed = bed_m[&node];
-            if let Some(list) = outgoing.get(&node) {
-                for &segment_index in list {
-                    let to = segments[segment_index].to().raw();
-                    let entry = bed_m
-                        .get_mut(&to)
-                        .expect("every segment endpoint has a bed entry");
-                    *entry = entry.min(node_bed);
-                    let pending = remaining
-                        .get_mut(&to)
-                        .expect("every segment endpoint has an upstream count");
-                    *pending -= 1;
-                    if *pending == 0 {
-                        queue.push(to);
-                    }
+            for &segment_index in outgoing.get(&node).into_iter().flatten() {
+                let to = segments[segment_index].to().raw();
+                let pending = remaining
+                    .get_mut(&to)
+                    .expect("every segment endpoint has an upstream count");
+                *pending -= 1;
+                if *pending == 0 {
+                    order.push(to);
                 }
             }
         }
         if head != upstream_count.len() {
             return Err(TerrainAmplificationError::RiverNetworkCycle);
+        }
+        // D3 base levels, downstream first: a water node's own surface,
+        // else the lowest base level among its receivers.
+        let mut own_surface_m: BTreeMap<u32, Option<f64>> = BTreeMap::new();
+        let mut base_level_m: BTreeMap<u32, Option<f64>> = BTreeMap::new();
+        for &node in order.iter().rev() {
+            let own = (surface_water.get(node as usize) != Some(SurfaceWaterKind::DryLand))
+                .then(|| water_surface_m(CellId::from_raw(node)))
+                .flatten();
+            let level = own.or_else(|| {
+                outgoing
+                    .get(&node)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|&segment| base_level_m[&segments[segment].to().raw()])
+                    .min_by(f64::total_cmp)
+            });
+            own_surface_m.insert(node, own);
+            base_level_m.insert(node, level);
+        }
+        let mut bed_m: BTreeMap<u32, f64> = depth_m
+            .iter()
+            .map(|(&node, &depth)| {
+                let incised = f64::from(self.elevation_m[node as usize]) - depth;
+                let bed = match (own_surface_m[&node], base_level_m[&node]) {
+                    (Some(own), _) => own,
+                    (None, Some(base)) => incised.max(base),
+                    (None, None) => incised,
+                };
+                (node, bed)
+            })
+            .collect();
+        for &node in &order {
+            let node_bed = bed_m[&node];
+            for &segment_index in outgoing.get(&node).into_iter().flatten() {
+                let entry = bed_m
+                    .get_mut(&segments[segment_index].to().raw())
+                    .expect("every segment endpoint has a bed entry");
+                *entry = entry.min(node_bed);
+            }
         }
 
         let mut reaches = Vec::with_capacity(segments.len());
@@ -605,15 +651,19 @@ impl TerrainAmplifier {
             let to_water = surface_water
                 .get(to as usize)
                 .expect("surface-water cardinality was validated");
+            // LOD-1 spec §3.4 D4: a reach touching dry land keeps its
+            // water-side leg too; the fine shoreline clips what is drawn.
+            let drawn =
+                from_water == SurfaceWaterKind::DryLand || to_water == SurfaceWaterKind::DryLand;
             let legs = [
-                (from_water == SurfaceWaterKind::DryLand).then_some(RiverLeg {
+                drawn.then_some(RiverLeg {
                     from: from_center,
                     to: portal,
                     sector: [from_center, boundary[0], boundary[1]],
                     fraction_from: 0.0,
                     fraction_to: portal_fraction,
                 }),
-                (to_water == SurfaceWaterKind::DryLand).then_some(RiverLeg {
+                drawn.then_some(RiverLeg {
                     from: portal,
                     to: to_center,
                     sector: [to_center, boundary[0], boundary[1]],
@@ -631,12 +681,21 @@ impl TerrainAmplifier {
                 bed_from_m: bed_from,
                 bed_to_m: bed_m[&to].min(bed_from),
                 width_m,
+                from_cell: from_id,
+                to_cell: to_id,
+                flow: match (
+                    from_water == SurfaceWaterKind::DryLand,
+                    to_water == SurfaceWaterKind::DryLand,
+                ) {
+                    (true, true) => ReachFlow::Overland,
+                    (true, false) => ReachFlow::Inflow,
+                    (false, true) => ReachFlow::Outflow,
+                    (false, false) => ReachFlow::Submerged,
+                },
                 legs,
             });
-            if from_water == SurfaceWaterKind::DryLand {
+            if drawn {
                 touching[from as usize].push(index);
-            }
-            if to_water == SurfaceWaterKind::DryLand {
                 touching[to as usize].push(index);
             }
         }
@@ -1013,7 +1072,25 @@ pub(super) struct RiverReach {
     pub(super) bed_from_m: f64,
     pub(super) bed_to_m: f64,
     pub(super) width_m: f64,
+    pub(super) from_cell: CellId,
+    pub(super) to_cell: CellId,
+    pub(super) flow: ReachFlow,
     pub(super) legs: [Option<RiverLeg>; 2],
+}
+
+/// Where a published reach runs relative to the P5 water bodies — the
+/// rule for which part of its path the fine shoreline keeps (LOD-1 spec
+/// §3.4 D4.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReachFlow {
+    /// Dry cell to dry cell: every fine-dry run is kept.
+    Overland,
+    /// Dry cell into a water body: kept up to the first fine-water vertex.
+    Inflow,
+    /// Out of a water body onto a dry cell: kept after the last one.
+    Outflow,
+    /// Water to water: nothing is drawn.
+    Submerged,
 }
 
 impl RiverReach {
@@ -1022,8 +1099,9 @@ impl RiverReach {
     }
 }
 
-/// One directed dry-land portion of a published reach, bounded by the
-/// owning cell centroid and the authoritative shared-edge portal.
+/// One directed portion of a published reach inside one owner cell,
+/// bounded by that cell's centroid and the authoritative shared-edge
+/// portal.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct RiverLeg {
     pub(super) from: [f64; 3],
@@ -1821,6 +1899,16 @@ mod tests {
         order: u8,
         discharge_m3_s: f32,
     ) -> (TerrainAmplifier, SphericalSurfaceSnapshot, usize) {
+        single_reach_with_base_levels(from_water, to_water, order, discharge_m3_s, &|_| None)
+    }
+
+    fn single_reach_with_base_levels(
+        from_water: crate::world::natural::SurfaceWaterKind,
+        to_water: crate::world::natural::SurfaceWaterKind,
+        order: u8,
+        discharge_m3_s: f32,
+        base_level_m: &dyn Fn(CellId) -> Option<f64>,
+    ) -> (TerrainAmplifier, SphericalSurfaceSnapshot, usize) {
         use crate::world::natural::{
             RiverSegment, RiverSegmentKind, SurfaceWaterField, SurfaceWaterKind,
         };
@@ -1846,19 +1934,23 @@ mod tests {
         .unwrap()];
         let amplifier = TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
             .unwrap()
-            .with_rivers(&surface, &segments, &water)
+            .with_rivers(&surface, &segments, &water, base_level_m)
             .unwrap();
         (amplifier, surface, edge_index)
     }
 
+    /// LOD-1 spec §3.4 D4 (revising T1 v2.1 §4.1): a reach touching dry
+    /// land keeps both legs — the water-side leg too, so the drawn line can
+    /// reach the fine shoreline wherever it lies — and both owner cells
+    /// index it; a water-to-water reach has none.
     #[test]
-    fn river_reaches_split_at_shared_edge_and_omit_water_legs() {
+    fn river_reaches_split_at_shared_edge_with_both_legs_on_dry_reaches() {
         use crate::world::natural::SurfaceWaterKind::{DryLand, Lake};
 
         let cases = [
             (DryLand, DryLand, 2_usize),
-            (DryLand, Lake, 1),
-            (Lake, DryLand, 1),
+            (DryLand, Lake, 2),
+            (Lake, DryLand, 2),
             (Lake, Lake, 0),
         ];
         for (from_water, to_water, expected_legs) in cases {
@@ -1871,24 +1963,24 @@ mod tests {
             let legs: Vec<_> = reach.legs.iter().flatten().collect();
             assert_eq!(legs.len(), expected_legs);
 
-            if from_water == DryLand {
+            if expected_legs > 0 {
                 let leg = legs
                     .iter()
                     .find(|leg| {
                         leg.from == surface.cells()[from.raw() as usize].centroid.components()
                     })
-                    .expect("dry upstream cell owns one leg");
+                    .expect("the upstream cell owns one leg");
                 assert_eq!(
                     leg.from,
                     surface.cells()[from.raw() as usize].centroid.components()
                 );
                 assert_eq!(leg.to, portal);
             }
-            if to_water == DryLand {
+            if expected_legs > 0 {
                 let leg = legs
                     .iter()
                     .find(|leg| leg.to == surface.cells()[to.raw() as usize].centroid.components())
-                    .expect("dry downstream cell owns one leg");
+                    .expect("the downstream cell owns one leg");
                 assert_eq!(leg.from, portal);
                 assert_eq!(
                     leg.to,
@@ -1896,16 +1988,57 @@ mod tests {
                 );
             }
 
-            for (cell, kind) in [(from, from_water), (to, to_water)] {
+            for cell in [from, to] {
                 let start = amplifier.reach_offsets[cell.raw() as usize] as usize;
                 let end = amplifier.reach_offsets[cell.raw() as usize + 1] as usize;
                 assert_eq!(
                     amplifier.reach_indices[start..end].contains(&0),
-                    kind == DryLand,
-                    "only dry owner cells index the reach"
+                    expected_legs > 0,
+                    "both owner cells of a drawn reach index it"
                 );
             }
         }
+    }
+
+    /// LOD-1 spec §3.3 D3 / §4 I7: the receiving water surface is the
+    /// erosion base level (Powell 1875) — an inflowing bed never cuts below
+    /// it, the water node's bed is the surface itself, and a lake outflow
+    /// starts from the lake surface (its spill level), not the lake floor.
+    #[test]
+    fn river_beds_rest_on_the_receiving_water_surface() {
+        use crate::world::natural::SurfaceWaterKind::{DryLand, Lake, Ocean};
+
+        // Into the sea: a base level just under the dry cell's value is
+        // above `z − depth`, so the inflow bed rests on the base level.
+        let surface = test_surface();
+        let fields = SyntheticFields::new(&surface, 800.0, 0.0);
+        let [from, to] = surface.edges()[0].cells;
+        let sea_m = f64::from(fields.elevation[from.raw() as usize]) - 1.0;
+        let (amplifier, _, _) = single_reach_with_base_levels(DryLand, Ocean, 1, 500.0, &|cell| {
+            (cell == to).then_some(sea_m)
+        });
+        let reach = &amplifier.reaches[0];
+        assert_eq!(reach.bed_from_m, sea_m);
+        assert_eq!(reach.bed_to_m, sea_m);
+
+        // Out of a lake: the outflow starts at the lake surface even
+        // though the lake cell itself sits far below it.
+        let lake_m = f64::from(fields.elevation[from.raw() as usize]) + 50.0;
+        let (amplifier, _, _) = single_reach_with_base_levels(Lake, DryLand, 1, 500.0, &|cell| {
+            (cell == from).then_some(lake_m)
+        });
+        let reach = &amplifier.reaches[0];
+        assert_eq!(reach.bed_from_m, lake_m);
+        assert!(reach.bed_to_m <= reach.bed_from_m);
+
+        // Without a receiving body the bed law is unchanged.
+        let (amplifier, _, _) = single_reach_with_water(DryLand, DryLand, 1, 500.0);
+        let depth = (RIVER_DEPTH_COEFFICIENT * 500.0_f64.powf(RIVER_DEPTH_EXPONENT))
+            .clamp(RIVER_DEPTH_MIN_M, RIVER_DEPTH_MAX_M);
+        assert_eq!(
+            amplifier.reaches[0].bed_from_m,
+            f64::from(fields.elevation[from.raw() as usize]) - depth
+        );
     }
 
     #[test]
@@ -1951,7 +2084,7 @@ mod tests {
         assert!(matches!(
             TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
                 .unwrap()
-                .with_rivers(&surface, &[segment], &water),
+                .with_rivers(&surface, &[segment], &water, &|_| None),
             Err(TerrainAmplificationError::RiverSegmentNotAdjacent {
                 from: found_from,
                 to: found_to,
@@ -2001,7 +2134,7 @@ mod tests {
         ];
         let carved = TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
             .unwrap()
-            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
+            .with_rivers(&surface, &segments, &dry_surface_water(&surface), &|_| None)
             .unwrap();
 
         // Beds never rise downstream (spec §7 invariant, built structurally).
@@ -2071,7 +2204,7 @@ mod tests {
         assert!(matches!(
             TerrainAmplifier::new(&surface, fields.view(), RootSeed::new(9))
                 .unwrap()
-                .with_rivers(&surface, &segments, &dry_surface_water(&surface)),
+                .with_rivers(&surface, &segments, &dry_surface_water(&surface), &|_| None),
             Err(TerrainAmplificationError::RiverNetworkCycle)
         ));
     }

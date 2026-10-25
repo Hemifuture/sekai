@@ -45,8 +45,9 @@ pub const HIERARCHICAL_PATH_DEPTH_MAX: usize = 16;
 /// [`HierarchicalEvaluator::probe_fingerprint`]. The seed domain above
 /// stays fixed, so a bump never reshuffles the L2+ seeds. Version 1 is the
 /// T1 v2 derivation before LOD-1; 2 adopts the D1 P1 vertex anchors; 3 the
-/// D2 inland average-interpolating centroids.
-const T1_DERIVATION_VERSION: u16 = 3;
+/// D2 inland average-interpolating centroids; 4 the D3 base-level beds and
+/// the D4 fine-dry river clipping.
+const T1_DERIVATION_VERSION: u16 = 4;
 /// Frozen hierarchical probe count (spec §6).
 pub const HIERARCHICAL_PROBE_COUNT: usize = 256;
 /// Frozen probe path depths (spec §6): one probe block per depth.
@@ -298,9 +299,12 @@ impl HierarchicalEvaluator {
         let sea_level_m = self.amplifier.conditioning().sea_level_m as f32;
         self.shoreline = FineShoreline::new(surface, surface_water, lakes, sea_level_m);
         self.centroid_value_m = self.centroid_anchor_values();
+        let shoreline = &self.shoreline;
         self.amplifier = self
             .amplifier
-            .with_rivers(surface, segments, surface_water)?;
+            .with_rivers(surface, segments, surface_water, &|cell| {
+                shoreline.own_surface_m(cell).map(f64::from)
+            })?;
         self.river_paths = fresh_reach_path_caches(self.amplifier.river_reaches().len());
         Ok(self)
     }
@@ -469,6 +473,37 @@ impl HierarchicalEvaluator {
         }
     }
 
+    /// A [`CentrelineCursor`] deciding fine-dry centreline points at the
+    /// display `level`.
+    pub(super) fn centreline_cursor(&self, level: u8) -> CentrelineCursor<'_> {
+        CentrelineCursor {
+            engine: self,
+            level,
+            walk: None,
+        }
+    }
+
+    /// The child of `frame` containing `direction`, chosen exactly as
+    /// [`Self::locate`] chooses it (largest interior margin over the same
+    /// renormalized-sum midpoint geometry the anchors carry).
+    fn containing_child(&self, frame: &TriangleFrame, direction: UnitVector3) -> u8 {
+        let [a, b, c] = frame.corners.map(|anchor| anchor.position);
+        let ab = geometric_midpoint(a, b);
+        let bc = geometric_midpoint(b, c);
+        let ca = geometric_midpoint(c, a);
+        let children = [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]];
+        let mut child = 0;
+        let mut best = f64::NEG_INFINITY;
+        for (candidate, triangle) in children.iter().enumerate() {
+            let margin = interior_margin(triangle, direction);
+            if margin > best {
+                best = margin;
+                child = candidate;
+            }
+        }
+        child as u8
+    }
+
     /// The M1 amplifier inside this engine — the L0 fact source the
     /// hierarchical river module shares (reaches, beds, carve laws).
     pub(super) fn amplifier(&self) -> &TerrainAmplifier {
@@ -505,11 +540,13 @@ impl HierarchicalEvaluator {
         super::hierarchical_rivers::path_depth_cap(self, reach)
     }
 
-    /// Materializes one reach's dry-land polyline at `depth` (clamped to
-    /// each leg's cap). The path is split at its authoritative shared-edge
-    /// portal and omits water-cell interiors.
-    pub fn river_path(&self, reach: u32, depth: u8) -> Vec<UnitVector3> {
-        super::hierarchical_rivers::materialize_path(self, reach, depth)
+    /// Materializes one reach's drawn polyline pieces at display depth
+    /// `depth` (clamped to each leg's cap): the centroid–portal–centroid
+    /// path, kept only on its fine-dry vertices (LOD-1 spec §3.4 D4), so
+    /// an inflow ends and an outflow starts on the drawn water edge and an
+    /// overland reach breaks where it crosses fine water.
+    pub fn river_path(&self, reach: u32, depth: u8) -> Vec<Vec<UnitVector3>> {
+        super::hierarchical_rivers::materialize_pieces(self, reach, depth)
     }
 
     /// Locates the primitive of `level` containing `direction`.
@@ -904,6 +941,123 @@ impl HierarchicalEvaluator {
                 conditions,
                 sink,
             );
+        }
+    }
+}
+
+/// Margin of the centreline decision bound over the f32 publication
+/// rounding (an f32 ulp at the elevation bounds is below a millimetre) and
+/// the f64 rounding of the anchors themselves.
+const CENTRELINE_DECISION_MARGIN_M: f64 = 0.01;
+
+/// Decides whether the fine shoreline paints centreline points dry at one
+/// level, each point's value being the uncarved derived value floored by
+/// the reach bed (LOD-1 spec §3.4 D4.2) — exactly
+/// `classify(cell, min(uncarved, bed) as f32) == DryLand`.
+///
+/// Each decision stops at the coarsest level that settles it: every split
+/// below level `l` moves an anchor by at most the conditioned amplitude
+/// `A(l)` (spec §7 invariant 3), so the leaf value stays inside its
+/// ancestor's corner range widened by the remaining amplitude sum. Points
+/// fed in path order share their upper primitives, so the cursor keeps the
+/// last walk and derives only the levels where the new point diverges.
+pub(super) struct CentrelineCursor<'a> {
+    engine: &'a HierarchicalEvaluator,
+    level: u8,
+    walk: Option<CursorWalk>,
+}
+
+/// The cached primitive walk of the cursor's last point.
+struct CursorWalk {
+    cell: u32,
+    sector: u8,
+    conditions: SectorConditions,
+    /// `frames[k]`: the primitive frame at path length `k` along `steps`.
+    frames: Vec<TriangleFrame>,
+    steps: Vec<u8>,
+    /// `remaining_m[k]`: the amplitude bound summed over the splits below
+    /// path length `k`.
+    remaining_m: Vec<f64>,
+}
+
+impl CentrelineCursor<'_> {
+    /// Whether the fine shoreline paints `direction` dry when its value is
+    /// floored by `bed_m`.
+    pub(super) fn is_dry(&mut self, direction: UnitVector3, bed_m: f64) -> bool {
+        let engine = self.engine;
+        let cell_index = engine.locate_cell_index(direction);
+        // A leaf is dry exactly when its f32 value reaches the highest
+        // surface its cell sees; the f32 rounding is monotone, so the min
+        // with the bed splits into two comparisons.
+        let Some(surface_m) = engine
+            .shoreline
+            .highest_surface_m(CellId::from_raw(cell_index))
+        else {
+            return true;
+        };
+        if (bed_m as f32) < surface_m {
+            return false;
+        }
+        if self.level == 0 {
+            return engine.amplifier.conditioning().elevation_m[cell_index as usize] >= surface_m;
+        }
+        let depth = usize::from(self.level - 1).min(HIERARCHICAL_PATH_DEPTH_MAX);
+        let sector = engine.locate_sector(cell_index, direction) as u8;
+        if !self
+            .walk
+            .as_ref()
+            .is_some_and(|walk| walk.cell == cell_index && walk.sector == sector)
+        {
+            self.walk = Some(CursorWalk::new(engine, cell_index, sector, depth));
+        }
+        let walk = self.walk.as_mut().expect("the walk was just installed");
+        let threshold_m = f64::from(surface_m);
+        for k in 0..depth {
+            let frame = walk.frames[k];
+            let values = frame.corners.map(|anchor| anchor.value_m);
+            let slack_m = walk.remaining_m[k] * (1.0 + 1.0e-9) + CENTRELINE_DECISION_MARGIN_M;
+            if values.iter().copied().fold(f64::INFINITY, f64::min) - slack_m >= threshold_m {
+                return true;
+            }
+            if values.iter().copied().fold(f64::NEG_INFINITY, f64::max) + slack_m < threshold_m {
+                return false;
+            }
+            let child = engine.containing_child(&frame, direction);
+            if walk.steps.get(k) != Some(&child) {
+                walk.steps.truncate(k);
+                walk.frames.truncate(k + 1);
+                let midpoints = engine.split_midpoints(&frame, k as u32 + 1, &walk.conditions);
+                walk.frames.push(child_frame(frame, midpoints, child));
+                walk.steps.push(child);
+            }
+        }
+        let [a, b, c] = &walk.frames[depth].corners;
+        ((a.value_m + b.value_m + c.value_m) / 3.0) as f32 >= surface_m
+    }
+}
+
+impl CursorWalk {
+    fn new(engine: &HierarchicalEvaluator, cell: u32, sector: u8, depth: usize) -> Self {
+        let conditions = engine.sector_conditions(cell, sector);
+        let amplitude_bound = |level: usize| {
+            conditions
+                .root
+                .amplitude_m(level as u32)
+                .max(conditions.boundary.amplitude_m(level as u32))
+        };
+        let mut remaining_m = vec![0.0_f64; depth + 1];
+        for k in (0..depth).rev() {
+            remaining_m[k] = remaining_m[k + 1] + amplitude_bound(k + 1);
+        }
+        let mut frames = Vec::with_capacity(depth + 1);
+        frames.push(engine.sector_frame(cell, sector));
+        Self {
+            cell,
+            sector,
+            conditions,
+            frames,
+            steps: Vec::with_capacity(depth),
+            remaining_m,
         }
     }
 }
