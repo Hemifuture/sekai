@@ -643,7 +643,6 @@ fn validate_final_product(
     quality: &NaturalQualityArtifact,
 ) {
     let surface_snapshot = surface.snapshot();
-    surface_snapshot.validate().unwrap();
     formation.formation().validate().unwrap();
     tectonic
         .snapshot()

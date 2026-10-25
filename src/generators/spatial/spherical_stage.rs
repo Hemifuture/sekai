@@ -99,10 +99,11 @@ impl SphericalSurfaceArtifact {
 impl Artifact for SphericalSurfaceArtifact {
     const KEY: ArtifactKey = ArtifactKey::new("world.spherical-surface");
 
+    /// Accepts the wrapper as is: a [`SphericalSurfaceSnapshot`] is valid by
+    /// construction, and its one full validation already ran where it was
+    /// built or deserialized, before it could be wrapped.
     fn validate(&self) -> Result<(), ArtifactValidationError> {
-        self.snapshot
-            .validate()
-            .map_err(|error| ArtifactValidationError::new(INVALID_SNAPSHOT_CODE, error.to_string()))
+        Ok(())
     }
 }
 
@@ -153,7 +154,6 @@ impl Stage for SphericalSurfaceStage {
         space.validate().map_err(invalid_spec)?;
         let snapshot = GeodesicVoronoiBuilder::build_cancellable(space, || rng.is_cancelled())
             .map_err(builder_failure)?;
-        snapshot.validate().map_err(invalid_snapshot)?;
 
         if space.resolved_cell_count() != space.target_cell_count {
             diagnostics.push(
@@ -227,12 +227,35 @@ fn invalid_snapshot(error: SphericalSurfaceValidationError) -> StageError {
 #[cfg(test)]
 mod tests {
     use super::{
-        builder_failure, invalid_spec, BUILD_FAILED_CODE, CANCELLED_CODE, INVALID_SNAPSHOT_CODE,
-        INVALID_SPEC_CODE,
+        builder_failure, invalid_spec, SphericalSurfaceArtifact, BUILD_FAILED_CODE, CANCELLED_CODE,
+        INVALID_SNAPSHOT_CODE, INVALID_SPEC_CODE,
     };
-    use crate::generators::spatial::SphericalSurfaceBuildError;
+    use crate::generators::spatial::{GeodesicVoronoiBuilder, SphericalSurfaceBuildError};
     use crate::world::spatial::{SphericalSurfaceValidationError, SPHERICAL_SURFACE_SCHEMA_V2};
-    use crate::world::{SphericalSpecError, MIN_SPHERICAL_CELL_COUNT};
+    use crate::world::{
+        CellId, Meters, SphericalSpaceSpec, SphericalSpecError, MIN_SPHERICAL_CELL_COUNT,
+    };
+
+    /// The artifact no longer re-audits its surface on engine insertion, so a
+    /// corrupted surface must already be rejected by the nested snapshot's
+    /// deserialization boundary, while an intact one round-trips.
+    #[test]
+    fn artifact_deserialization_rejects_a_corrupted_surface() {
+        let snapshot = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(6_371_000.0).unwrap(),
+            target_cell_count: MIN_SPHERICAL_CELL_COUNT,
+        })
+        .unwrap();
+        let artifact = SphericalSurfaceArtifact::new(snapshot);
+        let mut wire = serde_json::to_value(&artifact).unwrap();
+        let decoded: SphericalSurfaceArtifact = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded, artifact);
+
+        wire["snapshot"]["cells"][0]["area"] = serde_json::json!(1.0);
+        let error = serde_json::from_value::<SphericalSurfaceArtifact>(wire).unwrap_err();
+        let expected = format!("cell {:?} stores area 1, expected ", CellId::from_raw(0));
+        assert!(error.to_string().starts_with(&expected), "{error}");
+    }
 
     #[test]
     fn spherical_spec_failures_have_a_stable_distinct_stage_error() {

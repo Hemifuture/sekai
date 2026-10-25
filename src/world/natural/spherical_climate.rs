@@ -15,8 +15,7 @@ use super::{
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceGeometryKind, SurfaceRef,
-    SurfaceRefError,
+    SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef, SurfaceRefError,
 };
 use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT};
 
@@ -303,7 +302,6 @@ impl SphericalPreliminaryClimateSnapshot {
         surface: &SphericalSurfaceSnapshot,
         relief: &SphericalReliefSnapshot,
     ) -> Result<(), SphericalClimateValidationError> {
-        surface.validate()?;
         relief.validate_against_validated_surface(surface)?;
         self.validate_against_validated_surface(surface, relief)
     }
@@ -314,7 +312,7 @@ impl SphericalPreliminaryClimateSnapshot {
         relief: &SphericalReliefSnapshot,
     ) -> Result<(), SphericalClimateValidationError> {
         self.validate()?;
-        let authoritative = SurfaceRef::from_validated_spherical(surface)?;
+        let authoritative = SurfaceRef::try_for_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalClimateValidationError::SurfaceMismatch {
                 snapshot: self.surface_ref,
@@ -560,9 +558,6 @@ pub enum SphericalClimateValidationError {
         found: f64,
         max: f32,
     },
-    /// The authoritative spherical surface is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The exact stored surface identity differs from the authoritative surface.
     #[error("climate surface identity {snapshot:?} does not match {authoritative:?}")]
     SurfaceMismatch {

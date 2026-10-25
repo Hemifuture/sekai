@@ -3,8 +3,8 @@ use std::f64::consts::PI;
 use thiserror::Error;
 
 use super::{
-    SpatialSnapshot, SpatialValidationError, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRef, SurfaceRefError, Topology, UnitVector3,
+    SpatialSnapshot, SpatialValidationError, SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError,
+    Topology, UnitVector3,
 };
 use crate::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
 
@@ -266,9 +266,8 @@ pub struct SphericalNaturalSurface<'a> {
 }
 
 impl<'a> SphericalNaturalSurface<'a> {
-    /// Validates and borrows a spherical snapshot for natural-process queries.
+    /// Borrows a (valid by construction) spherical snapshot for natural-process queries.
     pub fn new(snapshot: &'a SphericalSurfaceSnapshot) -> Result<Self, NaturalSurfaceError> {
-        snapshot.validate()?;
         Ok(Self::from_validated(snapshot)?)
     }
 
@@ -277,7 +276,7 @@ impl<'a> SphericalNaturalSurface<'a> {
     ) -> Result<Self, SurfaceRefError> {
         Ok(Self {
             snapshot,
-            surface_ref: SurfaceRef::from_validated_spherical(snapshot)?,
+            surface_ref: SurfaceRef::try_for_spherical(snapshot)?,
         })
     }
 
@@ -367,9 +366,6 @@ pub enum NaturalSurfaceError {
     /// The borrowed planar snapshot failed its authoritative validation.
     #[error("invalid planar natural surface: {0}")]
     InvalidPlanar(#[from] SpatialValidationError),
-    /// The borrowed spherical snapshot failed its authoritative validation.
-    #[error("invalid spherical natural surface: {0}")]
-    InvalidSpherical(#[from] SphericalSurfaceValidationError),
     /// The validated snapshot could not produce a complete stable identity.
     #[error("invalid natural surface identity: {0}")]
     InvalidIdentity(#[from] SurfaceRefError),

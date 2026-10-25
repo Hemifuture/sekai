@@ -1279,11 +1279,7 @@ fn validate_inputs(
     cancellation: &BuildCancellation,
 ) -> Result<SurfaceRef, SurfaceFormationGenerationError> {
     check_cancelled(cancellation)?;
-    inputs
-        .surface
-        .validate_cancellable(&|| cancellation.is_cancelled())
-        .map_err(|error| map_upstream(cancellation, "authoritative_surface", error))?;
-    let surface_ref = SurfaceRef::from_validated_spherical(inputs.surface)?;
+    let surface_ref = SurfaceRef::try_for_spherical(inputs.surface)?;
     check_cancelled(cancellation)?;
     inputs
         .formation_spec

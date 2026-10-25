@@ -29,7 +29,6 @@ fn cubed_sphere_converts_losslessly_to_a_valid_spherical_surface() {
     let first = grid.to_surface_snapshot().unwrap();
     let second = grid.to_surface_snapshot().unwrap();
 
-    first.validate().unwrap();
     assert_eq!(first, second);
     assert_eq!(first.schema_version(), SPHERICAL_SURFACE_SCHEMA_V2);
     assert_eq!(

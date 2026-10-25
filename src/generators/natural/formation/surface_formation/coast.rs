@@ -8,7 +8,7 @@ use crate::world::natural::{
     FORMATION_COASTAL_EROSION_MAX_M_PER_YEAR, FORMATION_COASTAL_WIND_REFERENCE_M_S,
     SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
+use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
 use super::sediment::split_mass_by_weights;
@@ -90,9 +90,6 @@ impl CoastalExchange {
         cancellation: &BuildCancellation,
     ) -> Result<CoastalExchangeStep, CoastGenerationError> {
         check_cancelled(cancellation)?;
-        surface
-            .validate_cancellable(&|| cancellation.is_cancelled())
-            .map_err(|error| map_surface_error(error, cancellation))?;
         Self::advance_from_validated_surface(surface, inputs, step_years, cancellation)
     }
 
@@ -474,23 +471,10 @@ fn check_cancelled(cancellation: &BuildCancellation) -> Result<(), CoastGenerati
     }
 }
 
-fn map_surface_error(
-    error: SphericalSurfaceValidationError,
-    cancellation: &BuildCancellation,
-) -> CoastGenerationError {
-    if cancellation.is_cancelled() {
-        CoastGenerationError::Cancelled
-    } else {
-        CoastGenerationError::InvalidSurface(error)
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum CoastGenerationError {
     #[error("coastal exchange cancelled")]
     Cancelled,
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("coastal field {field} has length {found}; expected {expected}")]
     CellCountMismatch {
         field: &'static str,

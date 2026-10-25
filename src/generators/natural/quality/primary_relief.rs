@@ -426,9 +426,6 @@ fn validate_inputs(
     substrate: &GeologicSubstrateSnapshot,
     relief: &PrimaryReliefSnapshot,
 ) -> Result<(), QualityBuildError> {
-    surface
-        .validate()
-        .map_err(|error| invalid_input("surface", error.to_string()))?;
     evolved
         .validate_against(surface)
         .map_err(|error| invalid_input("evolved-tectonics", error.to_string()))?;

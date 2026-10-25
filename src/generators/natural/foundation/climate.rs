@@ -13,8 +13,7 @@ use crate::world::natural::{
     ANNUAL_PRECIPITATION_MAX_MM, CLIMATE_MONTH_COUNT, PRELIMINARY_CLIMATE_SCHEMA_V2,
 };
 use crate::world::spatial::{
-    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRefError,
+    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRefError,
 };
 use crate::world::CellId;
 
@@ -40,7 +39,6 @@ impl ClimateGenerator {
         spec: &ClimateSpec,
     ) -> Result<SphericalPreliminaryClimateSnapshot, SphericalClimateGenerationError> {
         spec.validate()?;
-        surface.validate()?;
         relief.validate_against_validated_surface(surface)?;
 
         let view = SphericalNaturalSurface::from_validated(surface)?;
@@ -246,9 +244,6 @@ pub enum SphericalClimateGenerationError {
     /// The resolved shared climate forcing is invalid.
     #[error("invalid spherical preliminary-climate specification: {0}")]
     InvalidSpec(#[from] ClimateSpecError),
-    /// The authoritative spherical surface is invalid.
-    #[error("invalid spherical climate surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The relief input is invalid or belongs to a different surface.
     #[error("invalid spherical climate relief: {0}")]
     InvalidRelief(#[from] SphericalReliefValidationError),

@@ -12,8 +12,7 @@ use crate::world::natural::{
     SphericalMantleSnapshot, SphericalMantleValidationError, MANTLE_SNAPSHOT_SCHEMA_V2,
 };
 use crate::world::spatial::{
-    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRefError,
+    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRefError,
 };
 
 impl MantleGenerator {
@@ -66,7 +65,6 @@ fn validate_inputs(
     formation_bias: MantleFormationBias,
 ) -> Result<(u16, MantleActivity), SphericalMantleGenerationError> {
     spec.validate()?;
-    surface.validate()?;
     let (hotspot_count, mantle_activity) = resolve_mantle_profile(spec, formation_bias);
     if usize::from(hotspot_count) > surface.cells().len() {
         return Err(SphericalMantleGenerationError::HotspotCountExceedsCells {
@@ -83,9 +81,6 @@ pub enum SphericalMantleGenerationError {
     /// The supplied geologic specification is invalid.
     #[error("invalid geologic specification: {0}")]
     InvalidSpec(#[from] GeologicSpecError),
-    /// The authoritative spherical surface is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The authoritative spherical surface identity could not be derived.
     #[error("invalid spherical surface identity: {0}")]
     InvalidSurfaceIdentity(#[from] SurfaceRefError),

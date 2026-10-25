@@ -15,7 +15,7 @@ use crate::world::natural::{
     FORMATION_STREAM_POWER_RUNOFF_REFERENCE_MM, FORMATION_STREAM_POWER_SLOPE_THRESHOLD,
     MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
+use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
 const MILLIMETERS_PER_METER: f64 = 1_000.0;
@@ -76,7 +76,6 @@ impl ImplicitStreamPowerSolver {
         cancellation: &BuildCancellation,
     ) -> Result<StreamPowerStep, StreamPowerGenerationError> {
         check_cancelled(cancellation)?;
-        surface.validate()?;
         Self::advance_from_validated_surface(surface, inputs, step_years, cancellation)
     }
 
@@ -506,8 +505,6 @@ fn check_cancelled(cancellation: &BuildCancellation) -> Result<(), StreamPowerGe
 pub enum StreamPowerGenerationError {
     #[error("stream-power generation cancelled")]
     Cancelled,
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("invalid spherical hydrology: {0}")]
     InvalidHydrology(#[from] SphericalHydrologyValidationError),
     #[error("invalid evolved tectonics: {0}")]

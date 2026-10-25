@@ -11,10 +11,7 @@ use crate::world::natural::{
     HydroErosionSpecError, LandOceanField, SphericalHydrologySnapshot,
     SurfaceFormationValidationError,
 };
-use crate::world::spatial::{
-    SphericalNaturalSurface, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
-    SurfaceRefError,
-};
+use crate::world::spatial::{SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRefError};
 
 /// Deterministic P5 hydrology driven by the retained formation terrain and P4 rates.
 #[derive(Debug, Clone, Copy, Default)]
@@ -33,7 +30,6 @@ impl FormationHydrologyGenerator {
     ) -> Result<SphericalHydrologySnapshot, FormationHydrologyGenerationError> {
         check_cancelled(cancellation)?;
         spec.validate()?;
-        surface.validate()?;
         check_cancelled(cancellation)?;
         terrain.validate_against_surface(surface)?;
         check_cancelled(cancellation)?;
@@ -128,9 +124,6 @@ pub enum FormationHydrologyGenerationError {
     /// The shared hydrology specification is invalid.
     #[error("invalid hydro-erosion specification: {0}")]
     InvalidSpec(#[from] HydroErosionSpecError),
-    /// The authoritative sphere is invalid.
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The retained formation terrain is invalid.
     #[error("invalid formation terrain: {0}")]
     InvalidTerrain(#[from] SurfaceFormationValidationError),

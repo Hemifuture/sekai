@@ -4049,18 +4049,9 @@ impl GlobalCirculationSnapshot {
         Ok(snapshot)
     }
 
-    /// Rechecks invariants that require only serialized identities and fields.
-    pub fn validate(&self) -> Result<(), GlobalCirculationValidationError> {
-        self.validate_impl(None)
-    }
-
-    pub fn validate_cancellable(
-        &self,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<(), GlobalCirculationValidationError> {
-        self.validate_impl(Some(cancelled))
-    }
-
+    /// Checks every invariant that requires only serialized identities and
+    /// fields, including the state fingerprint. Only the construction and
+    /// deserialization boundaries call it; every existing snapshot has passed it.
     fn validate_impl(
         &self,
         cancellation: CancellationCheck<'_>,
@@ -4231,22 +4222,12 @@ impl GlobalCirculationSnapshot {
         surface: &SphericalSurfaceSnapshot,
         cancellation: CancellationCheck<'_>,
     ) -> Result<(), GlobalCirculationValidationError> {
-        self.validate_impl(cancellation)?;
         check_global_circulation_cancelled(cancellation)?;
-        // Safe Rust can only supply an immutable typed surface that was
-        // validated by construction or deserialization. Preserve the full
-        // standalone audit for the non-cancellable API, while the production
-        // path checks identity and polls all snapshot/tangent scans.
-        if cancellation.is_none() {
-            surface.validate().map_err(|error| {
-                GlobalCirculationValidationError::InvalidNested {
-                    role: "authoritative_surface",
-                    reason: error.to_string(),
-                }
-            })?;
-        }
-        check_global_circulation_cancelled(cancellation)?;
-        let authoritative = SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+        // Both snapshots are immutable and valid by construction (`new`,
+        // `new_cancellable` and deserialization each run `validate_impl`
+        // once), so only the cross-object facts are checked here: the surface
+        // identity binding, the checkpoint grid, and vector tangency.
+        let authoritative = SurfaceRef::try_for_spherical(surface).map_err(|error| {
             GlobalCirculationValidationError::InvalidNested {
                 role: "authoritative_surface_identity",
                 reason: error.to_string(),
@@ -4725,19 +4706,6 @@ impl ClimateWorkDomainSnapshot {
         if self.climate_grid_fingerprint == [0; 32] {
             return Err(ClimateWorkDomainValidationError::ZeroGridFingerprint);
         }
-        match cancellation {
-            Some(cancelled) => self.climate_surface.validate_cancellable(cancelled),
-            None => self.climate_surface.validate(),
-        }
-        .map_err(|error| {
-            if error == crate::world::spatial::SphericalSurfaceValidationError::Cancelled {
-                ClimateWorkDomainValidationError::Cancelled
-            } else {
-                ClimateWorkDomainValidationError::InvalidClimateSurface {
-                    reason: error.to_string(),
-                }
-            }
-        })?;
 
         let resolution = u32::from(self.face_resolution);
         let expected_cells = 6_u32 * resolution * resolution;
@@ -4762,7 +4730,7 @@ impl ClimateWorkDomainSnapshot {
         validate_work_domain_map("source_to_climate", &self.source_to_climate, cancellation)?;
         validate_work_domain_map("climate_to_source", &self.climate_to_source, cancellation)?;
         let climate_ref =
-            SurfaceRef::from_validated_spherical(&self.climate_surface).map_err(|error| {
+            SurfaceRef::try_for_spherical(&self.climate_surface).map_err(|error| {
                 ClimateWorkDomainValidationError::InvalidClimateSurface {
                     reason: error.to_string(),
                 }
@@ -4829,20 +4797,7 @@ impl ClimateWorkDomainSnapshot {
         cancellation: WorkDomainCancellation<'_>,
     ) -> Result<(), ClimateWorkDomainValidationError> {
         self.validate_impl(cancellation)?;
-        match cancellation {
-            Some(cancelled) => source.validate_cancellable(cancelled),
-            None => source.validate(),
-        }
-        .map_err(|error| {
-            if error == crate::world::spatial::SphericalSurfaceValidationError::Cancelled {
-                ClimateWorkDomainValidationError::Cancelled
-            } else {
-                ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
-                    reason: error.to_string(),
-                }
-            }
-        })?;
-        let found_ref = SurfaceRef::from_validated_spherical(source).map_err(|error| {
+        let found_ref = SurfaceRef::try_for_spherical(source).map_err(|error| {
             ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
                 reason: error.to_string(),
             }
@@ -4954,7 +4909,7 @@ impl ClimateWorkDomainSnapshot {
         &self,
         source: &SphericalSurfaceSnapshot,
     ) -> Result<(), ClimateWorkDomainValidationError> {
-        let found_ref = SurfaceRef::from_validated_spherical(source).map_err(|error| {
+        let found_ref = SurfaceRef::try_for_spherical(source).map_err(|error| {
             ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
                 reason: error.to_string(),
             }

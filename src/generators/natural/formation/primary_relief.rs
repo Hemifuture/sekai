@@ -26,8 +26,7 @@ use crate::world::natural::{
     VOLCANIC_OFFSET_MIN_M,
 };
 use crate::world::spatial::{
-    SphericalNaturalSurface, SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceRef,
-    SurfaceRefError,
+    SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError,
 };
 use crate::world::CellId;
 
@@ -146,7 +145,6 @@ impl PrimaryReliefGenerator {
         cancellation: &BuildCancellation,
     ) -> Result<(PrimaryReliefWorkingState, PrimaryReliefSnapshot), PrimaryReliefGenerationError>
     {
-        surface.validate()?;
         evolved.validate_against(surface)?;
         substrate.validate_against(surface, evolved)?;
         relief_spec.validate()?;
@@ -547,9 +545,6 @@ pub enum PrimaryReliefGenerationError {
     /// The owning build requested cooperative cancellation.
     #[error("primary relief generation was cancelled")]
     Cancelled,
-    /// The authoritative sphere is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The validated surface could not provide its exact identity view.
     #[error("invalid spherical surface identity: {0}")]
     InvalidSurfaceIdentity(#[from] SurfaceRefError),

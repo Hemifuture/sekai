@@ -11,8 +11,7 @@ use crate::world::natural::{
     QualityMetricStatus,
 };
 use crate::world::spatial::{
-    ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRef,
+    ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot, SurfaceRef,
 };
 use crate::world::{Meters, SphericalSpaceSpec};
 
@@ -108,9 +107,6 @@ impl ProfileSurfaceBuilder {
         cancellation: &BuildCancellation,
     ) -> Result<ProfileSurfaceBundle, ProfileSurfaceBuildError> {
         check_cancelled(cancellation)?;
-        authoritative_surface
-            .validate()
-            .map_err(ProfileSurfaceBuildError::InvalidAuthoritativeSurface)?;
         let resolution_plan = profile.resolve(&crate::world::SphericalSpaceSpec {
             radius: authoritative_surface.radius(),
             target_cell_count: profile.authoritative_target_cell_count(),
@@ -175,12 +171,6 @@ fn validate_bundle(
     quality: &NaturalQualityReport,
 ) -> Result<(), ProfileSurfaceBuildError> {
     plan.validate()?;
-    authoritative
-        .validate()
-        .map_err(ProfileSurfaceBuildError::InvalidAuthoritativeSurface)?;
-    control
-        .validate()
-        .map_err(ProfileSurfaceBuildError::InvalidControlSurface)?;
     map.validate()
         .map_err(ProfileSurfaceBuildError::InvalidConservativeMap)?;
     quality
@@ -317,10 +307,6 @@ pub enum ProfileSurfaceBuildError {
     ConservativeRemap(ConservativeRemapError),
     #[error("P1 spatial quality evaluation failed: {0}")]
     Quality(#[from] QualityBuildError),
-    #[error("constructed authoritative surface is invalid: {0}")]
-    InvalidAuthoritativeSurface(SphericalSurfaceValidationError),
-    #[error("constructed tectonic-control surface is invalid: {0}")]
-    InvalidControlSurface(SphericalSurfaceValidationError),
     #[error("constructed conservative map is invalid: {0}")]
     InvalidConservativeMap(ConservativeSurfaceMapError),
     #[error("constructed P1 quality report is invalid: {0}")]

@@ -11,8 +11,7 @@ use crate::world::natural::{
     SphericalTectonicValidationError, GEOLOGIC_SNAPSHOT_SCHEMA_V2,
 };
 use crate::world::spatial::{
-    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRefError,
+    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRefError,
 };
 
 impl GeologicGenerator {
@@ -26,7 +25,6 @@ impl GeologicGenerator {
         rng: &mut StageRng,
     ) -> Result<SphericalGeologicSnapshot, SphericalGeologicGenerationError> {
         spec.validate()?;
-        surface.validate()?;
         tectonic.validate_against_validated_surface(surface)?;
         mantle.validate_against_validated_surface(surface)?;
         relief.validate_against_validated_surface(surface)?;
@@ -68,9 +66,6 @@ pub enum SphericalGeologicGenerationError {
     /// The supplied geologic specification is invalid.
     #[error("invalid geologic specification: {0}")]
     InvalidSpec(#[from] GeologicSpecError),
-    /// The authoritative spherical surface is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The surface identity could not be derived.
     #[error("invalid spherical surface identity: {0}")]
     InvalidSurfaceIdentity(#[from] SurfaceRefError),

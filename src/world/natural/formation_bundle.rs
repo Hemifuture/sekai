@@ -112,9 +112,8 @@ impl NaturalFormationBundle {
         self.primary_relief.validate().map_err(|error| {
             NaturalFormationBundleValidationError::invalid_domain("primary_relief", error)
         })?;
-        self.climate.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("climate", error)
-        })?;
+        // The P4 climate snapshot is valid by construction; its binding to the
+        // shared surface is checked in `validate_bindings`.
         self.surface_formation.validate().map_err(|error| {
             NaturalFormationBundleValidationError::invalid_domain("surface_formation", error)
         })?;

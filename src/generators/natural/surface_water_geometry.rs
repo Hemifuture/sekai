@@ -291,7 +291,6 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
         cancellation: &BuildCancellation,
     ) -> Result<Self, WaterVolumeSolveError> {
         check_cancelled(cancellation)?;
-        surface.validate()?;
         if elevation_m.is_empty() {
             return Err(WaterVolumeSolveError::EmptySurface);
         }

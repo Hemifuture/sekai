@@ -14,8 +14,7 @@ use crate::world::natural::{
     HYDROLOGY_SCHEMA_V2,
 };
 use crate::world::spatial::{
-    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRef, SurfaceRefError,
+    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError,
 };
 
 impl HydrologyGenerator {
@@ -31,7 +30,6 @@ impl HydrologyGenerator {
         spec: &HydroErosionSpec,
     ) -> Result<SphericalHydrologySnapshot, SphericalHydrologyGenerationError> {
         spec.validate()?;
-        surface.validate()?;
         relief.validate_against_validated_surface(surface)?;
         geology.validate()?;
         climate.validate_against_validated_surface(surface, relief)?;
@@ -152,9 +150,6 @@ pub enum SphericalHydrologyGenerationError {
     /// The shared hydro-erosion specification is invalid.
     #[error("invalid hydro-erosion specification: {0}")]
     InvalidSpec(#[from] HydroErosionSpecError),
-    /// The authoritative surface is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The authoritative surface identity could not be derived.
     #[error("invalid spherical surface identity: {0}")]
     InvalidSurfaceIdentity(#[from] SurfaceRefError),

@@ -14,8 +14,8 @@ use super::{
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
-    SphericalSurfaceEdge, SphericalSurfaceSnapshot, SphericalSurfaceValidationError,
-    SurfaceGeometryKind, SurfaceRef, SurfaceRefError, UnitVector3,
+    SphericalSurfaceEdge, SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef,
+    SurfaceRefError, UnitVector3,
 };
 use crate::world::{
     BoundarySegmentId, CellId, EdgeId, Meters, PlateId, SurfaceVertexId, MAX_SPHERICAL_CELL_COUNT,
@@ -985,7 +985,6 @@ impl SphericalTectonicSnapshot {
         &self,
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), SphericalTectonicValidationError> {
-        surface.validate()?;
         self.validate_against_validated_surface(surface)
     }
 
@@ -994,7 +993,7 @@ impl SphericalTectonicSnapshot {
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), SphericalTectonicValidationError> {
         self.validate()?;
-        let authoritative = SurfaceRef::from_validated_spherical(surface)?;
+        let authoritative = SurfaceRef::try_for_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalTectonicValidationError::SurfaceMismatch {
                 snapshot: self.surface_ref,
@@ -1492,9 +1491,6 @@ pub enum SphericalTectonicValidationError {
         found: usize,
         max: usize,
     },
-    /// The authoritative spherical surface itself failed validation.
-    #[error("invalid authoritative spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The stored and authoritative surface identities differ.
     #[error("tectonic surface identity {snapshot:?} does not match {authoritative:?}")]
     SurfaceMismatch {

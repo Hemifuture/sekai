@@ -17,8 +17,7 @@ use super::{
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceGeometryKind, SurfaceRef,
-    SurfaceRefError,
+    SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef, SurfaceRefError,
 };
 use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT};
 
@@ -447,7 +446,6 @@ impl GeologicSubstrateSnapshot {
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), GeologicSubstrateValidationError> {
         self.validate()?;
-        surface.validate()?;
         let authoritative = SurfaceRef::for_spherical(surface);
         if self.surface_ref != authoritative {
             return Err(GeologicSubstrateValidationError::SurfaceMismatch {
@@ -703,8 +701,6 @@ pub enum GeologicSubstrateValidationError {
         found: SedimentSourceKind,
         expected: SedimentSourceKind,
     },
-    #[error("invalid authoritative spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("substrate surface {snapshot:?} does not match authority {authoritative:?}")]
     SurfaceMismatch {
         snapshot: SurfaceRef,
@@ -1011,7 +1007,6 @@ impl PrimaryReliefSnapshot {
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), PrimaryReliefValidationError> {
         self.validate()?;
-        surface.validate()?;
         let authoritative = SurfaceRef::for_spherical(surface);
         if self.surface_ref != authoritative {
             return Err(PrimaryReliefValidationError::SurfaceMismatch {
@@ -1237,7 +1232,6 @@ pub fn scaled_earth_ocean_inventory_m3(
 pub fn land_fraction_constraint_tolerance(
     surface: &SphericalSurfaceSnapshot,
 ) -> Result<f32, PrimaryReliefValidationError> {
-    surface.validate()?;
     let total = compensated_sum(surface.cells().iter().map(|cell| cell.area.get()));
     let maximum = surface
         .cells()
@@ -1368,8 +1362,6 @@ pub enum WaterVolumeSolveError {
     InvalidSeaLevel { found: f64 },
     #[error("physical sea-level solve produced non-finite or unrepresentable level {found}")]
     NonFiniteSolution { found: f64 },
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("invalid surface-water geometry: {0}")]
     InvalidGeometry(#[from] SurfaceWaterGeometryValidationError),
     #[error("cell {cell:?} fan side {side} is not a valid positive-area triangle")]
@@ -1468,8 +1460,6 @@ pub enum PrimaryReliefValidationError {
         stored: LandFractionConstraintStatus,
         expected: LandFractionConstraintStatus,
     },
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("invalid surface-water geometry: {0}")]
     InvalidSurfaceWaterGeometry(#[from] SurfaceWaterGeometryValidationError),
     #[error("primary relief surface {snapshot:?} differs from authority {authoritative:?}")]

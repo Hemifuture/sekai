@@ -10,9 +10,7 @@ use super::{
     SphericalReliefSnapshot, SphericalReliefValidationError, SphericalSurfaceProcessSnapshot,
     SphericalSurfaceProcessValidationError, HYDRO_EROSION_SNAPSHOT_SCHEMA_V2,
 };
-use crate::world::spatial::{
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceRef, SurfaceRefError,
-};
+use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError};
 
 /// Atomic current-surface and final-hydrology output on one exact closed sphere.
 ///
@@ -86,7 +84,6 @@ impl SphericalHydroErosionSnapshot {
         climate: &SphericalPreliminaryClimateSnapshot,
     ) -> Result<(), SphericalHydroErosionValidationError> {
         self.validate()?;
-        surface.validate()?;
         relief.validate_against_validated_surface(surface)?;
         self.validate_against_validated_surface(surface, relief, geology, climate)
     }
@@ -106,7 +103,7 @@ impl SphericalHydroErosionSnapshot {
             .validate_against_validated_surface(surface, relief)?;
         self.hydrology.validate_against_validated_surface(surface)?;
 
-        let authoritative = SurfaceRef::from_validated_spherical(surface)?;
+        let authoritative = SurfaceRef::try_for_spherical(surface)?;
         self.validate_relations_against_validated_inputs(authoritative, relief, geology, climate)
     }
 
@@ -243,9 +240,6 @@ pub enum SphericalHydroErosionValidationError {
         climate: SurfaceRef,
         authoritative: SurfaceRef,
     },
-    /// The authoritative surface is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The authoritative identity could not be derived.
     #[error("invalid spherical surface identity: {0}")]
     InvalidSurfaceIdentity(#[from] SurfaceRefError),

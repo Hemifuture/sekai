@@ -184,8 +184,7 @@ impl Stage for ClimateWorkDomainStage {
 fn domain_failure(error: ClimateWorkDomainBuildError) -> StageError {
     match error {
         ClimateWorkDomainBuildError::Cancelled => cancelled(),
-        ClimateWorkDomainBuildError::InvalidSource { .. }
-        | ClimateWorkDomainBuildError::Validation(_) => invalid_input(error.to_string()),
+        ClimateWorkDomainBuildError::Validation(_) => invalid_input(error.to_string()),
         ClimateWorkDomainBuildError::CubedSphere(_)
         | ClimateWorkDomainBuildError::ConservativeRemap { .. }
         | ClimateWorkDomainBuildError::ReconstructionMismatch

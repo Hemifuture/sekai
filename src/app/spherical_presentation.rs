@@ -47,7 +47,7 @@ use crate::world::natural::{
     HydroErosionSpecError, NaturalQualityProfile, NaturalSpecError, ReliefSpec, ReliefSpecError,
     TectonicSpec, WorldFormationSpec, WorldFormationSpecError,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
+use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::{RootSeed, SphericalSpaceSpec, SphericalSpecError};
 
 /// The authoritative field document behind one published spherical world.
@@ -1795,7 +1795,6 @@ pub fn build_spherical_formation_external_artifacts(
     relief: &ReliefSpec,
     geologic: &GeologicSpec,
 ) -> Result<ExternalArtifacts, SphericalPresentationError> {
-    surface.validate()?;
     let resolved_formation =
         WorldFormationGenerator::resolve_for_roll(formation, (root_seed.raw() % 100) as u32)?;
     let mut external = ExternalArtifacts::new();
@@ -2040,8 +2039,6 @@ pub enum SphericalPresentationError {
     ClimateSpecInput(#[from] ClimateSpecError),
     #[error(transparent)]
     HydroErosionSpecInput(#[from] HydroErosionSpecError),
-    #[error(transparent)]
-    SurfaceInput(#[from] SphericalSurfaceValidationError),
     #[error(transparent)]
     Picking(#[from] SphericalPickingError),
     #[error(transparent)]

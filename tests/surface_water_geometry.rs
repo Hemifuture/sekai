@@ -139,13 +139,11 @@ fn geometry_rejects_cancellation_bad_fields_and_invalid_topology() {
     )
     .is_err());
 
+    // A corrupted surface never reaches the water solver: its own
+    // deserialization boundary rejects it.
     let mut wire = serde_json::to_value(&surface).unwrap();
     wire["cells"][0]["boundary_vertices"][0] = wire["cells"][0]["boundary_vertices"][1].clone();
-    let invalid: SphericalSurfaceSnapshot = serde_json::from_value(wire).unwrap();
-    assert!(matches!(
-        build_surface_water_geometry(&invalid, &elevation, 0.0, &BuildCancellation::new(),),
-        Err(WaterVolumeSolveError::InvalidSurface(_))
-    ));
+    assert!(serde_json::from_value::<SphericalSurfaceSnapshot>(wire).is_err());
 }
 
 #[test]

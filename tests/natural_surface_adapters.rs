@@ -3,7 +3,7 @@ use std::f64::consts::PI;
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::spatial::{
     NaturalSurface, PlanarNaturalSurface, SpatialCell, SpatialEdge, SpatialSnapshot,
-    SphericalNaturalSurface, SurfaceGeometryKind, SPATIAL_SCHEMA_V1,
+    SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceGeometryKind, SPATIAL_SCHEMA_V1,
 };
 use sekai::world::{
     BoundaryCondition, CellId, EdgeId, Meters, SphericalSpaceSpec, SquareMeters, WorldPoint,
@@ -269,6 +269,6 @@ fn public_adapter_construction_revalidates_untrusted_snapshots() {
     let spherical = spherical_fixture(2.0);
     let mut spherical_json = serde_json::to_value(&spherical).unwrap();
     spherical_json["fingerprint"] = serde_json::json!(vec![0; 32]);
-    let invalid_spherical = serde_json::from_value(spherical_json).unwrap();
-    assert!(SphericalNaturalSurface::new(&invalid_spherical).is_err());
+    // An untrusted spherical snapshot is rejected before an adapter can borrow it.
+    assert!(serde_json::from_value::<SphericalSurfaceSnapshot>(spherical_json).is_err());
 }

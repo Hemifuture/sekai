@@ -2378,13 +2378,7 @@ impl NaturalSurfaceFormationSnapshot {
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), SurfaceFormationValidationError> {
         self.validate()?;
-        surface
-            .validate()
-            .map_err(|error| SurfaceFormationValidationError::InvalidNested {
-                role: "authoritative_surface",
-                reason: error.to_string(),
-            })?;
-        let authoritative = SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+        let authoritative = SurfaceRef::try_for_spherical(surface).map_err(|error| {
             SurfaceFormationValidationError::InvalidNested {
                 role: "authoritative_surface_identity",
                 reason: error.to_string(),

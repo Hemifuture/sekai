@@ -735,7 +735,7 @@ fn validate_common_inputs(
             reason: error.to_string(),
         })?;
     validate_domain().map_err(map_work_domain_error)?;
-    SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+    SurfaceRef::try_for_spherical(surface).map_err(|error| {
         GlobalClimateForcingError::InvalidInput {
             role: "surface",
             reason: error.to_string(),

@@ -304,7 +304,6 @@ fn generate_world(
     .unwrap();
     let report =
         evaluate_global_circulation_quality(surface, &relief, &forcing, &snapshot).unwrap();
-    snapshot.validate().unwrap();
     report.validate().unwrap();
     AtlasWorld {
         relief,

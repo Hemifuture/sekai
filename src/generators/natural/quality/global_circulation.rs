@@ -186,14 +186,12 @@ fn evaluate_global_circulation_quality_impl(
 ) -> Result<NaturalQualityReport, QualityBuildError> {
     check_quality_cancelled(cancellation)?;
     // Typed snapshots are immutable and their constructors/deserializers have
-    // already established internal invariants. The uncancellable public audit
-    // retains full revalidation; the production path performs only binding
-    // checks here so cancellation latency is governed by the polled scans
-    // below rather than by a second topology/relief audit.
+    // already established internal invariants; the surface type is valid by
+    // construction. The uncancellable public audit retains the terrain
+    // revalidation; the production path performs only binding checks here so
+    // cancellation latency is governed by the polled scans below rather than
+    // by a second relief audit.
     if cancellation.is_none() {
-        surface
-            .validate()
-            .map_err(|error| invalid_input("surface", error.to_string()))?;
         terrain.validate()?;
     }
     check_quality_cancelled(cancellation)?;
@@ -210,7 +208,7 @@ fn evaluate_global_circulation_quality_impl(
         }
     })?;
     check_quality_cancelled(cancellation)?;
-    let surface_ref = SurfaceRef::from_validated_spherical(surface)
+    let surface_ref = SurfaceRef::try_for_spherical(surface)
         .map_err(|error| invalid_input("surface", error.to_string()))?;
     if terrain.surface_ref() != surface_ref || snapshot.surface_ref() != surface_ref {
         return Err(QualityBuildError::SurfaceMismatch {

@@ -10,9 +10,7 @@ use super::{
     OCEANIC_CRUST_MIN_THICKNESS_KM,
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
-use crate::world::spatial::{
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceRef,
-};
+use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT};
 
 /// The only supported conservative evolved-tectonic snapshot schema.
@@ -1216,7 +1214,6 @@ impl EvolvedTectonicSnapshot {
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), EvolvedTectonicValidationError> {
         self.validate()?;
-        surface.validate()?;
         self.compatibility.validate_against(surface)?;
         if self.resolution_plan.radius() != surface.radius() {
             return Err(EvolvedTectonicValidationError::ResolutionRadiusMismatch {
@@ -1602,9 +1599,6 @@ pub enum EvolvedTectonicValidationError {
     /// The nested V3 compatibility snapshot is invalid.
     #[error("invalid evolved tectonic compatibility snapshot: {0}")]
     InvalidCompatibility(#[from] SphericalTectonicValidationError),
-    /// The authoritative surface is invalid.
-    #[error("invalid evolved tectonic authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// A dense field count is empty or exceeds the global allocation bound.
     #[error("evolved tectonic cell count {found} is outside 1..={max}")]
     InvalidCellCount { found: usize, max: usize },

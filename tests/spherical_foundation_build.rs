@@ -60,9 +60,8 @@ fn builds_valid_spherical_surface_artifact_and_exact_stage_metadata() {
     let result = engine
         .build(RootSeed::new(42), external(space(42)), &mut cache)
         .unwrap();
-    let surface = result.artifacts.get::<SphericalSurfaceArtifact>().unwrap();
+    result.artifacts.get::<SphericalSurfaceArtifact>().unwrap();
 
-    surface.snapshot().validate().unwrap();
     assert_eq!(result.report.stage_ids(), vec!["spatial.spherical-voronoi"]);
     assert!(!result.report.has_errors());
     assert!(result.report.diagnostics().is_empty());
@@ -95,11 +94,11 @@ fn spherical_artifact_wrappers_round_trip_with_strict_validation() {
 
     let mut malformed = serde_json::to_value(surface.as_ref()).unwrap();
     malformed["snapshot"]["schema_version"] = serde_json::json!(u16::MAX);
-    let malformed: SphericalSurfaceArtifact = serde_json::from_value(malformed).unwrap();
-    let error = malformed.validate().unwrap_err();
-    assert_eq!(error.code(), "spherical-spatial.invalid-snapshot");
+    // The wrapped surface is valid by construction, so the malformed schema is
+    // rejected by the nested snapshot's deserialization boundary itself.
+    let error = serde_json::from_value::<SphericalSurfaceArtifact>(malformed).unwrap_err();
     assert_eq!(
-        error.message(),
+        error.to_string(),
         "unsupported spherical surface schema version 65535; latest supported version is 2"
     );
 }

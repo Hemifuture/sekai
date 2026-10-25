@@ -3,9 +3,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use super::{
-    SpatialSnapshot, SpatialValidationError, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SPATIAL_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V1,
-    SPHERICAL_SURFACE_SCHEMA_V2,
+    SpatialSnapshot, SpatialValidationError, SphericalSurfaceSnapshot, SPATIAL_SCHEMA_V1,
+    SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V2,
 };
 
 /// The authoritative geometry family addressed by a natural-field snapshot.
@@ -106,25 +105,23 @@ impl SurfaceRef {
         )
     }
 
-    /// Creates the identity of a validated authoritative spherical snapshot.
+    /// Creates the identity of an authoritative spherical snapshot.
     ///
     /// # Panics
     ///
-    /// Panics only when `snapshot` has not passed its validation boundary.
+    /// Panics only in the cryptographically negligible event that the
+    /// snapshot's BLAKE3 fingerprint is all zero bytes.
     pub fn for_spherical(snapshot: &SphericalSurfaceSnapshot) -> Self {
         Self::try_for_spherical(snapshot)
             .expect("validated spherical snapshots have a supported, non-empty surface identity")
     }
 
-    /// Tries to create the identity of a spherical snapshot without assuming validation.
+    /// Tries to create the identity of a spherical snapshot.
+    ///
+    /// The snapshot type is valid by construction, so this reads its stored
+    /// fingerprint and allocation in constant time; only the identity's own
+    /// invariants are rechecked.
     pub fn try_for_spherical(snapshot: &SphericalSurfaceSnapshot) -> Result<Self, SurfaceRefError> {
-        snapshot.validate()?;
-        Self::from_validated_spherical(snapshot)
-    }
-
-    pub(crate) fn from_validated_spherical(
-        snapshot: &SphericalSurfaceSnapshot,
-    ) -> Result<Self, SurfaceRefError> {
         let geometry_kind = match snapshot.schema_version() {
             SPHERICAL_SURFACE_SCHEMA_V1 => SurfaceGeometryKind::SphericalV1,
             SPHERICAL_SURFACE_SCHEMA_V2 => SurfaceGeometryKind::SphericalGeodesicV2,
@@ -210,9 +207,6 @@ pub enum SurfaceRefError {
     /// The referenced planar snapshot failed its authoritative validation.
     #[error("cannot identify an invalid planar surface: {0}")]
     InvalidPlanarSnapshot(#[from] SpatialValidationError),
-    /// The referenced spherical snapshot failed its authoritative validation.
-    #[error("cannot identify an invalid spherical surface: {0}")]
-    InvalidSphericalSnapshot(#[from] SphericalSurfaceValidationError),
     /// The geometry kind and schema version do not form a supported contract.
     #[error("unsupported {kind:?} geometry schema {found}; supported schema is {supported}")]
     UnsupportedGeometrySchema {

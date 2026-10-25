@@ -25,9 +25,7 @@ use crate::world::natural::{
     SphericalHydroErosionValidationError, SphericalMantleValidationError,
     SphericalReliefValidationError, SphericalTectonicValidationError, WorldFormationSpecError,
 };
-use crate::world::spatial::{
-    canonical_east_north_basis, SphericalSurfaceValidationError, SurfaceRef, UnitVector3,
-};
+use crate::world::spatial::{canonical_east_north_basis, SurfaceRef, UnitVector3};
 use crate::world::RootSeed;
 
 const SPHERICAL_NATURAL_GRAPH_CONTRACT_VERSION: u16 = 1;
@@ -289,7 +287,6 @@ impl SphericalNaturalFieldDocument {
         hydro_erosion: Arc<SphericalHydroErosionArtifact>,
         report: &BuildReport,
     ) -> Result<Self, SphericalNaturalDisplayError> {
-        surface.snapshot().validate()?;
         formation.formation().validate()?;
         tectonic.snapshot().validate_against(surface.snapshot())?;
         mantle.snapshot().validate_against(surface.snapshot())?;
@@ -474,8 +471,6 @@ pub enum SphericalNaturalDisplayError {
     Artifact(#[from] ArtifactError),
     #[error(transparent)]
     BuildOutcomeIntegrity(BuildOutcomeIntegrityError),
-    #[error(transparent)]
-    Surface(#[from] SphericalSurfaceValidationError),
     #[error(transparent)]
     Formation(#[from] WorldFormationSpecError),
     #[error(transparent)]

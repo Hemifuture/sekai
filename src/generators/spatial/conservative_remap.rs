@@ -28,18 +28,6 @@ impl ConservativeSurfaceMapBuilder {
         source: &SphericalSurfaceSnapshot,
         target: &SphericalSurfaceSnapshot,
     ) -> Result<ConservativeSurfaceMap, ConservativeRemapError> {
-        source
-            .validate()
-            .map_err(|error| ConservativeRemapError::InvalidSurface {
-                role: "source",
-                reason: error.to_string(),
-            })?;
-        target
-            .validate()
-            .map_err(|error| ConservativeRemapError::InvalidSurface {
-                role: "target",
-                reason: error.to_string(),
-            })?;
         Self::build_from_validated(source, target, || false)
     }
 
@@ -64,13 +52,13 @@ impl ConservativeSurfaceMapBuilder {
         validate_radius(source, target)?;
         check_cancelled(&mut is_cancelled)?;
 
-        let source_ref = SurfaceRef::from_validated_spherical(source).map_err(|error| {
+        let source_ref = SurfaceRef::try_for_spherical(source).map_err(|error| {
             ConservativeRemapError::InvalidSurface {
                 role: "source",
                 reason: error.to_string(),
             }
         })?;
-        let target_ref = SurfaceRef::from_validated_spherical(target).map_err(|error| {
+        let target_ref = SurfaceRef::try_for_spherical(target).map_err(|error| {
             ConservativeRemapError::InvalidSurface {
                 role: "target",
                 reason: error.to_string(),

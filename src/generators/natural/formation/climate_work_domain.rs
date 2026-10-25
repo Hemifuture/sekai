@@ -20,18 +20,6 @@ impl ClimateWorkDomainBuilder {
         cancellation: &BuildCancellation,
     ) -> Result<ClimateWorkDomainSnapshot, ClimateWorkDomainBuildError> {
         check_cancelled(cancellation)?;
-        source
-            .validate_cancellable(&|| cancellation.is_cancelled())
-            .map_err(|error| {
-                if error == crate::world::spatial::SphericalSurfaceValidationError::Cancelled {
-                    ClimateWorkDomainBuildError::Cancelled
-                } else {
-                    ClimateWorkDomainBuildError::InvalidSource {
-                        reason: error.to_string(),
-                    }
-                }
-            })?;
-
         let resolution = profile.climate_face_resolution();
         let grid = CubedSphereGrid::new_cancellable(resolution, source.radius().get(), &|| {
             cancellation.is_cancelled()
@@ -188,8 +176,6 @@ fn domain_validation_error(error: ClimateWorkDomainValidationError) -> ClimateWo
 pub enum ClimateWorkDomainBuildError {
     #[error("climate work-domain build was cancelled")]
     Cancelled,
-    #[error("invalid authoritative source surface: {reason}")]
-    InvalidSource { reason: String },
     #[error(transparent)]
     CubedSphere(#[from] CubedSphereGridError),
     #[error("conservative climate remap failed: {reason}")]

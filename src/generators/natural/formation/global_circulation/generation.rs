@@ -231,7 +231,7 @@ impl GlobalCirculationGenerator {
     {
         let trace = p4_trace_enabled().then(|| role.label());
         check_cancelled(cancellation)?;
-        let surface_ref = SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+        let surface_ref = SurfaceRef::try_for_spherical(surface).map_err(|error| {
             GlobalCirculationGenerationError::InvalidSurfaceIdentity {
                 reason: error.to_string(),
             }

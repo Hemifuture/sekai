@@ -12,8 +12,7 @@ use crate::world::natural::{
     SphericalTectonicSnapshot, SphericalTectonicValidationError, RELIEF_SCHEMA_V4,
 };
 use crate::world::spatial::{
-    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRefError,
+    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRefError,
 };
 
 mod directed_noise;
@@ -69,7 +68,6 @@ impl ReliefGenerator {
         rng: &mut StageRng,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<SphericalReliefSnapshot, SphericalReliefGenerationError> {
-        surface.validate()?;
         tectonic.validate_against_validated_surface(surface)?;
         mantle.validate_against_validated_surface(surface)?;
         relief_spec.validate()?;
@@ -173,9 +171,6 @@ pub enum SphericalReliefGenerationError {
     /// The authored target-land request is invalid.
     #[error("invalid relief spec: {0}")]
     InvalidSpec(#[from] ReliefSpecError),
-    /// The authoritative spherical surface is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The surface identity could not be derived.
     #[error("invalid spherical surface identity: {0}")]
     InvalidSurfaceIdentity(#[from] SurfaceRefError),

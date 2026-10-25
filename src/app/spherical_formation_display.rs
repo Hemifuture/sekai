@@ -371,7 +371,7 @@ impl SphericalFormationFieldDocument {
         // Publication validated every artifact, and the formation stage
         // validated each sibling against this surface and relief spec, so the
         // verified outcome only needs the cheap identity bindings below.
-        let authoritative = SurfaceRef::from_validated_spherical(surface.snapshot())
+        let authoritative = SurfaceRef::try_for_spherical(surface.snapshot())
             .expect("published spherical surfaces have a supported, non-empty identity");
         let bundle = formation.bundle();
         let formation_snapshot = bundle.surface_formation();

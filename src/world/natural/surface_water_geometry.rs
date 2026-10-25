@@ -4,9 +4,7 @@ use thiserror::Error;
 
 use super::{LandOceanField, LandOceanKind};
 use crate::world::serde_bounded::deserialize_bounded_vec;
-use crate::world::spatial::{
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceRef, SurfaceRefError,
-};
+use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError};
 use crate::world::{CellId, EdgeId, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT};
 
 const MAX_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
@@ -97,7 +95,6 @@ impl SurfaceWaterGeometry {
         elevation_m: &[f32],
     ) -> Result<(), SurfaceWaterGeometryValidationError> {
         self.validate()?;
-        surface.validate()?;
         let authoritative = SurfaceRef::for_spherical(surface);
         if self.surface_ref != authoritative {
             return Err(SurfaceWaterGeometryValidationError::SurfaceMismatch {
@@ -177,7 +174,6 @@ impl SurfaceWaterGeometry {
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<f32, SurfaceWaterGeometryValidationError> {
         self.validate()?;
-        surface.validate()?;
         let authoritative = SurfaceRef::for_spherical(surface);
         if authoritative != self.surface_ref {
             return Err(SurfaceWaterGeometryValidationError::SurfaceMismatch {
@@ -521,8 +517,6 @@ pub enum SurfaceWaterGeometryValidationError {
     InvalidLandOceanKind { index: usize },
     #[error("surface-water geometry fingerprint mismatch")]
     FingerprintMismatch,
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("geometry surface {geometry:?} differs from authority {authoritative:?}")]
     SurfaceMismatch {
         geometry: SurfaceRef,
