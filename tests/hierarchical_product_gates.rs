@@ -24,12 +24,11 @@ use support::causal_formation::{
     build_causal_formation, causal_formation_fixture, CausalFormationFixture,
 };
 
-/// Draft seed-42 probe fingerprint (spec A4 formula), measured on the bundle
-/// after the common climate work scale changed precipitation and downstream
-/// terrain. L0 identity still holds; the derivation formula is unchanged
-/// (T1 v2 spec amendment A15).
+/// Draft seed-42 probe fingerprint (spec A4 formula with the LOD-1 §3.6
+/// version prefix) at `T1_DERIVATION_VERSION` 2: the L1 boundary-vertex
+/// anchors became P5's P1 vertex elevations (T1 v2 spec amendment A16).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "7df42191396e6bf2e7afef766535aca2fc58035b9fa5dce2316ebc80954a6c3f";
+    "386b6e5acefdbd986d4c5eb2d8ff619399b8aeeeb0690ace0bf7f22dd3e92027";
 
 fn evaluator() -> HierarchicalEvaluator {
     evaluator_for(causal_formation_fixture())

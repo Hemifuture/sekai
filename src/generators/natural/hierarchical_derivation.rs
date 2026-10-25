@@ -19,12 +19,14 @@
 use blake3::Hasher;
 
 use super::hierarchical_rivers::{fresh_reach_path_caches, ReachPathCache};
+use super::surface_water_geometry::reconstruct_vertex_elevations;
 use super::terrain_amplification::{
     badlands_gate, erodibility_amplitude, langbein_schumm, sediment_damping,
     surface_roughness_hurst, AmplificationFieldsView, ConditioningView, FormationDerivationInputs,
     SurfaceRegime, TerrainAmplificationError, TerrainAmplifier, SHELF_BASE_AMPLITUDE_M,
     SHELF_TRANSITION_M,
 };
+use crate::engine::BuildCancellation;
 use crate::world::natural::{
     RiverSegment, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
     FORMATION_SHELF_BREAK_DEPTH_M,
@@ -37,6 +39,12 @@ const DERIVATION_DOMAIN: &[u8] = b"sekai-t1v2-derivation-v1\0";
 /// Hard subdivision-path depth cap (spec §5): ≈2.4 m primitives at draft
 /// spacing, within the u64 ID encoding budget.
 pub const HIERARCHICAL_PATH_DEPTH_MAX: usize = 16;
+/// The T1 derived-value identity version (LOD-1 spec §3.6 D6), bumped by
+/// every change to the derived values the player sees and hashed into
+/// [`HierarchicalEvaluator::probe_fingerprint`]. The seed domain above
+/// stays fixed, so a bump never reshuffles the L2+ seeds. Version 1 is the
+/// T1 v2 derivation before LOD-1; 2 adopts the D1 P1 vertex anchors.
+const T1_DERIVATION_VERSION: u16 = 2;
 /// Frozen hierarchical probe count (spec §6).
 pub const HIERARCHICAL_PROBE_COUNT: usize = 256;
 /// Frozen probe path depths (spec §6): one probe block per depth.
@@ -238,7 +246,7 @@ impl HierarchicalEvaluator {
         root_seed: RootSeed,
     ) -> Result<Self, TerrainAmplificationError> {
         let amplifier = TerrainAmplifier::new(surface, fields, root_seed)?;
-        Ok(Self::from_amplifier(amplifier, surface, root_seed))
+        Self::from_amplifier(amplifier, surface, root_seed)
     }
 
     /// Assembles the engine straight from the published formation
@@ -249,7 +257,7 @@ impl HierarchicalEvaluator {
     ) -> Result<Self, TerrainAmplificationError> {
         let surface = inputs.surface;
         let amplifier = TerrainAmplifier::from_formation_product(inputs, root_seed)?;
-        Ok(Self::from_amplifier(amplifier, surface, root_seed))
+        Self::from_amplifier(amplifier, surface, root_seed)
     }
 
     /// Attaches the published river network for §4 corridor suppression.
@@ -270,22 +278,16 @@ impl HierarchicalEvaluator {
         amplifier: TerrainAmplifier,
         surface: &SphericalSurfaceSnapshot,
         root_seed: RootSeed,
-    ) -> Self {
+    ) -> Result<Self, TerrainAmplificationError> {
         let cells = surface.cells();
-        let vertex_count = surface.vertices().len();
 
         let mut ring_offsets = Vec::with_capacity(cells.len() + 1);
         let mut ring_vertices = Vec::new();
         let mut ring_neighbors = Vec::new();
         ring_offsets.push(0_u32);
-        // Boundary-vertex anchors: the arithmetic mean of every adjacent
-        // cell's T0 elevation — the one declared cross-cell combination
-        // in the L0→L1 anchoring rule (spec §2.1).
-        let mut vertex_sum_m = vec![0.0_f64; vertex_count];
-        let mut vertex_shares = vec![0_u32; vertex_count];
-        let cell_conditions: Vec<Conditions> = {
+        let (cell_conditions, vertex_value_m) = {
             let view = amplifier.conditioning();
-            for (index, cell) in cells.iter().enumerate() {
+            for cell in cells {
                 for (side, &vertex) in cell.boundary_vertices.iter().enumerate() {
                     ring_vertices.push(vertex.raw());
                     let edge = surface
@@ -297,23 +299,23 @@ impl HierarchicalEvaluator {
                         edge.cells[0]
                     };
                     ring_neighbors.push(neighbor.raw());
-                    let slot = vertex.raw() as usize;
-                    vertex_sum_m[slot] += f64::from(view.elevation_m[index]);
-                    vertex_shares[slot] += 1;
                 }
                 ring_offsets.push(ring_vertices.len() as u32);
             }
-            (0..cells.len())
+            // Boundary-vertex anchors: P5's own P1 sub-cell vertex
+            // elevations (LOD-1 spec §3.1 D1, revising T1 v2 §2.1), so the
+            // derived shoreline and the published water geometry share one
+            // reconstruction instead of two definitions of one fact.
+            let elevation_m: Vec<f64> = view.elevation_m.iter().copied().map(f64::from).collect();
+            let vertex_value_m =
+                reconstruct_vertex_elevations(surface, &elevation_m, &BuildCancellation::new())?;
+            let conditions: Vec<Conditions> = (0..cells.len())
                 .map(|index| cell_conditions(&view, index))
-                .collect()
+                .collect();
+            (conditions, vertex_value_m)
         };
-        let vertex_value_m: Vec<f64> = vertex_sum_m
-            .iter()
-            .zip(&vertex_shares)
-            .map(|(&sum, &shares)| sum / f64::from(shares.max(1)))
-            .collect();
 
-        Self {
+        Ok(Self {
             river_paths: fresh_reach_path_caches(amplifier.river_reaches().len()),
             amplifier,
             root_seed_raw: root_seed.raw(),
@@ -329,7 +331,7 @@ impl HierarchicalEvaluator {
                 .map(|vertex| vertex.position)
                 .collect(),
             vertex_value_m,
-        }
+        })
     }
 
     /// The L0 cell primitive value: identically the T0 published
@@ -513,10 +515,12 @@ impl HierarchicalEvaluator {
             .collect()
     }
 
-    /// Blake3 over the little-endian f32 elevations of the frozen probe
-    /// set, in probe order (spec §6).
+    /// Blake3 over [`T1_DERIVATION_VERSION`] and the little-endian f32
+    /// elevations of the frozen probe set, in probe order (spec §6, LOD-1
+    /// spec §3.6).
     pub fn probe_fingerprint(&self) -> [u8; 32] {
         let mut hasher = Hasher::new();
+        hasher.update(&T1_DERIVATION_VERSION.to_le_bytes());
         for probe in self.probe_ids() {
             let value = self.value(probe.cell, probe.sector, probe.path.steps());
             hasher.update(&value.elevation_m.to_le_bytes());
@@ -1130,6 +1134,33 @@ mod tests {
             all
         });
         assert_eq!(sequential, threaded);
+    }
+
+    /// LOD-1 spec §3.1 D1 / §4 I2: the L1 boundary-vertex anchors are the
+    /// P5 P1 sub-cell vertex elevations, bit for bit — one fact source for
+    /// the derived shoreline and the published water geometry.
+    #[test]
+    fn boundary_vertex_anchors_are_the_p5_p1_vertex_elevations() {
+        let (evaluator, surface) = evaluator();
+        let fields = SyntheticFields::new(&surface);
+        let elevation: Vec<f64> = fields.elevation.iter().copied().map(f64::from).collect();
+        let expected = super::super::surface_water_geometry::reconstruct_vertex_elevations(
+            &surface,
+            &elevation,
+            &crate::engine::BuildCancellation::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            evaluator
+                .vertex_value_m
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Spec §7 invariant 2: both cells sharing an L0 boundary edge derive

@@ -463,3 +463,17 @@ ignored，待 T1 v2.2 阶段 1 修复后再转绿。
 审计平台的新实测值钉在 `tests/hierarchical_product_gates.rs` 的
 `EXPECTED_PROBE_FINGERPRINT`，取代 A14 的旧值。本修订更新输入世界变化后的身份
 金样，不放宽任何科学界限，不宣称已修复另一个仍 ignored 的深层陆比问题。
+
+### A16 —— L1 边界顶点锚改用 P5 P1 助手，新增派生身份版本（2026-10-25）
+
+LOD-1 规格（`2026-10-25-lod1-fine-geometry-coherence-design.md`）§3.1 D1 与 §3.6 D6
+冻结后落地：§2.1 的边界顶点值不再是相邻格元算术平均，而是 P5 亚格元水面几何的生产
+助手 `reconstruct_vertex_elevations`（Shepard p = 2，质心到顶点中心角），共享顶点仍
+全局单值，中点种子规则与 `DERIVATION_DOMAIN` 不变。`from_amplifier` 改为返回
+`Result`，重建失败经 `TerrainAmplificationError::VertexAnchors` 传播。
+
+新增 `T1_DERIVATION_VERSION`（本修订起为 2，T1 v2 原派生视为 1），作为 §6 探针指纹
+哈希的首个输入。直接因果：顶点锚换权重改变全部 L1+ 派生值；P5 产品未变。草稿档、
+种子 42 探针指纹由 A15 的 `7df42191…` 改为
+`386b6e5acefdbd986d4c5eb2d8ff619399b8aeeeb0690ace0bf7f22dd3e92027`。同次实测 L0 恒等
+逐位通过；陆比漂移 0.0066 → 0.0065（L0 陆 3991，level 6 陆 3883 → 3885），阈值不变。

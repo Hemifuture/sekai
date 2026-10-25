@@ -23,7 +23,7 @@ use crate::generators::spatial::{BASE_FACE_VERTICES, BASE_VERTEX_COMPONENTS};
 use crate::world::natural::{
     formation_annual_precipitation_mm, GeologicSubstrateSnapshot, GlobalCirculationSnapshot,
     NaturalSurfaceFormationSnapshot, RiverSegment, SphericalOrogenyKind, SphericalTectonicSnapshot,
-    SurfaceWaterField, SurfaceWaterKind, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    SurfaceWaterField, SurfaceWaterKind, WaterVolumeSolveError, ELEVATION_MAX_M, ELEVATION_MIN_M,
     FORMATION_FLOODPLAIN_ACCOMMODATION_M,
 };
 use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, UnitVector3};
@@ -224,6 +224,9 @@ pub enum TerrainAmplificationError {
         /// A short description of the failed check.
         reason: &'static str,
     },
+    /// The shared P1 vertex reconstruction behind the L1 anchors failed.
+    #[error("L1 vertex anchor reconstruction failed: {0}")]
+    VertexAnchors(#[from] WaterVolumeSolveError),
 }
 
 struct FaceBasis {
