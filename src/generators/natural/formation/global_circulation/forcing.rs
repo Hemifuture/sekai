@@ -5,6 +5,7 @@ use crate::generators::natural::circulation::{
     CirculationOperatorError, CirculationOperators, CubedSphereGrid, CubedSphereGridError,
 };
 use crate::generators::natural::surface_water_geometry::build_surface_water_geometry;
+use crate::generators::natural::ClimateWorkDomainArtifact;
 use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRemapError};
 use crate::world::natural::{
     absorbed_shortwave_w_m2, formation_runoff_fraction, gray_equilibrium_surface_temperature_c,
@@ -398,6 +399,52 @@ impl GlobalClimateForcingBuilder {
         let source_ref = validate_common_inputs(surface, climate_spec, cancellation, || {
             domain.validate_against_cancellable(surface, &|| cancellation.is_cancelled())
         })?;
+        Self::build_for_relief(
+            source_ref,
+            relief,
+            relative_permeability,
+            climate_spec,
+            domain,
+            cancellation,
+        )
+    }
+
+    /// Builds the same forcing as [`Self::build`] for a domain the work-domain artifact
+    /// already proves canonical for the surface it names.
+    ///
+    /// The artifact exists only through the domain builder or a full rehydration against its
+    /// source, so the constant-time binding to `surface` replaces rebuilding both conservative
+    /// maps; every other input is checked exactly as in [`Self::build`].
+    pub(crate) fn build_for_work_domain_artifact(
+        surface: &SphericalSurfaceSnapshot,
+        relief: &PrimaryReliefSnapshot,
+        relative_permeability: &[f32],
+        climate_spec: &ClimateSpec,
+        domain: &ClimateWorkDomainArtifact,
+        cancellation: &BuildCancellation,
+    ) -> Result<GlobalClimateForcing, GlobalClimateForcingError> {
+        let domain = domain.snapshot();
+        let source_ref = validate_common_inputs(surface, climate_spec, cancellation, || {
+            domain.validate_binding_against(surface)
+        })?;
+        Self::build_for_relief(
+            source_ref,
+            relief,
+            relative_permeability,
+            climate_spec,
+            domain,
+            cancellation,
+        )
+    }
+
+    fn build_for_relief(
+        source_ref: SurfaceRef,
+        relief: &PrimaryReliefSnapshot,
+        relative_permeability: &[f32],
+        climate_spec: &ClimateSpec,
+        domain: &ClimateWorkDomainSnapshot,
+        cancellation: &BuildCancellation,
+    ) -> Result<GlobalClimateForcing, GlobalClimateForcingError> {
         if relief.surface_ref() != source_ref {
             return Err(GlobalClimateForcingError::SourceMismatch);
         }

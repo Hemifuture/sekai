@@ -2,20 +2,20 @@ use thiserror::Error;
 
 use super::super::random::LabeledSubstreams;
 use super::super::{
-    EvolvedTectonicGenerationError, EvolvedTectonicGenerator, GeologicSubstrateGenerationError,
-    GeologicSubstrateGenerator, GlobalCirculationGenerationError, GlobalCirculationGenerator,
-    GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError,
-    PrimaryReliefGenerationError, PrimaryReliefGenerator, SurfaceFormationGenerationError,
-    SurfaceFormationGenerator, SurfaceFormationInputs,
+    ClimateWorkDomainArtifact, EvolvedTectonicGenerationError, EvolvedTectonicGenerator,
+    GeologicSubstrateGenerationError, GeologicSubstrateGenerator, GlobalCirculationGenerationError,
+    GlobalCirculationGenerator, GlobalClimateForcing, GlobalClimateForcingBuilder,
+    GlobalClimateForcingError, PrimaryReliefGenerationError, PrimaryReliefGenerator,
+    SurfaceFormationGenerationError, SurfaceFormationGenerator, SurfaceFormationInputs,
 };
 use super::surface_formation::{FormationState, FormationStateError};
 use crate::engine::{BuildCancellation, StageRng};
 use crate::generators::spatial::ProfileSurfaceBundle;
 use crate::world::natural::{
-    ClimateModelProfile, ClimateSpec, ClimateWorkDomainSnapshot, EvolvedTectonicSnapshot,
-    GeologicSpec, GeologicSubstrateSnapshot, GlobalCirculationSnapshot, HydroErosionSpec,
-    NaturalQualityProfile, NaturalSurfaceFormationSnapshot, PrimaryReliefSnapshot, ReliefSpec,
-    ResolvedWorldFormation, TectonicSpec,
+    ClimateModelProfile, ClimateSpec, EvolvedTectonicSnapshot, GeologicSpec,
+    GeologicSubstrateSnapshot, GlobalCirculationSnapshot, HydroErosionSpec, NaturalQualityProfile,
+    NaturalSurfaceFormationSnapshot, PrimaryReliefSnapshot, ReliefSpec, ResolvedWorldFormation,
+    TectonicSpec,
 };
 
 /// Borrowed resolved inputs for one complete causal natural-formation build.
@@ -33,8 +33,9 @@ pub(in crate::generators::natural) struct CausalNaturalFormationInputs<'a> {
     pub geologic_spec: &'a GeologicSpec,
     /// Resolved P3 relief and water-inventory parameters.
     pub relief_spec: &'a ReliefSpec,
-    /// Validated P4 work domain for the authoritative surface.
-    pub climate_domain: &'a ClimateWorkDomainSnapshot,
+    /// P4 work domain built for the authoritative surface; the artifact type proves its
+    /// conservative maps are the canonical ones for the surface it names.
+    pub climate_domain: &'a ClimateWorkDomainArtifact,
     /// Resolved P4 forcing parameters.
     pub climate_spec: &'a ClimateSpec,
     /// Resolved P5 surface-process parameters.
@@ -91,9 +92,9 @@ impl CausalNaturalFormationGenerator {
                 cancellation,
             )?;
         let formation_state = FormationState::from_primary_working(&primary_working)?;
-        // The public forcing build is this chain's one full validation of the
-        // work domain against `surface`; every later consumer trusts it.
-        let start_forcing = GlobalClimateForcingBuilder::build(
+        // The artifact already proves the domain's maps for the surface it names, so binding
+        // it to `surface` here completes this chain's validation; later consumers trust it.
+        let start_forcing = GlobalClimateForcingBuilder::build_for_work_domain_artifact(
             surface,
             &primary_relief,
             geologic_substrate.relative_permeability(),
@@ -101,10 +102,11 @@ impl CausalNaturalFormationGenerator {
             inputs.climate_domain,
             cancellation,
         )?;
+        let climate_domain = inputs.climate_domain.snapshot();
         let (start_climate, start_correction) =
             GlobalCirculationGenerator::generate_capturing_start_correction(
                 surface,
-                inputs.climate_domain,
+                climate_domain,
                 &start_forcing,
                 ClimateModelProfile::C2LayeredV1,
                 cancellation,
@@ -116,7 +118,7 @@ impl CausalNaturalFormationGenerator {
                 tectonics: &evolved_tectonics,
                 substrate: &geologic_substrate,
                 relief: &primary_relief,
-                domain: inputs.climate_domain,
+                domain: climate_domain,
                 climate_spec: inputs.climate_spec,
                 initial_climate: &start_climate,
                 formation_spec: inputs.surface_spec,
@@ -206,7 +208,7 @@ mod tests {
         generate_evolved_spherical_with_test_resample_observer, EvolvedPublicationError,
     };
     use crate::generators::natural::surface_water_geometry::solve_physical_sea_level_exact;
-    use crate::generators::natural::{ClimateWorkDomainBuilder, GlobalClimateForcingBuilder};
+    use crate::generators::natural::{ClimateWorkDomainArtifact, GlobalClimateForcingBuilder};
     use crate::generators::spatial::ProfileSurfaceBuilder;
     use crate::world::natural::{
         ClimateModelProfile, ClimateSpec, FormationSedimentFields, FormationTerrainFields,
@@ -231,9 +233,12 @@ mod tests {
             &cancellation,
         )
         .expect("the Draft profile bundle should build");
-        let domain =
-            ClimateWorkDomainBuilder::build(bundle.authoritative_surface(), profile, &cancellation)
-                .expect("the Draft climate domain should build");
+        let domain = ClimateWorkDomainArtifact::build(
+            bundle.authoritative_surface(),
+            profile,
+            &cancellation,
+        )
+        .expect("the Draft climate domain should build");
         let formation = ResolvedWorldFormation::new(
             RESOLVED_WORLD_FORMATION_SCHEMA_V1,
             WorldFormationPreset::Continents,
@@ -289,7 +294,7 @@ mod tests {
             output.surface.terrain_fields(),
             output.geologic_substrate.relative_permeability(),
             &climate_spec,
-            &domain,
+            domain.snapshot(),
             &cancellation,
         )
         .expect("the final terrain should rebuild its endpoint forcing");
@@ -322,9 +327,12 @@ mod tests {
             &cancellation,
         )
         .expect("the Standard profile bundle should build");
-        let domain =
-            ClimateWorkDomainBuilder::build(bundle.authoritative_surface(), profile, &cancellation)
-                .expect("the Standard climate domain should build");
+        let domain = ClimateWorkDomainArtifact::build(
+            bundle.authoritative_surface(),
+            profile,
+            &cancellation,
+        )
+        .expect("the Standard climate domain should build");
         let formation = ResolvedWorldFormation::new(
             RESOLVED_WORLD_FORMATION_SCHEMA_V1,
             WorldFormationPreset::Continents,
@@ -507,7 +515,7 @@ mod tests {
                             &start_terrain,
                             substrate.relative_permeability(),
                             inputs.climate_spec,
-                            inputs.climate_domain,
+                            inputs.climate_domain.snapshot(),
                             cancellation,
                         )?
                     } else {
@@ -516,13 +524,13 @@ mod tests {
                             &primary_relief,
                             substrate.relative_permeability(),
                             inputs.climate_spec,
-                            inputs.climate_domain,
+                            inputs.climate_domain.snapshot(),
                             cancellation,
                         )?
                     };
                     let start_climate = GlobalCirculationGenerator::generate(
                         surface,
-                        inputs.climate_domain,
+                        inputs.climate_domain.snapshot(),
                         &start_forcing,
                         ClimateModelProfile::C2LayeredV1,
                         cancellation,
@@ -550,7 +558,7 @@ mod tests {
                         tectonics: evolved,
                         substrate: &substrate,
                         relief: &primary_relief,
-                        domain: inputs.climate_domain,
+                        domain: inputs.climate_domain.snapshot(),
                         climate_spec: inputs.climate_spec,
                         initial_climate: &start_climate,
                         formation_spec: inputs.surface_spec,
@@ -574,12 +582,12 @@ mod tests {
                             &midpoint_terrain,
                             substrate.relative_permeability(),
                             inputs.climate_spec,
-                            inputs.climate_domain,
+                            inputs.climate_domain.snapshot(),
                             cancellation,
                         )?;
                     let midpoint_climate = GlobalCirculationGenerator::generate(
                         surface,
-                        inputs.climate_domain,
+                        inputs.climate_domain.snapshot(),
                         &midpoint_forcing,
                         ClimateModelProfile::C2LayeredV1,
                         cancellation,
@@ -603,12 +611,12 @@ mod tests {
                             &endpoint_terrain,
                             substrate.relative_permeability(),
                             inputs.climate_spec,
-                            inputs.climate_domain,
+                            inputs.climate_domain.snapshot(),
                             cancellation,
                         )?;
                     let endpoint_climate = GlobalCirculationGenerator::generate(
                         surface,
-                        inputs.climate_domain,
+                        inputs.climate_domain.snapshot(),
                         &endpoint_forcing,
                         ClimateModelProfile::C2LayeredV1,
                         cancellation,
@@ -704,7 +712,7 @@ mod tests {
             tectonics: &evolved_tectonics,
             substrate: &geologic_substrate,
             relief: &primary_relief,
-            domain: inputs.climate_domain,
+            domain: inputs.climate_domain.snapshot(),
             climate_spec: inputs.climate_spec,
             initial_climate: &final_climate,
             formation_spec: inputs.surface_spec,

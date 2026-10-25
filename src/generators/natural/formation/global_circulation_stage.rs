@@ -4,10 +4,6 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
-use super::climate_work_domain::{
-    validate_climate_work_domain_reconstruction,
-    validate_climate_work_domain_reconstruction_cancellable,
-};
 use super::{ClimateWorkDomainBuildError, ClimateWorkDomainBuilder, NaturalQualityProfileArtifact};
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, Diagnostic,
@@ -18,7 +14,6 @@ use crate::world::natural::ClimateWorkDomainSnapshot;
 
 const INVALID_INPUT_CODE: &str = "global-circulation.invalid-input";
 const DOMAIN_BUILD_FAILED_CODE: &str = "global-circulation.work-domain-build-failed";
-const INVALID_ARTIFACT_CODE: &str = "global-circulation.invalid-artifact";
 const CANCELLED_CODE: &str = "engine.cancelled";
 
 /// Atomic publication of the reconstructable cubed-sphere climate work domain.
@@ -75,38 +70,16 @@ impl ClimateWorkDomainArtifact {
     pub const fn snapshot(&self) -> &ClimateWorkDomainSnapshot {
         &self.snapshot
     }
-
-    fn validate_cancellable(
-        &self,
-        cancellation: &crate::engine::BuildCancellation,
-    ) -> Result<(), ArtifactValidationError> {
-        let cancelled = || cancellation.is_cancelled();
-        self.snapshot
-            .validate_cancellable(&cancelled)
-            .map_err(|error| {
-                ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string())
-            })?;
-        validate_climate_work_domain_reconstruction_cancellable(&self.snapshot, &cancelled)
-            .map_err(|error| ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string()))
-    }
 }
 
 impl Artifact for ClimateWorkDomainArtifact {
     const KEY: ArtifactKey = ArtifactKey::new("world.climate-work-domain");
 
+    /// Accepts the wrapper as is: a [`ClimateWorkDomainSnapshot`] is valid by construction
+    /// (its constructors and deserialization run the full check and the grid reconstruction),
+    /// and the wrapper only exists through the domain builder or [`Self::rehydrate`].
     fn validate(&self) -> Result<(), ArtifactValidationError> {
-        self.snapshot.validate().map_err(|error| {
-            ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string())
-        })?;
-        validate_climate_work_domain_reconstruction(&self.snapshot)
-            .map_err(|error| ArtifactValidationError::new(INVALID_ARTIFACT_CODE, error.to_string()))
-    }
-
-    fn validate_cancellable(
-        &self,
-        cancellation: &crate::engine::BuildCancellation,
-    ) -> Result<(), ArtifactValidationError> {
-        ClimateWorkDomainArtifact::validate_cancellable(self, cancellation)
+        Ok(())
     }
 }
 
@@ -166,18 +139,8 @@ impl Stage for ClimateWorkDomainStage {
             &cancellation,
         )
         .map_err(domain_failure)?;
-        let artifact = ClimateWorkDomainArtifact::new(snapshot);
-        artifact
-            .validate_cancellable(&cancellation)
-            .map_err(|error| {
-                if cancellation.is_cancelled() {
-                    cancelled()
-                } else {
-                    StageError::new(error.code(), error.message())
-                }
-            })?;
         rng.check_cancelled().map_err(|_| cancelled())?;
-        Ok(artifact)
+        Ok(ClimateWorkDomainArtifact::new(snapshot))
     }
 }
 

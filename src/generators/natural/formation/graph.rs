@@ -301,7 +301,7 @@ impl Stage for CausalNaturalFormationStage {
                 formation: inputs.formation.formation(),
                 geologic_spec: inputs.resolved_geologic.input().spec(),
                 relief_spec: inputs.relief_spec.spec(),
-                climate_domain: inputs.domain.snapshot(),
+                climate_domain: inputs.domain.as_ref(),
                 climate_spec: inputs.resolved_climate.input().spec(),
                 surface_spec: inputs.resolved_hydro_erosion.input().spec(),
             },
