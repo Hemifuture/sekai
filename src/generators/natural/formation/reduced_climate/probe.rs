@@ -18,8 +18,8 @@ use std::time::Instant;
 use serde_json::{json, Value};
 
 use super::{
-    dot, norm, solve_reduced_climate, vapour_column_mass_kg_m2, OutgoingLongwaveClosure,
-    ReducedGrid, ReducedInputs, ReducedWorkClimate,
+    dot, norm, solve_reduced_climate, vapour_column_mass_kg_m2, IceAlbedoFeedback,
+    OutgoingLongwaveClosure, ReducedGrid, ReducedInputs, ReducedWorkClimate,
 };
 use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use crate::generators::natural::formation::global_circulation::{
@@ -41,15 +41,14 @@ use crate::generators::natural::{
 use crate::generators::spatial::{remap_intensive_f32, ProfileSurfaceBuilder};
 use crate::world::natural::{
     atmospheric_reference_surface_height_m, expected_global_circulation_dense_state_bytes,
-    planetary_albedo_from_surface, saturation_specific_humidity_kg_kg, ClimateBudgetReport,
-    ClimateCapabilitySet, ClimateCheckpoint, ClimateLayerLayout, ClimateModelProfile,
-    ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport, ClimateSpec,
-    ClimateWorkDomainSnapshot, GeologicSpec, GlobalCirculationFields, GlobalCirculationSnapshot,
-    HydroErosionSpec, MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile,
-    NaturalQualityReport, ReliefSpec, ResolvedWorldFormation, ResolvedWorldFormationPreset,
-    SphericalHydrologySnapshot, SurfaceWaterGeometry, TectonicSpec, WorldFormationPreset,
-    CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
-    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
+    saturation_specific_humidity_kg_kg, ClimateBudgetReport, ClimateCapabilitySet,
+    ClimateCheckpoint, ClimateLayerLayout, ClimateModelProfile, ClimateQuantizationId,
+    ClimateRemapReport, ClimateSolveReport, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec,
+    GlobalCirculationFields, GlobalCirculationSnapshot, HydroErosionSpec, MonthlyScalarField,
+    MonthlyVector3Field, NaturalQualityProfile, NaturalQualityReport, ReliefSpec,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, SphericalHydrologySnapshot,
+    SurfaceWaterGeometry, TectonicSpec, WorldFormationPreset, CLIMATE_MONTH_COUNT,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
     GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP, GLOBAL_CIRCULATION_SCHEMA_V2,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1, SURFACE_FORMATION_HORIZON_YEARS,
 };
@@ -115,7 +114,6 @@ fn project_all(
     surface: &SphericalSurfaceSnapshot,
     domain: &ClimateWorkDomainSnapshot,
     forcing: &GlobalClimateForcing,
-    inputs: &ReducedInputs,
     work: &ReducedWorkClimate,
     cell_heights: &[f64],
     cancellation: &BuildCancellation,
@@ -167,8 +165,8 @@ fn project_all(
             .expect("intensive projection")
             .into_values()
     };
-    let asr: Vec<[f64; MONTHS]> = inputs.monthly_absorbed_shortwave_w_m2.clone();
-    let albedo_work: Vec<f32> = inputs.surface_albedo.iter().map(|&v| v as f32).collect();
+    let asr: Vec<[f64; MONTHS]> = work.monthly_absorbed_shortwave_w_m2.clone();
+    let albedo_work: Vec<f32> = work.surface_albedo.iter().map(|&v| v as f32).collect();
     published.air = air;
     published.sst = intensive(&work.sea_surface_temperature_c);
     published.albedo =
@@ -259,15 +257,16 @@ fn published_from_snapshot(snapshot: &GlobalCirculationSnapshot) -> Published {
 fn budget_report(
     grid: &ReducedGrid,
     forcing: &GlobalClimateForcing,
-    inputs: &ReducedInputs,
     work: &ReducedWorkClimate,
 ) -> ClimateBudgetReport {
     let (mut asr, mut olr, mut incoming, mut reflected, mut weight) = (0.0, 0.0, 0.0, 0.0, 0.0);
     for cell in 0..grid.cell_count() {
         let area = grid.area_m2[cell];
-        let planetary = planetary_albedo_from_surface(inputs.surface_albedo[cell]);
+        let reflectance = work.diagnostics.atmospheric_shortwave_reflectance;
+        let planetary =
+            reflectance + (1.0 - reflectance) * work.surface_albedo[cell].clamp(0.0, 1.0);
         for month in 0..MONTHS {
-            asr += area * inputs.monthly_absorbed_shortwave_w_m2[cell][month];
+            asr += area * work.monthly_absorbed_shortwave_w_m2[cell][month];
             olr += area * work.outgoing_longwave_w_m2[cell][month];
             let top = EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2
                 * f64::from(forcing.monthly_insolation_fraction()[cell][month]);
@@ -616,7 +615,13 @@ fn a10_reduced_climate_probe() {
         Ok("budyko") => OutgoingLongwaveClosure::BudykoTransEbm,
         _ => OutgoingLongwaveClosure::ProductionGray,
     };
-    let log = |line: String| eprintln!("[a10 {profile:?} {longwave:?}] {line}");
+    let ice = match std::env::var("SEKAI_A10_ICE").as_deref() {
+        Ok("double") => IceAlbedoFeedback::ProductionReflectance,
+        Ok("recal") => IceAlbedoFeedback::RecalibratedReflectance,
+        Ok("preserve") => IceAlbedoFeedback::PlanetaryAlbedoPreserving,
+        _ => IceAlbedoFeedback::None,
+    };
+    let log = |line: String| eprintln!("[a10 {profile:?} {longwave:?} {ice:?}] {line}");
     let cancellation = BuildCancellation::new();
     let total = Instant::now();
 
@@ -810,6 +815,7 @@ fn a10_reduced_climate_probe() {
             &climate_spec,
             work_heights,
             longwave,
+            ice,
         );
         let t2 = Instant::now();
         let work = solve_reduced_climate(&reduced_grid, &inputs, parallel);
@@ -826,13 +832,12 @@ fn a10_reduced_climate_probe() {
             surface,
             &domain,
             &baseline_end_forcing,
-            &inputs,
             &work,
             &cell_heights,
             &cancellation,
         );
         let t5 = Instant::now();
-        let budget = budget_report(&reduced_grid, &baseline_end_forcing, &inputs, &work);
+        let budget = budget_report(&reduced_grid, &baseline_end_forcing, &work);
         let snapshot = wrap(surface, &domain, &baseline_end_forcing, &published, budget);
         let t6 = Instant::now();
         drop(p5_only);
@@ -950,13 +955,13 @@ fn a10_reduced_climate_probe() {
         &climate_spec,
         start_work_heights,
         longwave,
+        ice,
     );
     let start_work = solve_reduced_climate(&reduced_grid, &start_inputs, false);
     let start_published = project_all(
         surface,
         &domain,
         &start_forcing,
-        &start_inputs,
         &start_work,
         &start_cells,
         &cancellation,
@@ -966,7 +971,7 @@ fn a10_reduced_climate_probe() {
         &domain,
         &start_forcing,
         &start_published,
-        budget_report(&reduced_grid, &start_forcing, &start_inputs, &start_work),
+        budget_report(&reduced_grid, &start_forcing, &start_work),
     );
     let start_quality = quality::evaluate_global_circulation_quality(
         surface,
@@ -1019,13 +1024,13 @@ fn a10_reduced_climate_probe() {
         &climate_spec,
         end_work_heights,
         longwave,
+        ice,
     );
     let end_work = solve_reduced_climate(&reduced_grid, &end_inputs, false);
     let end_published = project_all(
         surface,
         &domain,
         &end_forcing,
-        &end_inputs,
         &end_work,
         &end_cells,
         &cancellation,
@@ -1035,7 +1040,7 @@ fn a10_reduced_climate_probe() {
         &domain,
         &end_forcing,
         &end_published,
-        budget_report(&reduced_grid, &end_forcing, &end_inputs, &end_work),
+        budget_report(&reduced_grid, &end_forcing, &end_work),
     );
     let chain_seconds = chain.elapsed().as_secs_f64();
     let end_quality = quality::evaluate_global_circulation_quality_for_formation_cancellable(
@@ -1078,6 +1083,12 @@ fn a10_reduced_climate_probe() {
     let summary = json!({
         "profile": format!("{profile:?}"),
         "longwave_closure": longwave,
+        "ice_albedo_feedback": ice,
+        "temperature_summary": {
+            "reduced_on_baseline_forcing": temperature_summary(surface, &published_b),
+            "baseline_endpoint": temperature_summary(surface, &baseline_published),
+            "reduced_chain_end": temperature_summary(surface, &end_published),
+        },
         "work_grid_annual": work_grid_dump(&reduced_grid, &inputs_b, &work_b),
         "seed": 42,
         "authoritative_cells": surface.cells().len(),
@@ -1113,9 +1124,10 @@ fn a10_reduced_climate_probe() {
         "total_probe_seconds": total.elapsed().as_secs_f64(),
     });
     let path = out_dir.join(format!(
-        "probe-{}-{}.json",
+        "probe-{}-{}-ice{}.json",
         format!("{profile:?}").to_lowercase(),
-        format!("{longwave:?}").to_lowercase()
+        format!("{longwave:?}").to_lowercase(),
+        format!("{ice:?}").to_lowercase()
     ));
     std::fs::write(&path, serde_json::to_string_pretty(&summary).expect("json"))
         .expect("write summary");
@@ -1184,12 +1196,45 @@ fn work_grid_dump(grid: &ReducedGrid, inputs: &ReducedInputs, work: &ReducedWork
                 dot(current, east),
                 dot(current, north),
                 mean(&work.sea_surface_height_m[c]),
+                work.ice_fraction[c],
             ])
         })
         .collect();
     json!({
         "columns": ["lat", "lon", "land", "ref_height_m", "air_c", "air_jul_minus_jan_c",
-            "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m"],
+            "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m", "ice_fraction"],
         "rows": rows,
+    })
+}
+
+/// Global, polar-cap (|lat| >= 60) and tropical annual air temperature.
+fn temperature_summary(surface: &SphericalSurfaceSnapshot, published: &Published) -> Value {
+    let mut sums = [0.0_f64; 4];
+    let mut weights = [0.0_f64; 4];
+    for (cell, air) in surface.cells().iter().zip(&published.air) {
+        let latitude = cell.centroid.components()[2].asin().to_degrees();
+        let value = annual(air);
+        let area = cell.area.get();
+        let mut add = |slot: usize| {
+            sums[slot] += area * value;
+            weights[slot] += area;
+        };
+        add(0);
+        if latitude <= -60.0 {
+            add(1);
+        }
+        if latitude >= 60.0 {
+            add(2);
+        }
+        if latitude.abs() <= 10.0 {
+            add(3);
+        }
+    }
+    let mean = |slot: usize| sums[slot] / weights[slot].max(f64::MIN_POSITIVE);
+    json!({
+        "global_mean_c": mean(0),
+        "south_cap_60_90_c": mean(1),
+        "north_cap_60_90_c": mean(2),
+        "tropics_10s_10n_c": mean(3),
     })
 }
