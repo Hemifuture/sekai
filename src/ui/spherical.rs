@@ -16,6 +16,8 @@ use crate::view::{
     ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldDomain, FieldId, FieldSchema, FieldValueType};
+use crate::world::natural::SurfaceWaterKind;
+use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
 
 use super::field::localization::localized_field_key;
@@ -65,6 +67,9 @@ pub enum SphericalCanvasAction {
     SetDiagnosticsEnabled(bool),
     /// Selects one authoritative surface entity.
     SelectEntity(Option<SelectedSurfaceEntity>),
+    /// Records the picked direction behind the selection, so the inspector
+    /// can read the derived leaf drawn there (LOD-1 spec §3.5 D5).
+    SetPickDirection(Option<UnitVector3>),
     /// Pauses or resumes display-only vector animation.
     SetVectorPaused(bool),
     /// Sets the bounded, explicitly non-physical display speed.
@@ -161,6 +166,7 @@ pub struct SphericalCanvasState {
     globe_camera: GlobeCamera,
     field_state: SphericalFieldDisplayState,
     vector_animation: VectorAnimationUniform,
+    picked_direction: Option<UnitVector3>,
 }
 
 impl Default for SphericalCanvasState {
@@ -173,6 +179,7 @@ impl Default for SphericalCanvasState {
             globe_camera: GlobeCamera::default(),
             field_state: SphericalFieldDisplayState::default(),
             vector_animation: VectorAnimationUniform::default(),
+            picked_direction: None,
         }
     }
 }
@@ -298,6 +305,10 @@ impl SphericalCanvasState {
                     SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM
                 })
             }
+            SphericalCanvasAction::SetPickDirection(direction) => {
+                self.picked_direction = direction;
+                Ok(SphericalCanvasInvalidation::NONE)
+            }
             SphericalCanvasAction::SetVectorPaused(paused) => {
                 self.field_state.set_vector_paused(paused);
                 Ok(SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM)
@@ -371,6 +382,11 @@ impl SphericalCanvasState {
     /// Returns the retained trackball globe camera.
     pub const fn globe_camera(&self) -> GlobeCamera {
         self.globe_camera
+    }
+
+    /// Returns the direction of the last canvas pick, if any.
+    pub const fn picked_direction(&self) -> Option<UnitVector3> {
+        self.picked_direction
     }
 
     /// Returns shared fill/overlay/diagnostic/selection/vector preferences.
@@ -615,6 +631,7 @@ impl SphericalCanvasStateWire {
             globe_camera: self.globe_camera.try_into_camera()?,
             field_state: self.field_state.try_into_state()?,
             vector_animation: VectorAnimationUniform::new(self.vector_phase),
+            picked_direction: None,
         })
     }
 }
@@ -1045,6 +1062,9 @@ pub fn interact_spherical_canvas(
             ];
             let selected = state.pick_screen(presentation, local, canvas_size, pixels_per_point);
             actions.push(SphericalCanvasAction::SelectEntity(selected));
+            actions.push(SphericalCanvasAction::SetPickDirection(
+                selected.and_then(|_| state.screen_direction(local, canvas_size)),
+            ));
         }
     }
     if response.dragged_by(egui::PointerButton::Primary) {
@@ -1320,6 +1340,92 @@ pub fn show_spherical_inspector(ui: &mut egui::Ui, model: &SphericalInspectorMod
             diagnostic.code(),
             diagnostic.message()
         ));
+    }
+}
+
+/// The leaf the terrain mesh draws under the inspected point (LOD-1 spec
+/// §3.5 D5), shown beside the cell's L0 authority.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SphericalDerivedPick {
+    /// The inspected cell.
+    pub cell: CellId,
+    /// The primitive level the active view draws there.
+    pub level: u8,
+    /// The drawn leaf's derived elevation in metres.
+    pub elevation_m: f32,
+    /// The drawn leaf's fine-shoreline water class.
+    pub water: SurfaceWaterKind,
+    /// P5's published sub-cell ocean area fraction of the cell.
+    pub ocean_area_fraction: f32,
+}
+
+/// Formats the derived-pick rows: derived level values first, then the L0
+/// authority read from the published fields, then P5's sub-cell ocean
+/// fraction. Units, precision, and class names come from the field
+/// registry and the localization table.
+///
+/// # Errors
+///
+/// Returns [`SphericalUiError::EntityValueMissing`] when the published
+/// elevation or water-class field cannot be read for the cell.
+pub fn derived_pick_rows(
+    presentation: &PublishedSphericalPresentation,
+    pick: &SphericalDerivedPick,
+) -> Result<Vec<(String, String)>, SphericalUiError> {
+    use super::field::localization::{
+        derived_elevation_label, derived_water_label, L0_ELEVATION_LABEL, L0_WATER_LABEL,
+        P5_OCEAN_AREA_FRACTION_LABEL,
+    };
+
+    let catalog = presentation.document().catalog_for_ui()?;
+    let view = |id: FieldId| {
+        catalog
+            .get(&id)
+            .and_then(|entry| entry.view())
+            .ok_or(SphericalUiError::EntityValueMissing)
+    };
+    let elevation = view(crate::world::natural::surface_elevation_m_field_id())?;
+    let water = view(crate::world::natural::surface_water_kind_field_id())?;
+    let index = pick.cell.raw() as usize;
+    let class_name = |kind: SurfaceWaterKind| {
+        water.schema().category_labels.get(&kind.raw()).map_or_else(
+            || kind.raw().to_string(),
+            |key| localized_field_key(key).into_owned(),
+        )
+    };
+    let precision = usize::from(elevation.schema().display.decimal_places());
+    let unit = elevation.schema().unit.symbol();
+    let l0_elevation =
+        format_field_value(elevation, index).ok_or(SphericalUiError::EntityValueMissing)?;
+    let l0_water = match water.value(index) {
+        Some(FieldValue::Category(raw)) => {
+            SurfaceWaterKind::try_from_raw(raw).map_err(|_| SphericalUiError::EntityValueMissing)?
+        }
+        _ => return Err(SphericalUiError::EntityValueMissing),
+    };
+    Ok(vec![
+        (
+            derived_elevation_label(pick.level),
+            format!("{:.precision$} {unit}", pick.elevation_m),
+        ),
+        (derived_water_label(pick.level), class_name(pick.water)),
+        (
+            L0_ELEVATION_LABEL.to_owned(),
+            format!("{} {}", l0_elevation.text, l0_elevation.unit),
+        ),
+        (L0_WATER_LABEL.to_owned(), class_name(l0_water)),
+        (
+            P5_OCEAN_AREA_FRACTION_LABEL.to_owned(),
+            format!("{:.3}", pick.ocean_area_fraction),
+        ),
+    ])
+}
+
+/// Draws the derived-pick rows under the inspector.
+pub fn show_spherical_derived_pick(ui: &mut egui::Ui, rows: &[(String, String)]) {
+    ui.separator();
+    for (label, value) in rows {
+        ui.label(format!("{label}: {value}"));
     }
 }
 

@@ -694,8 +694,9 @@ fn river_mouth(fixture: &CausalFormationFixture, tier: &str) {
 /// LOD-1 spec §1.2 (audit §2.8) and §4 I9: over 16,384 Fibonacci picks,
 /// how often the L0 inspector reading (P5 whole-cell water kind, P5 cell
 /// elevation) agrees with the leaf the terrain mesh draws at levels 6 and
-/// 10. The derived inspector rows are bit-identical to the drawn leaf by
-/// the I9 unit test; this probe measures what the L0 rows alone would show.
+/// 10, and how often the derived reading the inspector shows since LOD-1 T4
+/// (`HierarchicalEvaluator::read`) equals that leaf (I9; the unit test
+/// pins the mesh pairing itself).
 #[test]
 #[ignore = "release-only offline picking probe (LOD-1 spec §4 I9)"]
 fn pick_display_probe() {
@@ -719,7 +720,7 @@ fn pick_display(fixture: &CausalFormationFixture, tier: &str) {
         .surface_water();
     let total = 16_384_usize;
     for level in [6_u8, 10] {
-        let picks: Vec<(bool, Option<f64>)> = (0..total)
+        let picks: Vec<(bool, Option<f64>, bool)> = (0..total)
             .into_par_iter()
             .map(|index| {
                 let probe = fibonacci_probe(index, total);
@@ -732,16 +733,25 @@ fn pick_display(fixture: &CausalFormationFixture, tier: &str) {
                 let l0_elevation = evaluator.cell_value(cell).elevation_m;
                 let dry_delta = (drawn == SurfaceWaterKind::DryLand)
                     .then(|| f64::from((leaf - l0_elevation).abs()));
-                (drawn == l0_kind, dry_delta)
+                let derived = evaluator.read(probe, level);
+                let derived_matches =
+                    derived.water == drawn && derived.value.elevation_m.to_bits() == leaf.to_bits();
+                (drawn == l0_kind, dry_delta, derived_matches)
             })
             .collect();
-        let agree = picks.iter().filter(|(same, _)| *same).count();
-        let mut deltas: Vec<f64> = picks.iter().filter_map(|(_, delta)| *delta).collect();
+        let agree = picks.iter().filter(|(same, _, _)| *same).count();
+        let derived = picks.iter().filter(|(_, _, same)| *same).count();
+        let mut deltas: Vec<f64> = picks.iter().filter_map(|(_, delta, _)| *delta).collect();
         eprintln!(
             "[pick {tier} L{level}] L0 water kind = drawn leaf class on {:.2}% of {total}; dry \
              picks |L0 elevation - leaf| m | {}",
             100.0 * agree as f64 / total as f64,
             quantiles(&mut deltas)
+        );
+        eprintln!(
+            "[pick {tier} L{level}] derived reading (value bits and class) = drawn leaf on {:.2}% \
+             of {total}",
+            100.0 * derived as f64 / total as f64
         );
     }
 }

@@ -29,7 +29,7 @@ use super::terrain_amplification::{
 };
 use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    Lake, RiverSegment, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    Lake, RiverSegment, SurfaceWaterField, SurfaceWaterKind, ELEVATION_MAX_M, ELEVATION_MIN_M,
     FORMATION_SHELF_BREAK_DEPTH_M,
 };
 use crate::world::spatial::{spherical_triangle_area_unit, SphericalSurfaceSnapshot, UnitVector3};
@@ -138,6 +138,19 @@ pub struct HierarchicalProbe {
     pub sector: u8,
     /// The fixed subdivision path.
     pub path: HierarchicalPath,
+}
+
+/// What the terrain mesh draws at one direction for one level (LOD-1 spec
+/// §3.5 D5): the containing primitive's value and its fine-shoreline water
+/// class — the two facts a leaf's color is painted from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DerivedReading {
+    /// The root L0 cell of the containing primitive.
+    pub cell: CellId,
+    /// The primitive's published value.
+    pub value: PrimitiveValue,
+    /// The fine-shoreline class of that value (T1 v2.2 §5.1).
+    pub water: SurfaceWaterKind,
 }
 
 /// The primitive containing one direction at one level (spec §1 shell).
@@ -603,6 +616,33 @@ impl HierarchicalEvaluator {
             LocatedPrimitive::Triangle { cell, sector, path } => {
                 self.value(cell, sector, path.steps())
             }
+        }
+    }
+
+    /// Reads what the display draws at `direction` for `level` (LOD-1 spec
+    /// §3.5 D5): the thin-shell value classified by this world's fine
+    /// shoreline — the same two functions the terrain mesh colors with.
+    ///
+    /// # Arguments
+    ///
+    /// * `direction` - The picked direction.
+    /// * `level` - The primitive level the display shows there.
+    ///
+    /// # Returns
+    ///
+    /// The root cell, the primitive value, and its water class.
+    pub fn read(&self, direction: UnitVector3, level: u8) -> DerivedReading {
+        let located = self.locate(direction, level);
+        let (cell, value) = match located {
+            LocatedPrimitive::Cell(cell) => (cell, self.cell_value(cell)),
+            LocatedPrimitive::Triangle { cell, sector, path } => {
+                (cell, self.value(cell, sector, path.steps()))
+            }
+        };
+        DerivedReading {
+            cell,
+            value,
+            water: self.shoreline.classify(cell, value.elevation_m),
         }
     }
 

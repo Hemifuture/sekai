@@ -31,7 +31,8 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::generators::natural::{
-    HierarchicalEvaluator, HierarchicalPath, PrimitiveValue, HIERARCHICAL_PATH_DEPTH_MAX,
+    DerivedReading, HierarchicalEvaluator, HierarchicalPath, LocatedPrimitive, PrimitiveValue,
+    HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::view::{
     project_unit_direction, AmplifiedSurfaceMesh, GlobeCamera, MapScreenTransform, ProjectionPoint,
@@ -133,6 +134,31 @@ pub(super) struct DetailSelection {
     /// batch shapes (hidden subtrees collapse to shallow single-leaf
     /// batches, so batch levels understate a walked cell).
     cell_levels: Vec<u8>,
+}
+
+impl DetailSelection {
+    /// Every cell's classified leaf level, indexed by cell id.
+    pub(super) fn cell_levels(&self) -> &[u8] {
+        &self.cell_levels
+    }
+}
+
+/// Reads the leaf a selection draws under `direction` (LOD-1 spec §3.5
+/// D5): the root cell's classified level, then the engine reading at that
+/// level — the value and water class the leaf's color is painted from.
+pub(super) fn picked_reading(
+    context: &AmplifiedDetailContext,
+    cell_levels: &[u8],
+    direction: UnitVector3,
+) -> (u8, DerivedReading) {
+    let root = match context.evaluator.locate(direction, 0) {
+        LocatedPrimitive::Cell(cell) | LocatedPrimitive::Triangle { cell, .. } => cell,
+    };
+    let level = cell_levels
+        .get(root.raw() as usize)
+        .copied()
+        .unwrap_or(OFFSCREEN_LEAF_LEVEL);
+    (level, context.evaluator.read(direction, level))
 }
 
 fn finish_selection(
@@ -1066,7 +1092,7 @@ pub(super) fn build_river_polylines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generators::natural::{AmplificationFieldsView, LocatedPrimitive};
+    use crate::generators::natural::AmplificationFieldsView;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::view::{MapCamera, SphericalProjectionKind};
     use crate::world::natural::{Lake, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind};
@@ -1599,6 +1625,57 @@ mod tests {
                 }
             }
             triangle += batch.leaves();
+        }
+    }
+
+    /// LOD-1 spec §3.5 D5 / §4 I9: a pick reads exactly the leaf the mesh
+    /// draws there — the same level, the same face value bit for bit, and
+    /// the same fine-shoreline water class (hence the same color).
+    #[test]
+    fn picked_reading_is_the_drawn_leaf() {
+        let context = test_context();
+        let mut cache = BatchCache::default();
+        for level in [1_u8, 3] {
+            let selection = uniform_selection(&context, level);
+            let mesh = build_detail_mesh(&context, &selection, &mut cache).unwrap();
+            let indices = mesh.indices();
+            let mut water_kinds = std::collections::HashSet::new();
+            for triangle in (0..mesh.triangle_count()).step_by(13) {
+                let base = triangle * TRIANGLE_CORNERS;
+                let corner = |slot: usize| mesh.directions()[indices[base + slot] as usize];
+                let [ax, ay, az] = corner(0);
+                let [bx, by, bz] = corner(1);
+                let [cx, cy, cz] = corner(2);
+                let centroid = UnitVector3::new(ax + bx + cx, ay + by + cy, az + bz + cz).unwrap();
+                let (picked_level, reading) =
+                    picked_reading(&context, selection.cell_levels(), centroid);
+                assert_eq!(picked_level, level);
+                let LocatedPrimitive::Triangle { cell, sector, path } =
+                    context.evaluator.locate(centroid, level)
+                else {
+                    panic!("levels above zero locate triangles");
+                };
+                let drawn = context.evaluator.value(cell, sector, path.steps());
+                assert_eq!(reading.cell, cell);
+                assert_eq!(
+                    reading.value.elevation_m.to_bits(),
+                    drawn.elevation_m.to_bits()
+                );
+                assert_eq!(
+                    reading.water,
+                    context
+                        .evaluator
+                        .shoreline()
+                        .classify(cell, drawn.elevation_m)
+                );
+                assert_eq!(
+                    mesh.colors()[indices[base] as usize],
+                    flat_color(&context, cell, reading.value),
+                    "the picked reading is what the leaf is painted from"
+                );
+                water_kinds.insert(reading.water);
+            }
+            assert!(water_kinds.len() > 1, "picks must span water classes");
         }
     }
 
