@@ -1,9 +1,0 @@
-{
-  "CargoIncremental": "0",
-  "Utc": "2026-09-30T14:32:13.2800037Z",
-  "Command": "cargo clippy --workspace --all-targets --all-features -- -D warnings",
-  "DeletedFiles": 0,
-  "ElapsedSeconds": 27.6986011,
-  "ExitCode": 0,
-  "FreeAfter": 1490661376
-}

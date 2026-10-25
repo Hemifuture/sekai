@@ -120,7 +120,7 @@ Draft 中位快2.48%，均值反而慢2.24%，3组快／2组慢；Standard仅一
 
 ## 恢复记录、范围与证据
 
-进度、每阶段报告、独立审查、所有实验和原始日志保留于 `.superpowers/sdd/2026-09-30-phase-a-authoring-loop`，不为收尾删除。耐久原始证据位于 `docs/superpowers/measurements/2026-09-30-phase-a-performance-raw/`；T7解释位于 `docs/superpowers/measurements/2026-09-30-phase-a-t7-optimization.md`，T8 UI及原预算见其 `native-ui/t8/` 和 `t8/`。
+进度、每阶段报告、独立审查、所有实验和原始日志保留于 `.superpowers/sdd/2026-09-30-phase-a-authoring-loop`，不为收尾删除。耐久原始证据原位于仓内 `docs/superpowers/measurements/*-raw/`，2026-10-25 按原相对结构移至仓外 `D:/hemifuture-probes/phase-a-20261001/`（T6/T8 在其 `2026-09-30-phase-a-performance-raw/`，T7 在 `2026-09-30-phase-a-t7-raw/`，逐文件 Git blob 校验清单 `git-blob-index.txt`；`7143d1e` 及之前的提交仍含原文件）；T7解释位于 `docs/superpowers/measurements/2026-09-30-phase-a-t7-optimization.md`，T8 UI及原预算见其 `native-ui/t8/` 和 `t8/`。
 
 曾遇多次连接中断和满盘；已有完成测试／配对样本没有重跑。满盘期间一次文档写入失败使工作计划变0字节，已从 HEAD 用同目录临时文件完整验证并原子恢复为37,157bytes；没有源代码／主仓库损失。一个180bytes的审查辅助包不完整，明确不作为完整证据，完整 v2 包已另存。2026-10-01恢复时实测 C可用107,096,186,880bytes，从保留的160行测试草稿和同一实施者上下文继续，没有重新执行旧任务；之后不进行缓存删除。
 
@@ -130,7 +130,7 @@ Draft 中位快2.48%，均值反而慢2.24%，3组快／2组慢；Standard仅一
 
 最终源／测试检查点为 `a36950134c6d87246e4c5e56bb1881aee8a0f52f`；最后文档／证据归档提交在交付消息给出。用户main／原有修改、T1候选和其他任务产物保持隔离，不进行 reset／clean、push、merge或部署；恢复后未清理任何缓存。批准设计 Library身份 `libfile_689616ebda7881919134dd2a13fbdb00`（R2／v2）、计划 `libfile_bec05654754881919c34de4cdaa7df80`（v1）保留，不新建重复设计。
 
-本报告及最后原始测试／审查／窗口证据归档到 `docs/superpowers/reports/2026-10-01-phase-a-authoring-loop-handoff.md` 与 `docs/superpowers/measurements/2026-10-01-phase-a-final-fix-raw/`；未归档执行二进制或编译缓存。独立报告为原始证据根目录的 `final-fix-review.md`，实际窗口报告在其 `native-ui/ui-report.md`。
+本报告及最后原始测试／审查／窗口证据归档到 `docs/superpowers/handoffs/2026-10-01-phase-a-authoring-loop-handoff.md`（原 `docs/superpowers/reports/`，2026-10-25 并入 handoffs）与仓外 `D:/hemifuture-probes/phase-a-20261001/2026-10-01-phase-a-final-fix-raw/`（原仓内 `docs/superpowers/measurements/2026-10-01-phase-a-final-fix-raw/`）；未归档执行二进制或编译缓存。独立报告为原始证据根目录的 `final-fix-review.md`，实际窗口报告在其 `native-ui/ui-report.md`。
 
 ## 实施裁定与误判成本
 

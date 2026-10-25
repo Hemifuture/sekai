@@ -1,5 +1,0 @@
-   Compiling sekai v0.1.0 (C:\Users\DYZ\Documents\Codex\2026-09-30\task\sekai-phase-a)
-    Finished `release` profile [optimized] target(s) in 2m 06s
-  Executable unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
-  Executable tests\generation_latency.rs (target\release\deps\generation_latency-0d05a1953c61a1de.exe)
-  Executable tests\global_circulation_integrators.rs (target\release\deps\global_circulation_integrators-041ea9701218bb85.exe)

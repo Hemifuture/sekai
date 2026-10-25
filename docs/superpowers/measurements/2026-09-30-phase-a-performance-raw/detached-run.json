@@ -1,9 +1,0 @@
-{
-  "StartedUtc": "2026-09-30T11:39:43.8501749Z",
-  "EndedUtc": "2026-09-30T11:40:40.9441652Z",
-  "ExitCode": 0,
-  "Profile": "draft",
-  "Source": "offscreen_native_test",
-  "RealUi": false,
-  "GpuDeviceMemory": "unmeasured"
-}

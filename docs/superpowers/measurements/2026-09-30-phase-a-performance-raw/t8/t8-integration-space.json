@@ -1,7 +1,0 @@
-{
-  "Scope": "warm production rlib and three direct integration tests",
-  "OperationalReserveBytes": 1000000000,
-  "ExpectedAdditionalPeakBytes": 1000000000,
-  "FreeBefore": 5244530688,
-  "Admission": true
-}

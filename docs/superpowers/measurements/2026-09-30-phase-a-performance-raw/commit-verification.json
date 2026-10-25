@@ -1,8 +1,0 @@
-{
-  "Utc": "2026-09-30T11:44:39.4626047Z",
-  "Command": "CARGO_INCREMENTAL=0 cargo fmt --all -- --check",
-  "ExitCode": 0,
-  "SourceUnchangedSinceClippyAndRelease": true,
-  "ClippyExitCode": 0,
-  "WasmExitCode": 0
-}

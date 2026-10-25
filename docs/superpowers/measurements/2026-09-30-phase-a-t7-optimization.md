@@ -1,11 +1,13 @@
 # Phase A T7 单项工程优化证据
 
+原始证据位置（2026-10-25 移出仓库）：原 `2026-09-30-phase-a-t7-raw/` 整目录按原相对结构移至仓外 `D:/hemifuture-probes/phase-a-20261001/2026-09-30-phase-a-t7-raw/`；下文提到的原始文件（`probe-*.log`、`probe-summary.json`、`candidate.patch`、`*-identity.json` 等）均指该仓外目录。逐文件 Git blob 校验清单见 `D:/hemifuture-probes/phase-a-20261001/git-blob-index.txt`；Git 历史中 `7143d1e` 及之前的提交仍含原文件。
+
 ## E1 候选记录（实现前）
 
 - BASE：`8f71bd9ccd9bab891ec180ba6be3f70ec1436535`，唯一产品文件 `src/generators/natural/formation/global_circulation/tendency.rs`，函数 `LayeredTendencySystem::apply_pair_momentum_exchanges`。不改接口或调用者。
 - 来源：T6 stage probe 的 P4 start solve 19.793 s、P5+endpoint P4 23.290 s，总计占 46.976 s 的 91.7%；detached renderer preparation 0.063057 s，不足以优先于实测生成热路径。具体调查了生产 split-explicit 的 generation/fast tendency、RK derivative 分配、strain workspace、gradients、work-domain 重建；现有 transient temperature-gradient 优化和 A6 已撤回并行均排除。
 - 唯一假设：C2 lower-air/mixed-ocean surface exchange 每个湿单元的 `mass_per_area(state, UpperAtmosphere)` 都构造同一 `ClimateLayerLayout::for_profile`（两个 Vec），可在该 exchange 的 cell 循环外计算一次。该 helper 只依赖 immutable profile、布局 density 和 state reference thickness；不依赖 cell、不读 height anomaly。逐单元 `momentum_mass_per_area` 的实际深度验证不动。
-- 改前实际分配探针：未改生产 rlib，C2 face resolution 24（3456 cells）、部分湿 land fraction .25、非零纬向速度；workspace 预热后每批 30 次真实 `evaluate_fast_with_workspace`，7 批均 208680 请求分配 / 74716800 requested bytes。7 批 elapsed 秒为 .217414900/.224896900/.225662500/.239904300/.218734800/.212965900/.190405100。观察时输出相等断言通过；Debug hash `cc8dbf66b9be5379a6771e47f50564020c1b53e4824418a3432b6b1d9fc2ed33`。计数包括整个公开 RHS，不猜整个求解器精确占比。raw `2026-09-30-phase-a-t7-raw/probe-before.log`。
+- 改前实际分配探针：未改生产 rlib，C2 face resolution 24（3456 cells）、部分湿 land fraction .25、非零纬向速度；workspace 预热后每批 30 次真实 `evaluate_fast_with_workspace`，7 批均 208680 请求分配 / 74716800 requested bytes。7 批 elapsed 秒为 .217414900/.224896900/.225662500/.239904300/.218734800/.212965900/.190405100。观察时输出相等断言通过；Debug hash `cc8dbf66b9be5379a6771e47f50564020c1b53e4824418a3432b6b1d9fc2ed33`。计数包括整个公开 RHS，不猜整个求解器精确占比。raw `D:/hemifuture-probes/phase-a-20261001/2026-09-30-phase-a-t7-raw/probe-before.log`。
 - RED：此工程布局/分配修改没有新独立行为；依 T7 指令用失败的配对性能假设作红证据，不造 wall-clock 单元阈值。假设期望每次 RHS 移除 `2 * (3456 - 1)` 次循环内布局分配；当前未优化测得 6956 次/eval，显然未实现循环外单次构造。绿证据由同一个独立 probe 的实际分配差和逐位输出 hash 给出。
 - 最小正确性命令：`CARGO_INCREMENTAL=0 cargo test --release --lib generators::natural::formation::global_circulation::tendency::tests:: -- --test-threads=1`；已有生产 surface-stress、实际厚度、部分湿/全陆/层配置契约直接消费该函数，先核实具体测试名/数量，不以 0 selected 算通过。布局修改不新增生产 helper/公开 API 或测试专用抽象。
 - 输出要求：同审计平台的完整 Draft/Standard graph result hash 与 surface fingerprint 逐位相等；探针 hash 逐位相等；科学硬门、层实际质量、取消检查点、运算顺序和所有 f32/f64 cast 保持。

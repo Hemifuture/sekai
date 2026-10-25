@@ -1,8 +1,0 @@
-    Finished `release` profile [optimized] target(s) in 0.26s
-     Running unittests src\lib.rs (target\release\deps\sekai-40a581fd75fb6783.exe)
-
-running 1 test
-test app::natural_app_tests::pending_world_build_keeps_the_last_valid_map_browsable_until_publication ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 625 filtered out; finished in 0.03s
-
