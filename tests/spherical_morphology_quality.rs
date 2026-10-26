@@ -2,6 +2,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
+#[allow(dead_code)]
+#[path = "support/continent_shape.rs"]
+mod continent_shape;
+
+use continent_shape::{dot, tangent_basis, tangent_covariance_aspect_ratio};
+
 use sekai::engine::{derive_stage_seed, Diagnostic, StageIdentity, StageRng};
 use sekai::generators::natural::{MantleGenerator, ReliefGenerator, TectonicGenerator};
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
@@ -11,12 +17,8 @@ use sekai::world::natural::{
     WorldFormationPreset, RESOLVED_WORLD_FORMATION_SCHEMA_V1,
 };
 use sekai::world::spatial::audited_float_platform;
-use sekai::world::spatial::{
-    central_angle, project_tangent, SphericalSurfaceSnapshot, UnitVector3,
-};
-use sekai::world::{
-    CellId, EdgeId, Meters, PlateId, RootSeed, SphericalSpaceSpec, SurfaceVertexId,
-};
+use sekai::world::spatial::{central_angle, project_tangent, SphericalSurfaceSnapshot};
+use sekai::world::{EdgeId, Meters, PlateId, RootSeed, SphericalSpaceSpec, SurfaceVertexId};
 
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 const QUALITY_CELL_COUNT: u32 = 642;
@@ -210,96 +212,6 @@ fn plate_metrics(
 fn equal_area_spherical_circle_perimeter(radius_m: f64, area_m2: f64) -> f64 {
     let cosine = (1.0 - area_m2 / (2.0 * PI * radius_m.powi(2))).clamp(-1.0, 1.0);
     2.0 * PI * radius_m * cosine.acos().sin()
-}
-
-fn normalize(vector: [f64; 3]) -> [f64; 3] {
-    let length = vector.iter().map(|value| value * value).sum::<f64>().sqrt();
-    vector.map(|value| value / length)
-}
-
-fn dot(first: [f64; 3], second: [f64; 3]) -> f64 {
-    first[0] * second[0] + first[1] * second[1] + first[2] * second[2]
-}
-
-fn cross(first: [f64; 3], second: [f64; 3]) -> [f64; 3] {
-    [
-        first[1] * second[2] - first[2] * second[1],
-        first[2] * second[0] - first[0] * second[2],
-        first[0] * second[1] - first[1] * second[0],
-    ]
-}
-
-fn area_centroid(surface: &SphericalSurfaceSnapshot, cells: &[CellId]) -> UnitVector3 {
-    let sum = cells.iter().fold([0.0; 3], |mut sum, &cell| {
-        let record = surface.cell(cell).unwrap();
-        for (target, component) in sum.iter_mut().zip(record.centroid.components()) {
-            *target += record.area.get() * component;
-        }
-        sum
-    });
-    UnitVector3::new(sum[0], sum[1], sum[2]).unwrap()
-}
-
-fn tangent_basis(radial: UnitVector3) -> ([f64; 3], [f64; 3]) {
-    let radial = radial.components();
-    let reference = if radial[2].abs() < 0.8 {
-        [0.0, 0.0, 1.0]
-    } else {
-        [1.0, 0.0, 0.0]
-    };
-    let east = normalize(cross(reference, radial));
-    let north = normalize(cross(radial, east));
-    (east, north)
-}
-
-fn tangent_covariance_aspect_ratio(surface: &SphericalSurfaceSnapshot, cells: &[CellId]) -> f64 {
-    let center = area_centroid(surface, cells);
-    let center_components = center.components();
-    let (east, north) = tangent_basis(center);
-    let mut samples = Vec::with_capacity(cells.len());
-    let mut total_weight = 0.0;
-    for &cell in cells {
-        let record = surface.cell(cell).unwrap();
-        let radial = record.centroid.components();
-        let cosine = dot(center_components, radial).clamp(-1.0, 1.0);
-        let angle = cosine.acos();
-        let tangent = [
-            radial[0] - center_components[0] * cosine,
-            radial[1] - center_components[1] * cosine,
-            radial[2] - center_components[2] * cosine,
-        ];
-        let tangent_length = dot(tangent, tangent).sqrt();
-        let coordinates = if tangent_length <= f64::EPSILON {
-            [0.0, 0.0]
-        } else {
-            let scale = angle * surface.radius().get() / tangent_length;
-            [dot(tangent, east) * scale, dot(tangent, north) * scale]
-        };
-        samples.push((coordinates, record.area.get()));
-        total_weight += record.area.get();
-    }
-    let mean = samples.iter().fold([0.0; 2], |mut sum, (point, weight)| {
-        sum[0] += point[0] * weight;
-        sum[1] += point[1] * weight;
-        sum
-    });
-    let mean = [mean[0] / total_weight, mean[1] / total_weight];
-    let [xx, xy, yy] = samples.iter().fold([0.0; 3], |mut sum, (point, weight)| {
-        let x = point[0] - mean[0];
-        let y = point[1] - mean[1];
-        sum[0] += x * x * weight;
-        sum[1] += x * y * weight;
-        sum[2] += y * y * weight;
-        sum
-    });
-    let xx = xx / total_weight;
-    let xy = xy / total_weight;
-    let yy = yy / total_weight;
-    let trace = xx + yy;
-    let discriminant = ((xx - yy).powi(2) + 4.0 * xy.powi(2)).sqrt();
-    let maximum = ((trace + discriminant) * 0.5).max(0.0);
-    let minimum = ((trace - discriminant) * 0.5).max(f64::EPSILON);
-    (maximum / minimum).sqrt()
 }
 
 fn median_cell_angular_diameter(surface: &SphericalSurfaceSnapshot) -> f64 {
