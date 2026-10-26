@@ -35,47 +35,31 @@ use crate::world::natural::{
     gray_equilibrium_surface_temperature_c, gray_longwave_slope_w_m2_k,
     lcl_adjusted_orographic_condensation_kg_m2_s, p4_seasonal_storage_heat_capacities_j_m2_k,
     saturation_specific_humidity_kg_kg, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
-    ClimateSpec, BULK_MOISTURE_TRANSFER_COEFFICIENT, CLIMATE_MONTH_COUNT,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE,
-    EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN, EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
-    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2, EARTH_ROTATION_RATE_RAD_S,
+    ClimateSpec, BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C, BULK_MOISTURE_TRANSFER_COEFFICIENT,
+    CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
+    EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
+    EARTH_ROTATION_RATE_RAD_S, LAND_SEA_SURFACE_DRAG_RATIO, LIQUID_MIXED_LAYER_MIN_C,
     P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
     P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
     P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY, P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
     P4_LOWER_LAYER_REFERENCE_PRESSURE_PA, P4_OPEN_OCEAN_SURFACE_ALBEDO,
     P4_REFERENCE_AIR_DENSITY_KG_M3, P4_SEA_ICE_SURFACE_ALBEDO,
-    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
-    SECONDS_PER_CLIMATOLOGICAL_MONTH, STANDARD_GRAVITY_M_S2, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, REDUCED_CLIMATE_ENERGY_FIXED_POINT_MAX_ITERATIONS,
+    REDUCED_CLIMATE_ENERGY_FIXED_POINT_TOLERANCE_K,
+    REDUCED_CLIMATE_HADLEY_LOWER_BRANCH_TOP_PRESSURE_PA, REDUCED_CLIMATE_HADLEY_UPPER_MSE_RATIO,
+    REDUCED_CLIMATE_HADLEY_WEIGHT_WIDTH_SIN_LATITUDE, REDUCED_CLIMATE_LINEAR_MAX_ITERATIONS,
+    REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE, REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S,
+    REDUCED_CLIMATE_MEBM_PICARD_MAX_ITERATIONS, REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS,
+    REFERENCE_SURFACE_RELATIVE_HUMIDITY, SEAWATER_REFERENCE_DENSITY_KG_M3,
+    SECONDS_PER_CLIMATOLOGICAL_MONTH, STANDARD_GRAVITY_M_S2,
+    STOMMEL_BOUNDARY_LAYER_WIDTH_GRID_SPACINGS, SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S,
+    SUBMONTHLY_WIND_SIGMA_BAND_WIDTH_DEGREES, TRANSEBM_LAND_LATITUDE_ALBEDO,
+    TRANSEBM_OCEAN_LATITUDE_ALBEDO, TRANSEBM_OLR_INTERCEPT_W_M2, TRANSEBM_OLR_SLOPE_W_M2_K,
+    TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 use super::global_circulation::GlobalClimateForcing;
-
-/// MEBM eddy diffusivity of near-surface moist static energy.
-/// Siler, Roe & Armour (2018), J. Climate 31, 7481, DOI 10.1175/JCLI-D-18-0081.1,
-/// Fig. 2b: best fit to ERA-Interim zonal-mean 2 m temperature, within 10 % of
-/// Hwang & Frierson (2010), Rose et al. (2014) and Roe et al. (2015).
-const MEBM_DIFFUSIVITY_M2_S: f64 = 1.16e6;
-/// Siler et al. (2018) Eq. (6): Gaussian Hadley-cell weight width in sin(lat).
-const HADLEY_WEIGHT_WIDTH_SIN_LATITUDE: f64 = 0.3;
-/// Siler et al. (2018) Eq. (8) text: tropical upper-troposphere MSE is 1.06 h(0).
-const HADLEY_UPPER_MSE_RATIO: f64 = 1.06;
-/// Siler et al. (2018) Fig. 2 caption: the lower Hadley branch is the layer
-/// below 900 hPa, where most water vapour is concentrated.
-const HADLEY_LOWER_BRANCH_TOP_PRESSURE_PA: f64 = 90_000.0;
-/// Probe duplicate of the private production `LAND_SEA_SURFACE_DRAG_RATIO`
-/// (Garratt 1992 §4.1; design 2026-09-02 A2 §5).
-const LAND_SEA_SURFACE_DRAG_RATIO: f64 = 3.0;
-/// Probe duplicate of the private production `LIQUID_MIXED_LAYER_MIN_C`
-/// (enthalpy-method freezing floor of the mixed layer, `state.rs`).
-const LIQUID_MIXED_LAYER_MIN_C: f64 = -2.0;
-/// Seawater density of the production C2 layout ocean layers.
-const SEAWATER_DENSITY_KG_M3: f64 = 1_025.0;
-
-/// TransEBM v1.0 (Ziegler & Rehfeld 2021, GMD 14, 2843, DOI
-/// 10.5194/gmd-14-2843-2021, Sect. 2): empirical Budyko-type OLR `A + B T`
-/// with `A_ref = 210.2 W m-2` (315 ppm CO2) and `B = 2.15 W m-2 K-1`, T in C.
-const TRANSEBM_OLR_INTERCEPT_W_M2: f64 = 210.2;
-const TRANSEBM_OLR_SLOPE_W_M2_K: f64 = 2.15;
 
 /// Outgoing-longwave closure of the MEBM (probe sensitivity axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -86,24 +70,8 @@ pub(crate) enum OutgoingLongwaveClosure {
     BudykoTransEbm,
 }
 
-/// Budyko (1969), Tellus 21, 611: the permanent ice/snow edge sits where the
-/// annual-mean surface temperature is -10 C; North (1975), JAS 32, 2033,
-/// adopts the same edge temperature for the step albedo of his EBM.
-const BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C: f64 = -10.0;
-const ICE_ALBEDO_MAX_ITERATIONS: usize = 80;
+const ICE_ALBEDO_MAX_ITERATIONS: usize = REDUCED_CLIMATE_ENERGY_FIXED_POINT_MAX_ITERATIONS as usize;
 
-/// TransEBM v1.0 (Ziegler & Rehfeld 2021, Table 1): latitude dependence of the
-/// ice-free planetary albedo, `a + a_lat P2(sin lat)`, for ocean and land. The
-/// A + B T closure above was tuned together with this albedo structure; the
-/// P2 term carries the zenith-angle and cloud brightening of high latitudes
-/// that a latitude-independent atmospheric reflectance cannot represent.
-const TRANSEBM_OCEAN_LATITUDE_ALBEDO: f64 = 0.08;
-const TRANSEBM_LAND_LATITUDE_ALBEDO: f64 = 0.05;
-/// TransEBM v1.0 (Ziegler & Rehfeld 2021, Table 1, after Zhuang et al. 2017):
-/// heat capacity of the sea-ice surface type, which replaces the mixed-layer
-/// capacity where the ocean is ice covered (the ice insulates the ocean from
-/// the atmosphere; Wagner & Eisenman 2015).
-const TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K: f64 = 4.83e6;
 /// SPEEDY (Molteni 2003, Clim. Dyn. 20, 175; Kucharski et al. 2013, BAMS 94,
 /// 25; reference code speedy.f90 `surface_fluxes.f90`, `vgust = 5.0`): wind
 /// speed of sub-grid-scale gusts added in quadrature to the resolved wind in
@@ -111,24 +79,6 @@ const TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K: f64 = 4.83e6;
 /// a mean wind without its variability underestimates the mean flux
 /// (Esbensen & Reynolds 1981, JPO 11, 457).
 const SPEEDY_SUBGRID_GUST_WIND_M_S: f64 = 5.0;
-/// Standard deviation of each horizontal 10 m wind component about its
-/// monthly vector mean over the ocean, in 5-degree |latitude| bands from the
-/// equator (0-5, 5-10, ..., 85-90 degrees), hemispherically symmetrized.
-/// Measured for design revision R3 from NCEP/NCAR Reanalysis 1 6-hourly
-/// 10 m winds 2016-2020 (Kalnay et al. 1996; NOAA PSL
-/// `ncep.reanalysis/surface_gauss/{u,v}wnd.10m.gauss.YYYY.nc` with the
-/// `land.sfc.gauss.nc` mask, MD5 sums in the design): per ocean grid point
-/// and calendar month `sigma^2 = (var u + var v) / 2`, cos-latitude weights,
-/// northern and southern band means averaged (85-90 degrees has ocean only in
-/// the north). 6-hourly is the finest R1 sampling; the bulk formula applies
-/// to instantaneous wind. With these values the Rice expectation reproduces
-/// the observed monthly scalar mean ocean speed (7.0 m/s) to -1.9 % (mean)
-/// and 3.1 % (RMS), while the vector-mean speed is 34 % low.
-const SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S: [f64; 18] = [
-    1.78, 1.92, 2.09, 2.40, 3.03, 3.86, 4.61, 5.13, 5.49, 5.70, 5.74, 5.55, 5.17, 4.41, 3.96, 3.43,
-    2.88, 3.40,
-];
-
 /// Physics added in design revision R2 (probe comparison axes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub(crate) struct ReducedPhysics {
@@ -295,7 +245,9 @@ fn scaled_bessel_i1(x: f64) -> f64 {
 /// interpolated between the 5-degree band centres.
 fn submonthly_wind_sigma_m_s(latitude_rad: f64) -> f64 {
     let bands = SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S;
-    let position = (latitude_rad.abs().to_degrees() - 2.5) / 5.0;
+    let position = (latitude_rad.abs().to_degrees()
+        - 0.5 * SUBMONTHLY_WIND_SIGMA_BAND_WIDTH_DEGREES)
+        / SUBMONTHLY_WIND_SIGMA_BAND_WIDTH_DEGREES;
     if position <= 0.0 {
         return bands[0];
     }
@@ -323,11 +275,12 @@ pub(crate) enum IceAlbedoFeedback {
     PlanetaryAlbedoPreserving,
 }
 
-const LINEAR_TOLERANCE: f64 = 1.0e-10;
-const LINEAR_MAX_ITERATIONS: usize = 4_000;
-const MEBM_PICARD_MAX_ITERATIONS: usize = 30;
-const MEBM_PICARD_TOLERANCE_K: f64 = 1.0e-4;
-const WATER_ACTIVE_SET_MAX_ITERATIONS: usize = 60;
+const LINEAR_TOLERANCE: f64 = REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE;
+const LINEAR_MAX_ITERATIONS: usize = REDUCED_CLIMATE_LINEAR_MAX_ITERATIONS as usize;
+const MEBM_PICARD_MAX_ITERATIONS: usize = REDUCED_CLIMATE_MEBM_PICARD_MAX_ITERATIONS as usize;
+const MEBM_PICARD_TOLERANCE_K: f64 = REDUCED_CLIMATE_ENERGY_FIXED_POINT_TOLERANCE_K;
+const WATER_ACTIVE_SET_MAX_ITERATIONS: usize =
+    REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS as usize;
 
 /// Seed-independent geometry of the work domain (pre-warmable with the grid).
 #[derive(Debug, Clone)]
@@ -414,7 +367,8 @@ impl ReducedGrid {
                         edge.midpoint_displacement_m(1),
                     ],
                     hadley_weight: (-(x * x)
-                        / (HADLEY_WEIGHT_WIDTH_SIN_LATITUDE * HADLEY_WEIGHT_WIDTH_SIN_LATITUDE))
+                        / (REDUCED_CLIMATE_HADLEY_WEIGHT_WIDTH_SIN_LATITUDE
+                            * REDUCED_CLIMATE_HADLEY_WEIGHT_WIDTH_SIN_LATITUDE))
                         .exp(),
                 }
             })
@@ -1106,7 +1060,8 @@ fn solve_moist_energy_balance(
                     - moist_static_energy_j_kg(mid - 1.0e-3, relative_humidity))
                     / 2.0e-3
             };
-            *k = column_mass * MEBM_DIFFUSIVITY_M2_S * edge.length_m / edge.center_distance_m
+            *k = column_mass * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S * edge.length_m
+                / edge.center_distance_m
                 * secant;
         }
         let diag: Vec<f64> = (0..n).map(|c| grid.area_m2[c] * slope[c]).collect();
@@ -1217,9 +1172,10 @@ fn hadley_lower_branch(
         .zip(&band_area)
         .map(|(s, a)| s / a)
         .collect();
-    let upper_mse = HADLEY_UPPER_MSE_RATIO * band_mean.iter().copied().fold(f64::MIN, f64::max);
+    let upper_mse =
+        REDUCED_CLIMATE_HADLEY_UPPER_MSE_RATIO * band_mean.iter().copied().fold(f64::MIN, f64::max);
     let lower_branch_mass = (P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
-        - HADLEY_LOWER_BRANCH_TOP_PRESSURE_PA)
+        - REDUCED_CLIMATE_HADLEY_LOWER_BRANCH_TOP_PRESSURE_PA)
         / STANDARD_GRAVITY_M_S2;
     let edge_mass_flux_kg_s: Vec<f64> = grid
         .edges
@@ -1228,7 +1184,8 @@ fn hadley_lower_branch(
         .map(|(edge_id, edge)| {
             let [a, b] = edge.cells.map(|c| mse[c as usize]);
             // Total diffusive MSE flux from cell 0 to cell 1, in W.
-            let flux = column_mass * MEBM_DIFFUSIVITY_M2_S * edge.length_m / edge.center_distance_m
+            let flux = column_mass * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S * edge.length_m
+                / edge.center_distance_m
                 * (a - b);
             let gross_moist_stability = upper_mse - band_mean[grid.edge_band[edge_id]];
             let projection = if meridional_only {
@@ -1435,9 +1392,11 @@ fn solve_monthly_water(
         let si = slot_of(i, edge_id as u32);
         let sj = slot_of(j, edge_id as u32);
         // Eddy part of the Siler partition diffuses vapour: F = -(1-w) D grad W.
-        let diffusion =
-            (1.0 - edge.hadley_weight) * MEBM_DIFFUSIVITY_M2_S * eddy_vapour_scale * edge.length_m
-                / edge.center_distance_m;
+        let diffusion = (1.0 - edge.hadley_weight)
+            * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S
+            * eddy_vapour_scale
+            * edge.length_m
+            / edge.center_distance_m;
         transport_diag[i] += diffusion;
         transport_diag[j] += diffusion;
         transport_off[i][si] -= diffusion;
@@ -1648,7 +1607,8 @@ fn solve_monthly_stommel(
     // r / beta is set to the mean grid spacing at the equatorial beta, so the
     // western boundary current is resolved on the coarse work grid (the
     // boundary-layer resolution criterion of coarse ocean models; see design).
-    let friction = 2.0 * EARTH_ROTATION_RATE_RAD_S / grid.radius_m * grid.mean_spacing_m;
+    let friction = 2.0 * EARTH_ROTATION_RATE_RAD_S / grid.radius_m
+        * (STOMMEL_BOUNDARY_LAYER_WIDTH_GRID_SPACINGS * grid.mean_spacing_m);
     let mut diag = vec![0.0_f64; n];
     let mut off = vec![[0.0_f64; 4]; n];
     let mut rhs = vec![0.0_f64; n];
@@ -1680,7 +1640,7 @@ fn solve_monthly_stommel(
             diag[c] += laplacian + beta_term;
             off[c][slot] -= laplacian + beta_term;
         }
-        rhs[c] = -curl / SEAWATER_DENSITY_KG_M3;
+        rhs[c] = -curl / SEAWATER_REFERENCE_DENSITY_KG_M3;
         // Dry neighbours hold psi = 0 and drop out of the row.
         for (slot, &(edge_id, owner)) in grid.cell_edges[c].iter().enumerate() {
             let other = grid.edges[edge_id as usize].cells[1 - owner as usize] as usize;

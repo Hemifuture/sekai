@@ -23,9 +23,9 @@ use crate::world::natural::{
     BOUNDARY_LAYER_CONVECTIVE_VENTING_SECONDS, BOUNDARY_LAYER_DRY_VENTING_SECONDS,
     CLIMATE_MONTH_COUNT, EARTH_ROTATION_RATE_RAD_S, GLOBAL_CIRCULATION_FAST_CFL_TARGET,
     GLOBAL_CIRCULATION_FORMATION_TIME_COMPRESSION, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
-    GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S, LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M,
-    STANDARD_GRAVITY_M_S2, UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M,
-    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S, LAND_SEA_SURFACE_DRAG_RATIO,
+    LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M, STANDARD_GRAVITY_M_S2,
+    UPPER_ATMOSPHERE_REFERENCE_THICKNESS_M, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 const SEAWATER_THERMAL_EXPANSION_K_INV: f64 = 2.0e-4;
@@ -40,12 +40,8 @@ const SECONDS_PER_DAY: f64 = 86_400.0;
 // integrator sees identical physics; it is never applied as a post-step mask.
 const COASTAL_FORM_DRAG_TIMESCALE_S: f64 = SECONDS_PER_DAY;
 // The lower-atmosphere Rayleigh rate r = C_D |U| / H_bl scales with the bulk
-// surface drag coefficient: about 1.2e-3 over the open sea against 3e-3
-// (grassland) to 1e-2 (forest) over land (Garratt 1992, The Atmospheric
-// Boundary Layer, §4.1; Stull 1988, §7). The land value is pinned at the
-// conservative grassland ratio; the one-day sea rate is the existing constant
-// in `role_constants`, and partial cells interpolate by land fraction.
-const LAND_SEA_SURFACE_DRAG_RATIO: f64 = 3.0;
+// surface drag coefficient by `LAND_SEA_SURFACE_DRAG_RATIO`; the one-day sea
+// rate is the existing constant in `role_constants`.
 const BATHYMETRIC_BOTTOM_DRAG_TIMESCALE_S: f64 = 90.0 * SECONDS_PER_DAY;
 const BATHYMETRIC_BOTTOM_DRAG_REFERENCE_DEPTH_M: f64 = 1_000.0;
 // Horizontal sub-grid mixing closes unresolved baroclinic eddies and prevents

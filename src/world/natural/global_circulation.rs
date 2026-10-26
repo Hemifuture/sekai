@@ -22,6 +22,24 @@ const BOLTON_DEWPOINT_OFFSET_C: f64 = 243.5;
 const BOLTON_LCL_TEMPERATURE_OFFSET_K: f64 = 56.0;
 const BOLTON_LCL_LOG_COEFFICIENT_K: f64 = 800.0;
 
+mod reduced_climate;
+
+pub use reduced_climate::{
+    reduced_climate_model_fingerprint, ReducedClimateBudget, ReducedClimateBudgetReport,
+    ReducedClimateFieldValues, ReducedClimateFields, ReducedClimateModelProfile,
+    ReducedClimateSolveReport, BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C, GLOBAL_CIRCULATION_SCHEMA_V3,
+    REDUCED_CLIMATE_ENERGY_FIXED_POINT_MAX_ITERATIONS,
+    REDUCED_CLIMATE_ENERGY_FIXED_POINT_TOLERANCE_K,
+    REDUCED_CLIMATE_HADLEY_LOWER_BRANCH_TOP_PRESSURE_PA, REDUCED_CLIMATE_HADLEY_UPPER_MSE_RATIO,
+    REDUCED_CLIMATE_HADLEY_WEIGHT_WIDTH_SIN_LATITUDE, REDUCED_CLIMATE_LINEAR_MAX_ITERATIONS,
+    REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE, REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S,
+    REDUCED_CLIMATE_MEBM_PICARD_MAX_ITERATIONS, REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS,
+    STOMMEL_BOUNDARY_LAYER_WIDTH_GRID_SPACINGS, SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S,
+    SUBMONTHLY_WIND_SIGMA_BAND_WIDTH_DEGREES, TRANSEBM_LAND_LATITUDE_ALBEDO,
+    TRANSEBM_OCEAN_LATITUDE_ALBEDO, TRANSEBM_OLR_INTERCEPT_W_M2, TRANSEBM_OLR_SLOPE_W_M2_K,
+    TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K,
+};
+
 /// C2 lower-layer reference depth from the frozen P4 two-layer layout.
 pub(crate) const LOWER_ATMOSPHERE_REFERENCE_THICKNESS_M: f64 = 6_000.0;
 /// C2 upper-layer reference depth from the frozen P4 two-layer layout.
@@ -330,6 +348,25 @@ pub const P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K: f64 = 1_004.0;
 /// This is the conventional value adopted by the 3rd CGPM (1901), Declaration
 /// 2, DOI `10.59161/CGPM1901DECL2E`.
 pub const STANDARD_GRAVITY_M_S2: f64 = 9.806_65;
+/// Ratio of the bulk surface drag coefficient over land to that over the open sea.
+///
+/// About 1.2e-3 over the open sea against 3e-3 (grassland) to 1e-2 (forest) over land
+/// (Garratt 1992, The Atmospheric Boundary Layer, section 4.1; Stull 1988, section 7); pinned
+/// at the conservative grassland ratio (design 2026-09-02 A2 section 5). Partial cells
+/// interpolate by land fraction.
+pub const LAND_SEA_SURFACE_DRAG_RATIO: f64 = 3.0;
+/// Freezing point of the ocean mixed layer, in degrees Celsius.
+///
+/// Seawater of reference salinity 35 freezes at -1.92 C at the surface (Millero 1978, the
+/// UNESCO 1983 algorithm); the model has no salinity and keeps the rounded value it has always
+/// used for the liquid-water floor, so the mixed layer changes phase 0.08 K early.
+pub const LIQUID_MIXED_LAYER_MIN_C: f64 = -2.0;
+/// Reference density of seawater in the climate ocean layers, kg/m3.
+///
+/// Surface seawater of salinity 35: the UNESCO (1981) EOS-80 equation of state gives
+/// 1023-1028 kg/m3 between 25 and 0 C at atmospheric pressure. The value the C2 layout has
+/// always used for its ocean layers, now shared with the reduced model's Stommel ocean.
+pub const SEAWATER_REFERENCE_DENSITY_KG_M3: f64 = 1_025.0;
 /// Neutral bulk moisture-transfer coefficient over open water.
 ///
 /// Large & Pond (1982), DOI
@@ -1620,7 +1657,7 @@ impl ClimateLayerLayout {
             role,
             dynamically_active: active,
             reference_thickness_m: thickness,
-            density_kg_m3: 1_025.0,
+            density_kg_m3: SEAWATER_REFERENCE_DENSITY_KG_M3,
             heat_capacity_j_kg_k: 3_990.0,
         };
         let lower_mixed = ClimateLayerExchangeSpec {
@@ -4575,6 +4612,15 @@ pub enum GlobalCirculationValidationError {
         month: usize,
         orographic: f32,
         total: f32,
+    },
+    #[error(
+        "land runoff exceeds precipitation at cell {cell}, month {month}: {runoff} > {precipitation}"
+    )]
+    LandRunoffExceedsPrecipitation {
+        cell: usize,
+        month: usize,
+        runoff: f32,
+        precipitation: f32,
     },
     #[error("checkpoint {field} does not match snapshot identity")]
     CheckpointIdentityMismatch { field: &'static str },

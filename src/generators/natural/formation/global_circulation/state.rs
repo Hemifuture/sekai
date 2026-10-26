@@ -20,13 +20,9 @@ const C2_ACTIVE_ROLES: [ClimateLayerRole; 4] = [
     ClimateLayerRole::OceanMixedLayer,
     ClimateLayerRole::OceanThermocline,
 ];
-/// Freezing point of the mixed layer, in degrees Celsius.
-///
-/// Seawater of reference salinity 35 freezes at -1.92 C at the surface
-/// (Millero 1978, the UNESCO 1983 algorithm); the model has no salinity and
-/// keeps the rounded value it has always used for the liquid-water floor, so
-/// the mixed layer changes phase 0.08 K early.
-pub(crate) const LIQUID_MIXED_LAYER_MIN_C: f32 = -2.0;
+/// The world mixed-layer freezing point in the f32 precision of the prognostic state.
+pub(crate) const LIQUID_MIXED_LAYER_MIN_C: f32 =
+    crate::world::natural::LIQUID_MIXED_LAYER_MIN_C as f32;
 pub(crate) const SUBSURFACE_OCEAN_MIN_C: f32 = -5.0;
 pub(crate) const OCEAN_EQUILIBRIUM_MAX_C: f32 = 40.0;
 pub(crate) const UPPER_ATMOSPHERE_EQUILIBRIUM_OFFSET_C: f32 = 12.0;
