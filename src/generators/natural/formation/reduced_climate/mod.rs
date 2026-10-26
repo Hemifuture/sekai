@@ -111,20 +111,141 @@ const TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K: f64 = 4.83e6;
 /// a mean wind without its variability underestimates the mean flux
 /// (Esbensen & Reynolds 1981, JPO 11, 457).
 const SPEEDY_SUBGRID_GUST_WIND_M_S: f64 = 5.0;
+/// Standard deviation of each horizontal 10 m wind component about its
+/// monthly vector mean over the ocean, in 5-degree |latitude| bands from the
+/// equator (0-5, 5-10, ..., 85-90 degrees), hemispherically symmetrized.
+/// Measured for design revision R3 from NCEP/NCAR Reanalysis 1 6-hourly
+/// 10 m winds 2016-2020 (Kalnay et al. 1996; NOAA PSL
+/// `ncep.reanalysis/surface_gauss/{u,v}wnd.10m.gauss.YYYY.nc`, MD5 sums in
+/// the design): per grid point and calendar month
+/// `sigma^2 = (var u + var v) / 2`, ocean points of the R1 `icec` mask,
+/// cos-latitude weights, northern and southern band means averaged. 6-hourly
+/// is the finest R1 sampling; the bulk formula applies to instantaneous wind.
+/// With these values the Rice expectation reproduces the observed monthly
+/// scalar mean speed to -1.4 % (mean) and 3.0 % (RMS) over the ocean, while
+/// the vector-mean speed is 37 % low.
+const SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S: [f64; 18] = [
+    1.53, 1.67, 1.87, 2.18, 2.70, 3.36, 4.00, 4.54, 4.76, 4.78, 4.69, 4.64, 4.11, 3.58, 3.44, 3.15,
+    2.82, 2.95,
+];
 
 /// Physics added in design revision R2 (probe comparison axes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
-pub(crate) struct R2Physics {
+pub(crate) struct ReducedPhysics {
     /// TransEBM Legendre latitude term on the ice-free planetary albedo.
     pub(crate) latitude_albedo: bool,
     /// Ocean parts whose annual mixed-layer temperature is below the
     /// seawater freezing point become the sea-ice surface type: sea-ice
     /// albedo, sea-ice heat capacity, no open-water evaporation.
     pub(crate) sea_ice_surface_type: bool,
-    /// Bulk evaporation uses the mean wind speed including unresolved
-    /// sub-monthly gusts, `sqrt(|V|^2 + V_gust^2)`, instead of the speed of
-    /// the diagnostic monthly-mean wind.
+    /// R2: bulk evaporation uses `sqrt(|V|^2 + V_gust^2)` with the SPEEDY
+    /// gust constant instead of the diagnostic monthly-mean wind speed.
     pub(crate) evaporation_gustiness: bool,
+    /// R3: bulk evaporation uses the expected scalar speed of an isotropic
+    /// Gaussian wind about the monthly mean (Rice distribution; Wright &
+    /// Thompson 1983) with the observed sub-monthly component spread.
+    pub(crate) evaporation_wind_variability: bool,
+    /// R3: the eddy vapour flux is the latent part of the MEBM eddy flux,
+    /// `(1 - w) D (p_s / g) grad q` (Siler et al. 2018), instead of
+    /// diffusing the column water `W = M_q q` with the same `D`.
+    pub(crate) column_consistent_eddy_moisture: bool,
+    /// R3: land evapotranspiration is the bucket recycling share `beta P`
+    /// but never more than the potential evaporation of a wet surface
+    /// (Manabe 1969 bucket, `E <= E_pot`).
+    pub(crate) land_potential_evaporation_cap: bool,
+    /// R3 experiment: the Siler Hadley share acts on the meridional part of
+    /// the MSE flux only (the zonal-mean theory has no zonal overturning).
+    pub(crate) hadley_meridional_only: bool,
+    /// R3: the vapour column is advected zonally by the latitude-band mean of
+    /// the eddy-driven zonal wind (the zonal-mean flow of the W1 balance),
+    /// not by the local near-surface wind whose land drag slows it at coasts.
+    pub(crate) band_mean_zonal_vapour_advection: bool,
+}
+
+/// Land evaporation regime of one cell in the vapour active set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LandEvaporation {
+    /// Steady bucket recycling, `E = beta P`.
+    Recycling,
+    /// Energy/atmosphere limited, `E = E_pot(W)` of a wet land surface.
+    Potential,
+    /// The air is at least saturated over land, `E = 0`.
+    Zero,
+}
+
+/// Expected speed `E|V|` of a wind whose components are isotropic Gaussian
+/// with standard deviation `sigma` about a mean vector of magnitude `nu`: the
+/// Rice mean `sigma sqrt(pi/2) L_1/2(-nu^2 / 2 sigma^2)` (Rice 1945), written
+/// with exponentially scaled modified Bessel functions.
+fn rice_mean_speed(nu: f64, sigma: f64) -> f64 {
+    if sigma <= 0.0 {
+        return nu;
+    }
+    let x = nu * nu / (4.0 * sigma * sigma);
+    sigma
+        * (std::f64::consts::PI / 2.0).sqrt()
+        * ((1.0 + 2.0 * x) * scaled_bessel_i0(x) + 2.0 * x * scaled_bessel_i1(x))
+}
+
+/// `exp(-x) I0(x)` for `x >= 0`, Abramowitz & Stegun (1964) 9.8.1 / 9.8.2
+/// (relative error below 2e-7).
+fn scaled_bessel_i0(x: f64) -> f64 {
+    if x < 3.75 {
+        let t = (x / 3.75).powi(2);
+        let i0 = 1.0
+            + t * (3.515_622_9
+                + t * (3.089_942_4
+                    + t * (1.206_749_2 + t * (0.265_973_2 + t * (0.036_076_8 + t * 0.004_581_3)))));
+        i0 * (-x).exp()
+    } else {
+        let t = 3.75 / x;
+        (0.398_942_28
+            + t * (0.013_285_92
+                + t * (0.002_253_19
+                    + t * (-0.001_575_65
+                        + t * (0.009_162_81
+                            + t * (-0.020_577_06
+                                + t * (0.026_355_37 + t * (-0.016_476_33 + t * 0.003_923_77))))))))
+            / x.sqrt()
+    }
+}
+
+/// `exp(-x) I1(x)` for `x >= 0`, Abramowitz & Stegun (1964) 9.8.3 / 9.8.4.
+fn scaled_bessel_i1(x: f64) -> f64 {
+    if x < 3.75 {
+        let t = (x / 3.75).powi(2);
+        let i1 = x
+            * (0.5
+                + t * (0.878_905_94
+                    + t * (0.514_988_69
+                        + t * (0.150_849_34
+                            + t * (0.026_587_33 + t * (0.003_015_32 + t * 0.000_324_11))))));
+        i1 * (-x).exp()
+    } else {
+        let t = 3.75 / x;
+        (0.398_942_28
+            + t * (-0.039_880_24
+                + t * (-0.003_620_18
+                    + t * (0.001_638_01
+                        + t * (-0.010_315_55
+                            + t * (0.022_829_67
+                                + t * (-0.028_953_12 + t * (0.017_876_54 - t * 0.004_200_59))))))))
+            / x.sqrt()
+    }
+}
+
+/// Observed sub-monthly wind component spread at a latitude, linearly
+/// interpolated between the 5-degree band centres.
+fn submonthly_wind_sigma_m_s(latitude_rad: f64) -> f64 {
+    let bands = SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S;
+    let position = (latitude_rad.abs().to_degrees() - 2.5) / 5.0;
+    if position <= 0.0 {
+        return bands[0];
+    }
+    let lower = (position.floor() as usize).min(bands.len() - 1);
+    let upper = (lower + 1).min(bands.len() - 1);
+    let fraction = (position - lower as f64).min(1.0);
+    bands[lower] + (bands[upper] - bands[lower]) * fraction
 }
 
 /// Temperature-dependent ice/snow albedo feedback (probe comparison axis).
@@ -278,7 +399,7 @@ pub(crate) struct ReducedInputs {
     /// production sea-ice albedo, weighted by land fraction.
     pub(crate) ice_covered_albedo: Vec<f64>,
     pub(crate) ice: IceAlbedoFeedback,
-    pub(crate) physics: R2Physics,
+    pub(crate) physics: ReducedPhysics,
     /// Ice-free planetary-albedo latitude increment per cell (zero unless
     /// `physics.latitude_albedo`).
     pub(crate) latitude_albedo_increment: Vec<f64>,
@@ -353,7 +474,7 @@ impl ReducedInputs {
             monthly_insolation_fraction,
             ice_covered_albedo,
             ice,
-            physics: R2Physics::default(),
+            physics: ReducedPhysics::default(),
             latitude_albedo_increment: vec![0.0; grid.cell_count()],
             sea_ice: vec![0.0; grid.cell_count()],
             land_evapotranspiration_fraction: forcing
@@ -368,7 +489,7 @@ impl ReducedInputs {
     }
 
     /// Enables the R2 physics.
-    pub(crate) fn with_physics(mut self, grid: &ReducedGrid, physics: R2Physics) -> Self {
+    pub(crate) fn with_physics(mut self, grid: &ReducedGrid, physics: ReducedPhysics) -> Self {
         self.physics = physics;
         self.latitude_albedo_increment = (0..grid.cell_count())
             .map(|cell| {
@@ -412,6 +533,8 @@ pub(crate) struct ReducedWorkClimate {
     pub(crate) evaporation_mm_day: Vec<[f64; CLIMATE_MONTH_COUNT]>,
     pub(crate) precipitation_mm_day: Vec<[f64; CLIMATE_MONTH_COUNT]>,
     pub(crate) orographic_precipitation_mm_day: Vec<[f64; CLIMATE_MONTH_COUNT]>,
+    /// Annual vapour convergence (eddy, Hadley, zonal), mm/day.
+    pub(crate) vapour_convergence_mm_day: Vec<[f64; 3]>,
     pub(crate) diagnostics: ReducedDiagnostics,
 }
 
@@ -482,7 +605,12 @@ pub(crate) fn solve_reduced_climate(
             .iter()
             .map(|&t| moist_static_energy_j_kg(t, relative_humidity))
             .collect();
-        let hadley = hadley_lower_branch(grid, &mse, column_mass);
+        let hadley = hadley_lower_branch(
+            grid,
+            &mse,
+            column_mass,
+            inputs.physics.hadley_meridional_only,
+        );
         let zonal = eddy_driven_zonal_wind(grid, inputs, column_mass);
         let wind: Vec<[f64; 3]> = (0..grid.cell_count())
             .map(|cell| {
@@ -528,6 +656,7 @@ pub(crate) fn solve_reduced_climate(
         evaporation_mm_day: vec![[0.0; CLIMATE_MONTH_COUNT]; n],
         precipitation_mm_day: vec![[0.0; CLIMATE_MONTH_COUNT]; n],
         orographic_precipitation_mm_day: vec![[0.0; CLIMATE_MONTH_COUNT]; n],
+        vapour_convergence_mm_day: vec![[0.0; 3]; n],
         diagnostics: ReducedDiagnostics::default(),
     };
     let annual_asr: Vec<f64> = inputs
@@ -571,6 +700,12 @@ pub(crate) fn solve_reduced_climate(
             out.evaporation_mm_day[cell][month] = water.evaporation[cell] * 86_400.0;
             out.precipitation_mm_day[cell][month] = water.precipitation[cell] * 86_400.0;
             out.orographic_precipitation_mm_day[cell][month] = water.orographic[cell] * 86_400.0;
+            for (sum, value) in out.vapour_convergence_mm_day[cell]
+                .iter_mut()
+                .zip(water.convergence[cell])
+            {
+                *sum += value / area * 86_400.0 / CLIMATE_MONTH_COUNT as f64;
+            }
             month_e += area * water.evaporation[cell];
             month_p += area * water.precipitation[cell];
             water_mass += area * water.column_water[cell];
@@ -985,7 +1120,12 @@ struct HadleyBranch {
 /// gross moist stability `g = h_T - [h]` uses Siler's zonal-mean form: `[h]` is
 /// the band-mean MSE at the edge latitude and `h_T = 1.06 max [h]` (their
 /// `1.06 h(0)` taken at the thermal equator of the month).
-fn hadley_lower_branch(grid: &ReducedGrid, mse: &[f64], column_mass: f64) -> HadleyBranch {
+fn hadley_lower_branch(
+    grid: &ReducedGrid,
+    mse: &[f64],
+    column_mass: f64,
+    meridional_only: bool,
+) -> HadleyBranch {
     let bands = grid.band_count;
     let mut band_sum = vec![0.0_f64; bands];
     let mut band_area = vec![0.0_f64; bands];
@@ -1013,8 +1153,14 @@ fn hadley_lower_branch(grid: &ReducedGrid, mse: &[f64], column_mass: f64) -> Had
             let flux = column_mass * MEBM_DIFFUSIVITY_M2_S * edge.length_m / edge.center_distance_m
                 * (a - b);
             let gross_moist_stability = upper_mse - band_mean[grid.edge_band[edge_id]];
+            let projection = if meridional_only {
+                let north = cross(edge.midpoint, east_unit(edge.midpoint));
+                dot(edge.normal, north).powi(2)
+            } else {
+                1.0
+            };
             // Lower branch flows against the energy flux.
-            -edge.hadley_weight * flux / gross_moist_stability
+            -edge.hadley_weight * projection * flux / gross_moist_stability
         })
         .collect();
     let mut cell_velocity = vec![[0.0; 3]; grid.cell_count()];
@@ -1098,6 +1244,9 @@ struct WaterSolution {
     evaporation: Vec<f64>,
     precipitation: Vec<f64>,
     orographic: Vec<f64>,
+    /// Annual-budget diagnostic: vapour convergence by eddy diffusion, the
+    /// Hadley lower branch and zonal advection, kg/s per cell.
+    convergence: Vec<[f64; 3]>,
     active_set_iterations: usize,
     linear_iterations: usize,
     relative_residual: f64,
@@ -1112,13 +1261,25 @@ fn solve_monthly_water(
     let n = grid.cell_count();
     let mq = month.vapour_column_mass;
     let speed: Vec<f64> = month.wind.iter().map(|w| norm(*w)).collect();
-    let evaporation_speed: Vec<f64> = if inputs.physics.evaporation_gustiness {
-        speed
-            .iter()
-            .map(|s| s.hypot(SPEEDY_SUBGRID_GUST_WIND_M_S))
-            .collect()
+    let evaporation_speed: Vec<f64> = speed
+        .iter()
+        .zip(&grid.latitude_rad)
+        .map(|(&s, &latitude)| {
+            if inputs.physics.evaporation_wind_variability {
+                rice_mean_speed(s, submonthly_wind_sigma_m_s(latitude))
+            } else if inputs.physics.evaporation_gustiness {
+                s.hypot(SPEEDY_SUBGRID_GUST_WIND_M_S)
+            } else {
+                s
+            }
+        })
+        .collect();
+    // Eddy vapour diffusivity on the column water W = M_q q: the MEBM latent
+    // eddy flux (p_s/g) D grad q equals (p_s/g)/M_q D grad W.
+    let eddy_vapour_scale = if inputs.physics.column_consistent_eddy_moisture {
+        P4_LOWER_LAYER_REFERENCE_PRESSURE_PA / STANDARD_GRAVITY_M_S2 / mq
     } else {
-        speed.clone()
+        1.0
     };
     let sst: Vec<f64> = month
         .theta
@@ -1163,6 +1324,21 @@ fn solve_monthly_water(
         .collect();
     let relaxation = 1.0 / P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS;
 
+    // Zonal advecting wind: local near-surface wind, or its band mean.
+    let band_zonal: Vec<f64> = {
+        let mut sum = vec![0.0_f64; grid.band_count];
+        let mut weight = vec![0.0_f64; grid.band_count];
+        for cell in 0..n {
+            sum[grid.cell_band[cell]] += grid.area_m2[cell] * month.zonal[cell];
+            weight[grid.cell_band[cell]] += grid.area_m2[cell];
+        }
+        sum.iter()
+            .zip(&weight)
+            .map(|(s, w)| s / w.max(f64::MIN_POSITIVE))
+            .collect()
+    };
+    // Per-edge transport coefficients, kept for the convergence diagnostic.
+    let mut edge_transport = Vec::with_capacity(grid.edges.len());
     // Transport rows: off-diagonal (neighbour slot) and diagonal outflow.
     let mut transport_diag = vec![0.0_f64; n];
     let mut transport_off = vec![[0.0_f64; 4]; n];
@@ -1177,8 +1353,9 @@ fn solve_monthly_water(
         let si = slot_of(i, edge_id as u32);
         let sj = slot_of(j, edge_id as u32);
         // Eddy part of the Siler partition diffuses vapour: F = -(1-w) D grad W.
-        let diffusion = (1.0 - edge.hadley_weight) * MEBM_DIFFUSIVITY_M2_S * edge.length_m
-            / edge.center_distance_m;
+        let diffusion =
+            (1.0 - edge.hadley_weight) * MEBM_DIFFUSIVITY_M2_S * eddy_vapour_scale * edge.length_m
+                / edge.center_distance_m;
         transport_diag[i] += diffusion;
         transport_diag[j] += diffusion;
         transport_off[i][si] -= diffusion;
@@ -1187,8 +1364,13 @@ fn solve_monthly_water(
         let hadley = month.hadley_mass_flux[edge_id] / mq;
         // Zonal-mean eddy-driven wind advects the column, first-order upwind.
         let mid_east = east_unit(edge.midpoint);
-        let zonal_mid = 0.5 * (month.zonal[i] + month.zonal[j]);
+        let zonal_mid = if inputs.physics.band_mean_zonal_vapour_advection {
+            band_zonal[grid.edge_band[edge_id]]
+        } else {
+            0.5 * (month.zonal[i] + month.zonal[j])
+        };
         let advective = zonal_mid * dot(mid_east, edge.normal) * edge.length_m + hadley;
+        edge_transport.push((diffusion, hadley, advective));
         if advective > 0.0 {
             transport_diag[i] += advective;
             transport_off[j][sj] -= advective;
@@ -1198,9 +1380,26 @@ fn solve_monthly_water(
         }
     }
 
+    // Wet-land potential evaporation E_pot = a_land - b_land W: the
+    // production bulk transfer law over the land share with fresh-water
+    // saturation at the reference-height air temperature (Manabe 1969).
+    let land_transfer: Vec<f64> = (0..n)
+        .map(|c| {
+            if inputs.physics.land_potential_evaporation_cap {
+                evaporation_scale * evaporation_speed[c] * inputs.land_fraction[c]
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let a_land: Vec<f64> = (0..n)
+        .map(|c| land_transfer[c] * saturation_specific_humidity_kg_kg(month.air[c]))
+        .collect();
+    let b_land: Vec<f64> = land_transfer.iter().map(|t| t / mq).collect();
     let mut water: Vec<f64> = critical.clone();
     let mut large_scale_active = vec![true; n];
     let mut evaporation_active = vec![true; n];
+    let mut land_regime = vec![LandEvaporation::Recycling; n];
     let mut orographic_rate = vec![0.0_f64; n];
     let mut iterations = 0;
     let mut linear_iterations = 0;
@@ -1227,12 +1426,24 @@ fn solve_monthly_water(
             } else {
                 0.0
             };
-            let sink = (1.0 - beta) * (ls + orographic_rate[c])
-                + if evaporation_active[c] { b[c] } else { 0.0 };
+            let ocean_sink = if evaporation_active[c] { b[c] } else { 0.0 };
+            let ocean_source = if evaporation_active[c] { a[c] } else { 0.0 };
+            let (sink, source) = match land_regime[c] {
+                LandEvaporation::Recycling => (
+                    (1.0 - beta) * (ls + orographic_rate[c]) + ocean_sink,
+                    (1.0 - beta) * ls * critical[c] + ocean_source,
+                ),
+                LandEvaporation::Potential => (
+                    ls + orographic_rate[c] + b_land[c] + ocean_sink,
+                    ls * critical[c] + a_land[c] + ocean_source,
+                ),
+                LandEvaporation::Zero => (
+                    ls + orographic_rate[c] + ocean_sink,
+                    ls * critical[c] + ocean_source,
+                ),
+            };
             diag[c] = transport_diag[c] + area * sink;
-            rhs[c] = area
-                * ((1.0 - beta) * ls * critical[c]
-                    + if evaporation_active[c] { a[c] } else { 0.0 });
+            rhs[c] = area * source;
         }
         let solve = solve_bicgstab(grid, &diag, &transport_off, &rhs, &water);
         linear_iterations += solve.iterations;
@@ -1246,6 +1457,24 @@ fn solve_monthly_water(
             changed |= ls != large_scale_active[c] || ev != evaporation_active[c];
             large_scale_active[c] = ls;
             evaporation_active[c] = ev;
+            if inputs.physics.land_potential_evaporation_cap {
+                let precipitation = if ls {
+                    relaxation * (water[c] - critical[c])
+                } else {
+                    0.0
+                } + orographic_rate[c] * water[c];
+                let potential = a_land[c] - b_land[c] * water[c];
+                let recycled = inputs.land_evapotranspiration_fraction[c] * precipitation;
+                let regime = if potential <= 0.0 && land_transfer[c] > 0.0 {
+                    LandEvaporation::Zero
+                } else if land_transfer[c] > 0.0 && recycled > potential {
+                    LandEvaporation::Potential
+                } else {
+                    LandEvaporation::Recycling
+                };
+                changed |= regime != land_regime[c];
+                land_regime[c] = regime;
+            }
         }
         if !changed && pass > 0 {
             break;
@@ -1267,9 +1496,31 @@ fn solve_monthly_water(
         } else {
             0.0
         };
-        evaporation[c] = ocean + inputs.land_evapotranspiration_fraction[c] * precipitation[c];
+        let land = match land_regime[c] {
+            LandEvaporation::Recycling => {
+                inputs.land_evapotranspiration_fraction[c] * precipitation[c]
+            }
+            LandEvaporation::Potential => a_land[c] - b_land[c] * water[c],
+            LandEvaporation::Zero => 0.0,
+        };
+        evaporation[c] = ocean + land;
+    }
+    let mut convergence = vec![[0.0_f64; 3]; n];
+    for (edge, &(diffusion, hadley, advective)) in grid.edges.iter().zip(&edge_transport) {
+        let [i, j] = edge.cells.map(|c| c as usize);
+        let upwind = if advective > 0.0 { water[i] } else { water[j] };
+        let fluxes = [
+            diffusion * (water[i] - water[j]),
+            hadley * upwind,
+            (advective - hadley) * upwind,
+        ];
+        for (component, flux) in fluxes.into_iter().enumerate() {
+            convergence[i][component] -= flux;
+            convergence[j][component] += flux;
+        }
     }
     WaterSolution {
+        convergence,
         column_water: water,
         evaporation,
         precipitation,
@@ -1747,4 +1998,33 @@ pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
         a[2] * b[0] - a[0] * b[2],
         a[0] * b[1] - a[1] * b[0],
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{rice_mean_speed, submonthly_wind_sigma_m_s};
+
+    /// Rice mean limits: Rayleigh mean `sigma sqrt(pi/2)` at zero mean wind
+    /// and `nu + sigma^2 / (2 nu)` for a strong mean wind.
+    #[test]
+    fn rice_mean_speed_matches_its_limits() {
+        let sigma = 3.0;
+        let rayleigh = sigma * (std::f64::consts::PI / 2.0).sqrt();
+        assert!((rice_mean_speed(0.0, sigma) - rayleigh).abs() < 1.0e-6);
+        let nu = 40.0;
+        let asymptote = nu + sigma * sigma / (2.0 * nu);
+        assert!((rice_mean_speed(nu, sigma) - asymptote).abs() / asymptote < 1.0e-4);
+        // Continuity across the 3.75 branch of the Bessel approximations.
+        let below = rice_mean_speed((4.0_f64 * 3.749_999).sqrt() * sigma, sigma);
+        let above = rice_mean_speed((4.0_f64 * 3.750_001).sqrt() * sigma, sigma);
+        assert!((below - above).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn submonthly_sigma_interpolates_band_centres() {
+        assert!((submonthly_wind_sigma_m_s(0.0) - 1.53).abs() < 1.0e-12);
+        let mid = submonthly_wind_sigma_m_s(5.0_f64.to_radians());
+        assert!((mid - 0.5 * (1.53 + 1.67)).abs() < 1.0e-12);
+        assert!((submonthly_wind_sigma_m_s(-90.0_f64.to_radians()) - 2.95).abs() < 1.0e-12);
+    }
 }

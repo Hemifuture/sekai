@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 use super::{
     dot, norm, solve_reduced_climate, vapour_column_mass_kg_m2, IceAlbedoFeedback,
-    OutgoingLongwaveClosure, R2Physics, ReducedGrid, ReducedInputs, ReducedWorkClimate,
+    OutgoingLongwaveClosure, ReducedGrid, ReducedInputs, ReducedPhysics, ReducedWorkClimate,
 };
 use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use crate::generators::natural::formation::global_circulation::{
@@ -623,14 +623,13 @@ fn a10_reduced_climate_probe() {
         Ok("preserve") => IceAlbedoFeedback::PlanetaryAlbedoPreserving,
         _ => IceAlbedoFeedback::None,
     };
-    // Comma list of R2 physics: lat, seaice, gust (or none).
+    // Comma lists of revision physics: lat, seaice, gust (R2); wvar, qdiff (R3).
     let fix_flags = std::env::var("SEKAI_A10_FIX").unwrap_or_default();
-    let has_flag = |flag: &str| fix_flags.split(',').any(|f| f == flag);
-    let physics = R2Physics {
-        latitude_albedo: has_flag("lat"),
-        sea_ice_surface_type: has_flag("seaice"),
-        evaporation_gustiness: has_flag("gust"),
-    };
+    let physics = physics_from_flags(&fix_flags);
+    // Reference configuration solved on the same forcing (default: R2).
+    let reference_flags =
+        std::env::var("SEKAI_A10_REF_FIX").unwrap_or_else(|_| "lat,seaice,gust".to_owned());
+    let reference_physics = physics_from_flags(&reference_flags);
     let seed: u64 = std::env::var("SEKAI_A10_SEED")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -929,28 +928,29 @@ fn a10_reduced_climate_probe() {
     )
     .expect("reduced quality on baseline forcing");
     let climate_only = compare_published(surface, &land_mask, &published_b, &baseline_published);
-    // The R1 configuration (preserving ice, no R2 surface-type physics) on the
-    // same forcing, for the three-way comparison of design revision R2.
-    let (r1_cells, r1_work_heights) = reference_heights(
+    // The reference configuration (preserving ice, `SEKAI_A10_REF_FIX`) on the
+    // same forcing, for the three-way comparison of each design revision.
+    let (reference_cells, reference_work_heights) = reference_heights(
         &domain,
         baseline_terrain.current_elevation_m(),
         baseline_terrain.surface_water_geometry(),
     );
-    let r1_inputs = ReducedInputs::from_forcing(
+    let reference_inputs = ReducedInputs::from_forcing(
         &reduced_grid,
         &baseline_end_forcing,
         &climate_spec,
-        r1_work_heights,
+        reference_work_heights,
         OutgoingLongwaveClosure::BudykoTransEbm,
         IceAlbedoFeedback::PlanetaryAlbedoPreserving,
-    );
-    let r1_work = solve_reduced_climate(&reduced_grid, &r1_inputs, true);
-    let r1_published = project_all(
+    )
+    .with_physics(&reduced_grid, reference_physics);
+    let reference_work = solve_reduced_climate(&reduced_grid, &reference_inputs, true);
+    let reference_published = project_all(
         surface,
         &domain,
         &baseline_end_forcing,
-        &r1_work,
-        &r1_cells,
+        &reference_work,
+        &reference_cells,
         &cancellation,
     );
     log(format!(
@@ -1135,18 +1135,19 @@ fn a10_reduced_climate_probe() {
             "reduced_on_baseline_forcing": temperature_summary(surface, &published_b),
             "baseline_endpoint": temperature_summary(surface, &baseline_published),
             "reduced_chain_end": temperature_summary(surface, &end_published),
-            "r1_on_baseline_forcing": temperature_summary(surface, &r1_published),
+            "reference_on_baseline_forcing": temperature_summary(surface, &reference_published),
         },
         "zonal_profiles": {
             "band_degrees": ZONAL_BAND_DEGREES,
             "reduced_on_baseline_forcing": zonal_profiles(surface, &published_b),
             "baseline_endpoint": zonal_profiles(surface, &baseline_published),
-            "r1_on_baseline_forcing": zonal_profiles(surface, &r1_published),
+            "reference_on_baseline_forcing": zonal_profiles(surface, &reference_published),
         },
-        "r1_on_baseline_forcing": {
-            "diagnostics": r1_work.diagnostics,
+        "reference_on_baseline_forcing": {
+            "diagnostics": reference_work.diagnostics,
         },
-        "r2_physics": physics,
+        "physics": physics,
+        "reference_physics": reference_physics,
         "work_grid_annual": work_grid_dump(&reduced_grid, &inputs_b, &work_b),
         "seed": seed,
         "authoritative_cells": surface.cells().len(),
@@ -1203,7 +1204,7 @@ fn a10_reduced_climate_probe() {
             "elevation_above_sea_m": baseline_terrain.current_elevation_m().iter().map(|&z| f64::from(z - terrain_sea)).collect::<Vec<_>>(),
             "ocean_fraction": baseline_terrain.surface_water_geometry().ocean_area_fraction(),
             "old_p4": cell_dump(surface, &baseline_published),
-            "r1": cell_dump(surface, &r1_published),
+            "reference": cell_dump(surface, &reference_published),
             "r2": cell_dump(surface, &published_b),
         });
         let cell_path = out_dir.join(format!(
@@ -1282,13 +1283,24 @@ fn work_grid_dump(grid: &ReducedGrid, inputs: &ReducedInputs, work: &ReducedWork
                 mean(&work.monthly_absorbed_shortwave_w_m2[c]),
                 mean(&work.outgoing_longwave_w_m2[c]),
                 inputs.sea_ice[c],
+                inputs.land_evapotranspiration_fraction[c],
+                work.vapour_convergence_mm_day[c][0],
+                work.vapour_convergence_mm_day[c][1],
+                work.vapour_convergence_mm_day[c][2],
+                (0..MONTHS)
+                    .map(|m| {
+                        work.specific_humidity[c][m]
+                            / saturation_specific_humidity_kg_kg(work.theta_c[c][m])
+                    })
+                    .sum::<f64>()
+                    / MONTHS as f64,
             ])
         })
         .collect();
     json!({
         "columns": ["lat", "lon", "land", "ref_height_m", "air_c", "air_jul_minus_jan_c",
             "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m", "ice_fraction",
-            "asr_w_m2", "olr_w_m2", "sea_ice"],
+            "asr_w_m2", "olr_w_m2", "sea_ice", "beta", "conv_eddy", "conv_hadley", "conv_zonal", "rh_sea_level"],
         "rows": rows,
     })
 }
@@ -1383,4 +1395,19 @@ fn cell_dump(surface: &SphericalSurfaceSnapshot, published: &Published) -> Value
         "wind_east_m_s": east_wind,
         "wind_north_m_s": north_wind,
     })
+}
+
+/// Parses a comma list of revision physics flags.
+fn physics_from_flags(flags: &str) -> ReducedPhysics {
+    let has = |flag: &str| flags.split(',').any(|f| f == flag);
+    ReducedPhysics {
+        latitude_albedo: has("lat"),
+        sea_ice_surface_type: has("seaice"),
+        evaporation_gustiness: has("gust"),
+        evaporation_wind_variability: has("wvar"),
+        column_consistent_eddy_moisture: has("qdiff"),
+        land_potential_evaporation_cap: has("landcap"),
+        hadley_meridional_only: has("hmer"),
+        band_mean_zonal_vapour_advection: has("zband"),
+    }
 }
