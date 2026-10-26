@@ -2,10 +2,12 @@
 //! chain (branch `a10-climate-ui-preview`, never merged). It publishes the
 //! reduced fields in the C2-shaped snapshot the current consumers read, with
 //! placeholder vertical fields and the existing identities; see the A10
-//! design, revision R1, for what this preview does and does not provide.
+//! design, revisions R1 and R2, for what this preview does and does not
+//! provide. Since R2 it runs the full R2 physics (latitude albedo, sea-ice
+//! surface type, evaporation gustiness).
 
 use super::{
-    solve_reduced_climate, IceAlbedoFeedback, OutgoingLongwaveClosure, ReducedGrid,
+    solve_reduced_climate, IceAlbedoFeedback, OutgoingLongwaveClosure, R2Physics, ReducedGrid,
     ReducedInputs, ReducedWorkClimate,
 };
 use crate::engine::BuildCancellation;
@@ -38,8 +40,11 @@ pub(in crate::generators::natural) fn generate_reduced_snapshot(
     terrain: (&[f32], &SurfaceWaterGeometry),
     cancellation: &BuildCancellation,
 ) -> GlobalCirculationSnapshot {
-    let grid = CubedSphereGrid::new(domain.face_resolution(), domain.climate_surface().radius().get())
-        .expect("climate work grid");
+    let grid = CubedSphereGrid::new(
+        domain.face_resolution(),
+        domain.climate_surface().radius().get(),
+    )
+    .expect("climate work grid");
     let grid = ReducedGrid::new(&grid);
     let (cell_heights, work_heights) = reference_heights(domain, terrain.0, terrain.1);
     let inputs = ReducedInputs::from_forcing(
@@ -49,6 +54,14 @@ pub(in crate::generators::natural) fn generate_reduced_snapshot(
         work_heights,
         OutgoingLongwaveClosure::BudykoTransEbm,
         IceAlbedoFeedback::PlanetaryAlbedoPreserving,
+    )
+    .with_physics(
+        &grid,
+        R2Physics {
+            latitude_albedo: true,
+            sea_ice_surface_type: true,
+            evaporation_gustiness: true,
+        },
     );
     let work = solve_reduced_climate(&grid, &inputs, true);
     let published = project_all(surface, domain, forcing, &work, &cell_heights, cancellation);
@@ -365,4 +378,3 @@ fn wrap(
         .expect("probe snapshot binds the authoritative surface");
     snapshot
 }
-
