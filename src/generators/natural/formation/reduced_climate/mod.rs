@@ -161,6 +161,63 @@ pub(crate) struct ReducedPhysics {
     /// the eddy-driven zonal wind (the zonal-mean flow of the W1 balance),
     /// not by the local near-surface wind whose land drag slows it at coasts.
     pub(crate) band_mean_zonal_vapour_advection: bool,
+    /// R4: the band-mean zonal flow advects the vapour column through edge
+    /// fluxes taken as streamfunction differences between the edge vertices,
+    /// `F_e = psi(v-) - psi(v+)` with `psi = -a int u dphi`, so the discrete
+    /// divergence of the advecting flow vanishes identically (the C-grid
+    /// streamfunction construction of Arakawa & Lamb 1977; Ringler et al.
+    /// 2010). Takes precedence over `band_mean_zonal_vapour_advection`.
+    pub(crate) nondivergent_zonal_vapour_advection: bool,
+}
+
+/// Streamfunction `psi(phi) = -a int_{-pi/2}^{phi} u dphi'` of a zonal flow
+/// that is piecewise linear in latitude through the band-centre values and
+/// constant beyond the outermost centres; exact integral of that profile.
+struct ZonalStreamfunction {
+    nodes: Vec<f64>,
+    speed: Vec<f64>,
+    psi: Vec<f64>,
+    radius_m: f64,
+}
+
+impl ZonalStreamfunction {
+    fn new(band_speed: &[f64], radius_m: f64) -> Self {
+        let bands = band_speed.len();
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let mut nodes = Vec::with_capacity(bands + 2);
+        let mut speed = Vec::with_capacity(bands + 2);
+        nodes.push(-half_pi);
+        speed.push(band_speed[0]);
+        for (band, &u) in band_speed.iter().enumerate() {
+            nodes.push(-half_pi + (band as f64 + 0.5) * std::f64::consts::PI / bands as f64);
+            speed.push(u);
+        }
+        nodes.push(half_pi);
+        speed.push(band_speed[bands - 1]);
+        let mut psi = vec![0.0; nodes.len()];
+        for k in 1..nodes.len() {
+            let width = nodes[k] - nodes[k - 1];
+            psi[k] = psi[k - 1] - radius_m * 0.5 * (speed[k] + speed[k - 1]) * width;
+        }
+        Self {
+            nodes,
+            speed,
+            psi,
+            radius_m,
+        }
+    }
+
+    fn at(&self, latitude: f64) -> f64 {
+        let k = self
+            .nodes
+            .partition_point(|&node| node <= latitude)
+            .clamp(1, self.nodes.len() - 1)
+            - 1;
+        let width = self.nodes[k + 1] - self.nodes[k];
+        let offset = (latitude - self.nodes[k]).clamp(0.0, width);
+        let slope = (self.speed[k + 1] - self.speed[k]) / width;
+        self.psi[k] - self.radius_m * (self.speed[k] * offset + 0.5 * slope * offset * offset)
+    }
 }
 
 /// Land evaporation regime of one cell in the vapour active set.
@@ -304,6 +361,9 @@ pub(crate) struct ReducedEdge {
     pub(crate) displacement: [[f64; 3]; 2],
     /// Siler et al. (2018) Hadley weight at the edge midpoint latitude.
     pub(crate) hadley_weight: f64,
+    /// Latitudes (radians) of the two edge vertices, ordered so that the
+    /// first lies behind and the second ahead of `midpoint x normal`.
+    pub(crate) vertex_latitude_rad: [f64; 2],
 }
 
 impl ReducedGrid {
@@ -320,13 +380,31 @@ impl ReducedGrid {
             latitude_rad.push(c[2].clamp(-1.0, 1.0).asin());
             east.push(east_unit(c));
         }
+        let vertices = grid.vertices();
         let edges: Vec<ReducedEdge> = grid
             .edges()
             .iter()
             .map(|edge| {
                 let midpoint = edge.midpoint_unit();
                 let x = midpoint[2];
+                let along = cross(midpoint, edge.normal_from_first());
+                let [first, second] = edge.vertices().map(|v| vertices[v as usize]);
+                let latitude = |v: [f64; 3]| (v[2] / norm(v)).clamp(-1.0, 1.0).asin();
+                let ahead = dot(
+                    [
+                        second[0] - first[0],
+                        second[1] - first[1],
+                        second[2] - first[2],
+                    ],
+                    along,
+                ) > 0.0;
+                let vertex_latitude_rad = if ahead {
+                    [latitude(first), latitude(second)]
+                } else {
+                    [latitude(second), latitude(first)]
+                };
                 ReducedEdge {
+                    vertex_latitude_rad,
                     cells: *edge.cells(),
                     length_m: edge.length_m(),
                     center_distance_m: edge.center_distance_m(),
@@ -1338,6 +1416,10 @@ fn solve_monthly_water(
             .map(|(s, w)| s / w.max(f64::MIN_POSITIVE))
             .collect()
     };
+    let zonal_streamfunction = inputs
+        .physics
+        .nondivergent_zonal_vapour_advection
+        .then(|| ZonalStreamfunction::new(&band_zonal, grid.radius_m));
     // Per-edge transport coefficients, kept for the convergence diagnostic.
     let mut edge_transport = Vec::with_capacity(grid.edges.len());
     // Transport rows: off-diagonal (neighbour slot) and diagonal outflow.
@@ -1370,7 +1452,11 @@ fn solve_monthly_water(
         } else {
             0.5 * (month.zonal[i] + month.zonal[j])
         };
-        let advective = zonal_mid * dot(mid_east, edge.normal) * edge.length_m + hadley;
+        let zonal_flux = match &zonal_streamfunction {
+            Some(psi) => psi.at(edge.vertex_latitude_rad[0]) - psi.at(edge.vertex_latitude_rad[1]),
+            None => zonal_mid * dot(mid_east, edge.normal) * edge.length_m,
+        };
+        let advective = zonal_flux + hadley;
         edge_transport.push((diffusion, hadley, advective));
         if advective > 0.0 {
             transport_diag[i] += advective;
@@ -2003,7 +2089,7 @@ pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{rice_mean_speed, submonthly_wind_sigma_m_s};
+    use super::{rice_mean_speed, submonthly_wind_sigma_m_s, ZonalStreamfunction};
 
     /// Rice mean limits: Rayleigh mean `sigma sqrt(pi/2)` at zero mean wind
     /// and `nu + sigma^2 / (2 nu)` for a strong mean wind.
@@ -2019,6 +2105,24 @@ mod tests {
         let below = rice_mean_speed((4.0_f64 * 3.749_999).sqrt() * sigma, sigma);
         let above = rice_mean_speed((4.0_f64 * 3.750_001).sqrt() * sigma, sigma);
         assert!((below - above).abs() < 1.0e-5);
+    }
+
+    /// psi is the exact integral of the piecewise-linear profile: a uniform
+    /// flow u gives psi(phi) = -a u (phi + pi/2).
+    #[test]
+    fn zonal_streamfunction_integrates_the_band_profile() {
+        let radius = 6.371e6;
+        let uniform = ZonalStreamfunction::new(&[5.0; 18], radius);
+        let phi = 0.3_f64;
+        let expected = -radius * 5.0 * (phi + std::f64::consts::FRAC_PI_2);
+        assert!((uniform.at(phi) - expected).abs() / expected.abs() < 1.0e-12);
+        // d psi / d phi = -a u at a band centre of a varying profile.
+        let profile: Vec<f64> = (0..18).map(|b| (b as f64 - 8.5).sin() * 7.0).collect();
+        let psi = ZonalStreamfunction::new(&profile, radius);
+        let centre = -std::f64::consts::FRAC_PI_2 + 4.5 * std::f64::consts::PI / 18.0;
+        let h = 1.0e-6;
+        let derivative = (psi.at(centre + h) - psi.at(centre - h)) / (2.0 * h);
+        assert!((derivative + radius * profile[4]).abs() < 1.0e-3 * radius);
     }
 
     #[test]
