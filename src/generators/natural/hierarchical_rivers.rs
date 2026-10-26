@@ -211,7 +211,7 @@ fn reach_clip(
 ) -> Option<Arc<ReachClip>> {
     let shoreline = evaluator.shoreline();
     if reach.flow == ReachFlow::Submerged
-        || (shoreline.is_inland(reach.from_cell) && shoreline.is_inland(reach.to_cell))
+        || (shoreline.never_wet(reach.from_cell) && shoreline.never_wet(reach.to_cell))
     {
         return None;
     }
@@ -927,6 +927,8 @@ mod tests {
     use super::super::hierarchical_derivation::HierarchicalEvaluator;
     use super::super::terrain_amplification::AmplificationFieldsView;
     use super::*;
+    use crate::generators::natural::hierarchical_derivation::tests::lake_fill_surface;
+    use crate::generators::natural::PublishedHydrology;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
         Lake, RiverSegment, RiverSegmentKind, SphericalOrogenyKind, SurfaceWaterField,
@@ -1028,7 +1030,15 @@ mod tests {
         ];
         let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(11))
             .unwrap()
-            .with_hydrology(&surface, &segments, &dry_surface_water(&surface), &[])
+            .with_hydrology(
+                &surface,
+                PublishedHydrology {
+                    segments: &segments,
+                    surface_water: &dry_surface_water(&surface),
+                    lakes: &[],
+                    fill_surface_m: &fields.elevation,
+                },
+            )
             .unwrap();
         (evaluator, surface)
     }
@@ -1049,17 +1059,20 @@ mod tests {
             .unwrap()
             .with_hydrology(
                 &surface,
-                &[RiverSegment::new(
-                    RiverSegmentId::from_raw(0),
-                    from,
-                    to,
-                    RiverSegmentKind::Channel,
-                    1,
-                    25.0,
-                )
-                .unwrap()],
-                &SurfaceWaterField::from_kinds(water),
-                &[],
+                PublishedHydrology {
+                    segments: &[RiverSegment::new(
+                        RiverSegmentId::from_raw(0),
+                        from,
+                        to,
+                        RiverSegmentKind::Channel,
+                        1,
+                        25.0,
+                    )
+                    .unwrap()],
+                    surface_water: &SurfaceWaterField::from_kinds(water),
+                    lakes: &[],
+                    fill_surface_m: &fields.elevation,
+                },
             )
             .unwrap();
         (evaluator, surface, edge_index)
@@ -1142,9 +1155,12 @@ mod tests {
             .unwrap()
             .with_hydrology(
                 &surface,
-                &[segment],
-                &SurfaceWaterField::from_kinds(water),
-                &lakes,
+                PublishedHydrology {
+                    segments: &[segment],
+                    surface_water: &SurfaceWaterField::from_kinds(water),
+                    lakes: &lakes,
+                    fill_surface_m: &lake_fill_surface(&surface, &fields.elevation, &lakes),
+                },
             )
             .unwrap();
         LakeReach {
@@ -1175,45 +1191,52 @@ mod tests {
     }
 
     /// The bound-pruned, walk-sharing centreline cursor decides exactly
-    /// what the plain definition `classify(cell, min(uncarved, bed) as
-    /// f32)` decides, whether its points arrive scattered or in path order.
+    /// what the plain definitions decide, whether its points arrive
+    /// scattered or in path order: the ocean by `min(uncarved, bed) as f32`
+    /// against sea level (LOD-1 spec §3.4 D4.2), a lake by the connectivity
+    /// class the mesh and the picking read paint the primitive with (R2).
     #[test]
     fn pruned_centreline_test_matches_the_plain_classification() {
         use crate::generators::natural::fibonacci_probe;
         use crate::generators::natural::LocatedPrimitive;
 
-        let reach = lake_reach(ReachFlow::Overland, 0.5);
-        let evaluator = &reach.evaluator;
-        let river = &evaluator.amplifier().river_reaches()[0];
-        let scattered: Vec<UnitVector3> = (0..4_096)
-            .map(|index| fibonacci_probe(index, 4_096))
-            .collect();
-        let in_path_order: Vec<UnitVector3> = centreline_vertices(evaluator, 0, river, 9)
-            .vertices
-            .into_iter()
-            .map(|(point, _)| UnitVector3::from_verified_unit_components(point))
-            .collect();
-        let (mut dry, mut wet) = (0, 0);
-        for level in [1_u8, 4, 9, 14] {
-            for bed_m in [f64::INFINITY, 0.0, 800.0] {
-                let mut cursor = evaluator.centreline_cursor(level);
-                for &point in scattered.iter().chain(&in_path_order) {
-                    let LocatedPrimitive::Cell(cell) = evaluator.locate(point, 0) else {
-                        unreachable!("level 0 locates a cell")
-                    };
-                    let plain = evaluator.shoreline().classify(
-                        cell,
-                        evaluator
+        let lake = lake_reach(ReachFlow::Inflow, 0.5).evaluator;
+        let (ocean, _, _) =
+            evaluator_with_water_transition(SurfaceWaterKind::DryLand, SurfaceWaterKind::Ocean);
+        for evaluator in [&lake, &ocean] {
+            let river = &evaluator.amplifier().river_reaches()[0];
+            let scattered: Vec<UnitVector3> = (0..4_096)
+                .map(|index| fibonacci_probe(index, 4_096))
+                .collect();
+            let in_path_order: Vec<UnitVector3> = centreline_vertices(evaluator, 0, river, 9)
+                .vertices
+                .into_iter()
+                .map(|(point, _)| UnitVector3::from_verified_unit_components(point))
+                .collect();
+            let (mut dry, mut wet) = (0, 0);
+            for level in [1_u8, 4, 9, 14] {
+                for bed_m in [f64::INFINITY, -4_000.0, 0.0, 800.0] {
+                    let mut cursor = evaluator.centreline_cursor(level);
+                    for &point in scattered.iter().chain(&in_path_order) {
+                        let LocatedPrimitive::Cell(cell) = evaluator.locate(point, 0) else {
+                            unreachable!("level 0 locates a cell")
+                        };
+                        let value = evaluator
                             .uncarved_sample_elevation_m(point, level)
-                            .min(bed_m) as f32,
-                    ) == SurfaceWaterKind::DryLand;
-                    assert_eq!(cursor.is_dry(point, bed_m), plain);
-                    dry += usize::from(plain);
-                    wet += usize::from(!plain);
+                            .min(bed_m) as f32;
+                        let ocean_wet = evaluator.shoreline().row(cell).iter().any(|candidate| {
+                            candidate.lake.is_none() && value < candidate.surface_m
+                        });
+                        let lake_wet = evaluator.read(point, level).water == SurfaceWaterKind::Lake;
+                        let plain = !(ocean_wet || lake_wet);
+                        assert_eq!(cursor.is_dry(point, bed_m), plain);
+                        dry += usize::from(plain);
+                        wet += usize::from(!plain);
+                    }
                 }
             }
+            assert!(dry > 0 && wet > 0, "{dry} dry, {wet} wet");
         }
-        assert!(dry > 0 && wet > 0, "{dry} dry, {wet} wet");
     }
 
     /// LOD-1 spec §3.4 D4.3 / §4 I8: an inflow line ends on the last

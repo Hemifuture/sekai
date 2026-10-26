@@ -1065,7 +1065,7 @@ pub(super) fn build_river_polylines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generators::natural::AmplificationFieldsView;
+    use crate::generators::natural::{AmplificationFieldsView, PublishedHydrology};
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::view::{MapCamera, SphericalProjectionKind};
     use crate::world::natural::{Lake, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind};
@@ -1114,33 +1114,48 @@ mod tests {
         };
         // Exercise the actual mesh binding and its cache with all three
         // water classes, rather than only testing the palette in isolation.
+        let lakes = [Lake::new(
+            LakeId::from_raw(0),
+            (0..count)
+                .filter(|index| index % 3 == 2)
+                .map(|index| CellId::from_raw(index as u32))
+                .collect(),
+            500.0,
+            1.0,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap()];
+        // Lake cells sit at the lake level of the fill, everything else at
+        // its own height, as a priority flood would leave them.
+        let fill: Vec<f32> = (0..count)
+            .map(|index| {
+                if index % 3 == 2 {
+                    500.0
+                } else {
+                    elevation[index]
+                }
+            })
+            .collect();
         let evaluator = HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7))
             .unwrap()
             .with_hydrology(
                 &surface,
-                &[],
-                &SurfaceWaterField::from_kinds(
-                    (0..count)
-                        .map(|index| match index % 3 {
-                            0 => SurfaceWaterKind::DryLand,
-                            1 => SurfaceWaterKind::Ocean,
-                            _ => SurfaceWaterKind::Lake,
-                        })
-                        .collect(),
-                ),
-                &[Lake::new(
-                    LakeId::from_raw(0),
-                    (0..count)
-                        .filter(|index| index % 3 == 2)
-                        .map(|index| CellId::from_raw(index as u32))
-                        .collect(),
-                    500.0,
-                    1.0,
-                    1.0,
-                    None,
-                    None,
-                )
-                .unwrap()],
+                PublishedHydrology {
+                    segments: &[],
+                    surface_water: &SurfaceWaterField::from_kinds(
+                        (0..count)
+                            .map(|index| match index % 3 {
+                                0 => SurfaceWaterKind::DryLand,
+                                1 => SurfaceWaterKind::Ocean,
+                                _ => SurfaceWaterKind::Lake,
+                            })
+                            .collect(),
+                    ),
+                    lakes: &lakes,
+                    fill_surface_m: &fill,
+                },
             )
             .unwrap();
         AmplifiedDetailContext {
@@ -1241,12 +1256,15 @@ mod tests {
             .unwrap()
             .with_hydrology(
                 &surface,
-                &segments,
-                &SurfaceWaterField::from_kinds(vec![
-                    SurfaceWaterKind::DryLand;
-                    surface.cells().len()
-                ]),
-                &[],
+                PublishedHydrology {
+                    segments: &segments,
+                    surface_water: &SurfaceWaterField::from_kinds(vec![
+                        SurfaceWaterKind::DryLand;
+                        surface.cells().len()
+                    ]),
+                    lakes: &[],
+                    fill_surface_m: &elevation,
+                },
             )
             .unwrap();
         AmplifiedDetailContext {
