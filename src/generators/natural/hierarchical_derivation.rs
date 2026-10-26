@@ -51,8 +51,9 @@ pub const HIERARCHICAL_PATH_DEPTH_MAX: usize = 16;
 /// D2 inland average-interpolating centroids; 4 the D3 base-level beds and
 /// the D4 fine-dry river clipping; 5 the R2 lake bound and scale-recursive
 /// lake connectivity; 6 the R2 lake-bed flattening and lake-bound near-water
-/// partition.
-const T1_DERIVATION_VERSION: u16 = 6;
+/// partition; 7 the R4 rule that ring cells the P1 field leaks through carry
+/// no lake water.
+const T1_DERIVATION_VERSION: u16 = 7;
 /// Frozen hierarchical probe count (spec §6).
 pub const HIERARCHICAL_PROBE_COUNT: usize = 256;
 /// Frozen probe path depths (spec §6): one probe block per depth.
@@ -337,7 +338,13 @@ impl HierarchicalEvaluator {
     ) -> Result<Self, TerrainAmplificationError> {
         let view = self.amplifier.conditioning();
         let sea_level_m = view.sea_level_m as f32;
-        self.shoreline = FineShoreline::new(surface, &hydrology, view.elevation_m, sea_level_m);
+        self.shoreline = FineShoreline::new(
+            surface,
+            &hydrology,
+            view.elevation_m,
+            &self.vertex_value_m,
+            sea_level_m,
+        );
         self.centroid_value_m = self.centroid_anchor_values();
         self.flood_level1_lakes(hydrology.lakes);
         let shoreline = &self.shoreline;

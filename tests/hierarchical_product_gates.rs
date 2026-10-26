@@ -25,13 +25,14 @@ use support::causal_formation::{
 };
 
 /// Draft seed-42 probe fingerprint (spec A4 formula with the LOD-1 §3.6
-/// version prefix) at `T1_DERIVATION_VERSION` 6: P1 vertex anchors (T1 v2
+/// version prefix) at `T1_DERIVATION_VERSION` 7: P1 vertex anchors (T1 v2
 /// spec amendment A16), inland average-interpolating centroids (A17),
 /// base-level beds with fine-dry river clipping (A18), the LOD-1 R2 lake
 /// bound with scale-recursive lake connectivity (A19), and the R2 lake-bed
-/// flattening with the lake-bound near-water partition (A20).
+/// flattening with the lake-bound near-water partition (A20), and at 7 the
+/// R4 rule that leaking ring cells carry no lake water (A21).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "6b97e30623bead1c927a92313409b96ee3732faea87c6a336ad0c63465c710f3";
+    "71cedc969695d4f3704f4136200ab376d2666f8ca57287c21e479de51f519981";
 
 fn evaluator() -> HierarchicalEvaluator {
     evaluator_for(causal_formation_fixture())
@@ -823,6 +824,9 @@ struct LakeShore {
     shore_edges: usize,
     shore_on_cell_edge: usize,
     hard_cut_edges: usize,
+    /// Shoreline leaf edges whose dry side lies in the same cell below the
+    /// lake surface: fronts of the per-level reach (R3 open question 3).
+    front_edges: usize,
 }
 
 fn lake_shore(fixture: &CausalFormationFixture, top_level: u8) -> LakeShore {
@@ -877,6 +881,7 @@ fn lake_shore(fixture: &CausalFormationFixture, top_level: u8) -> LakeShore {
         shore_edges: 0,
         shore_on_cell_edge: 0,
         hard_cut_edges: 0,
+        front_edges: 0,
     };
     for level in 1..=top_level {
         let leaves = shore_leaves(&evaluator, &region, level);
@@ -964,6 +969,9 @@ fn lake_shore(fixture: &CausalFormationFixture, top_level: u8) -> LakeShore {
                 let other = &leaves[next];
                 stats.shore_edges += 1;
                 stats.shore_on_cell_edge += usize::from(other.cell != leaf.cell);
+                stats.front_edges += usize::from(
+                    other.cell == leaf.cell && other.value_m < lakes[slot].surface_elevation_m(),
+                );
                 stats.hard_cut_edges += usize::from(
                     other.value_m < lakes[slot].surface_elevation_m()
                         && spill_side(slot, other.cell),
@@ -1025,14 +1033,15 @@ fn summarize_lake_shore(tier: &str, top_level: u8, stats: &LakeShore) -> LakeSho
         .collect();
     eprintln!(
         "[lake shore {tier}] {} lakes; L{top_level} water pieces total {} median {}; enclosed \
-         islands / water (mean per lake) {:.4}; shoreline on cell edges {:.4}, hard cuts {:.4} \
-         of {} shoreline leaf edges",
+         islands / water (mean per lake) {:.4}; shoreline on cell edges {:.4}, hard cuts {:.4}, \
+         in-cell fronts {:.4} of {} shoreline leaf edges",
         stats.pieces.len(),
         summary.pieces_total,
         summary.pieces_median,
         summary.island_share_mean,
         summary.shore_on_cell_edge,
         summary.hard_cut,
+        stats.front_edges as f64 / shore,
         stats.shore_edges,
     );
     eprintln!(
@@ -1083,5 +1092,5 @@ fn lake_shoreline_gates() {
 #[test]
 #[ignore = "release-only offline Standard re-check (LOD-1 spec R2.7)"]
 fn lake_shoreline_probe_standard() {
-    summarize_lake_shore("standard", 5, &lake_shore(standard_fixture(), 5));
+    summarize_lake_shore("standard", 6, &lake_shore(standard_fixture(), 6));
 }

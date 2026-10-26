@@ -606,9 +606,10 @@ mod tests {
         }
     }
 
-    /// A lake on the synthetic land: the cell `lake` holds water 300 m
-    /// above its own height, so the fine field crosses the surface inside
-    /// its ring; the fill is the one a priority flood leaves.
+    /// A lake on the synthetic land: the cell `lake` holds water 60 m
+    /// above its own height, so the fine field crosses the surface near
+    /// it; the fill is the one a priority flood leaves. (At 300 m every ring
+    /// cell leaked, LOD-1 spec R4, leaving nothing for I11 to restrict.)
     fn lake_evaluator() -> (HierarchicalEvaluator, SphericalSurfaceSnapshot, CellId) {
         use super::super::tests::{lake_fill_surface, SyntheticFields};
         use crate::world::natural::{SurfaceWaterField, SurfaceWaterKind};
@@ -625,7 +626,7 @@ mod tests {
             })
             .expect("the synthetic land has a mid-slope cell")
             .id;
-        let surface_m = fields.elevation[lake.raw() as usize] + 300.0;
+        let surface_m = fields.elevation[lake.raw() as usize] + 60.0;
         let lakes = [Lake::new(
             LakeId::from_raw(0),
             vec![lake],

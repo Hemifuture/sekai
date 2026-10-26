@@ -8,18 +8,22 @@
 //! priority-flood fill raises to the same level with a flooded centroid —
 //! and the dry ring that holds the water there. Cells past the spill (below
 //! the fill level, or at it with a dry centroid), the ocean and other lakes'
-//! cells are not on the bound. Whether a lake candidate's leaf is water is
+//! cells are not on the bound. A ring cell carries the water only where
+//! P5's own sub-cell (P1) geometry holds it: one through which the P1 field
+//! stays below the surface from the lake to a cell off the bound carries no
+//! lake water (LOD-1 spec R4), though it stays near water for the D2
+//! partition. Whether a lake candidate's leaf is water is
 //! the scale-recursive connectivity rule of the hierarchical evaluator
 //! (R2.3(b)); this module only stores the bound and the level-1 seeds.
 //! This is display derivation only: P5 schema, volumes and topology are
 //! untouched.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::hierarchical_derivation::PublishedHydrology;
 use crate::world::natural::SurfaceWaterKind;
 use crate::world::spatial::SphericalSurfaceSnapshot;
-use crate::world::{CellId, LakeId};
+use crate::world::{CellId, LakeId, SurfaceVertexId};
 
 /// One P5 water body visible from a cell: its kind, its surface and, for
 /// a lake, its slot in the published lake list.
@@ -35,6 +39,81 @@ pub(super) struct WaterCandidate {
 enum WaterBody {
     Ocean,
     Lake(LakeId),
+}
+
+/// The below-surface part of P5's own sub-cell (P1) geometry connected to
+/// one lake (LOD-1 spec R4): cell centroids at the published elevation,
+/// boundary vertices at the Shepard reconstruction P5 integrates its wet
+/// areas over.
+///
+/// Below-surface P1 regions meet only at below-surface vertices: a cell
+/// whose centroid lies below the surface joins all of its below-surface
+/// vertices, any other cell joins ring-adjacent pairs (the fan sector
+/// between them is planar, so its below-surface part is one convex piece).
+struct P1Reach<'a> {
+    surface: &'a SphericalSurfaceSnapshot,
+    elevation_m: &'a [f32],
+    vertex_m: &'a [f64],
+    surface_m: f64,
+}
+
+impl P1Reach<'_> {
+    fn ring(&self, cell: usize) -> &[SurfaceVertexId] {
+        &self.surface.cells()[cell].boundary_vertices
+    }
+
+    fn below(&self, vertex: usize) -> bool {
+        self.vertex_m
+            .get(vertex)
+            .is_some_and(|&v| v < self.surface_m)
+    }
+
+    fn flooded(&self, cell: usize) -> bool {
+        self.elevation_m
+            .get(cell)
+            .is_some_and(|&z| f64::from(z) < self.surface_m)
+    }
+
+    /// The below-surface vertices of `domain` connected to the centroids
+    /// of `seeds` (the lake cells, whose centroids lie below the surface).
+    fn reach(&self, domain: &[usize], seeds: &[usize]) -> HashSet<usize> {
+        let mut incident: HashMap<usize, Vec<(usize, usize)>> = HashMap::new();
+        for &cell in domain {
+            for (index, vertex) in self.ring(cell).iter().enumerate() {
+                incident
+                    .entry(vertex.raw() as usize)
+                    .or_default()
+                    .push((cell, index));
+            }
+        }
+        let mut reached = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut visit = |vertex: usize, queue: &mut VecDeque<usize>| {
+            if self.below(vertex) && reached.insert(vertex) {
+                queue.push_back(vertex);
+            }
+        };
+        for &cell in seeds.iter().filter(|&&cell| self.flooded(cell)) {
+            for vertex in self.ring(cell) {
+                visit(vertex.raw() as usize, &mut queue);
+            }
+        }
+        while let Some(vertex) = queue.pop_front() {
+            for &(cell, index) in &incident[&vertex] {
+                let ring = self.ring(cell);
+                let len = ring.len();
+                if self.flooded(cell) {
+                    for next in ring {
+                        visit(next.raw() as usize, &mut queue);
+                    }
+                } else {
+                    visit(ring[(index + 1) % len].raw() as usize, &mut queue);
+                    visit(ring[(index + len - 1) % len].raw() as usize, &mut queue);
+                }
+            }
+        }
+        reached
+    }
 }
 
 /// Per-cell ordered water candidates (compressed rows: most cells are
@@ -67,6 +146,8 @@ impl FineShoreline {
     /// * `surface` - The authoritative surface the hydrology indexes.
     /// * `hydrology` - The published P5 water bodies and fill surface.
     /// * `elevation_m` - The authoritative cell elevations.
+    /// * `vertex_elevation_m` - P5's P1 boundary-vertex elevations (the
+    ///   Shepard reconstruction its wet areas integrate over).
     /// * `sea_level_m` - The formal sea level the ocean surface uses.
     ///
     /// # Returns
@@ -77,6 +158,7 @@ impl FineShoreline {
         surface: &SphericalSurfaceSnapshot,
         hydrology: &PublishedHydrology<'_>,
         elevation_m: &[f32],
+        vertex_elevation_m: &[f64],
         sea_level_m: f32,
     ) -> Self {
         let cell_count = surface.cells().len();
@@ -107,10 +189,12 @@ impl FineShoreline {
         // Per cell: the lakes whose bound contains it (R2.3(a)).
         let mut bound_lakes: Vec<Vec<u32>> = vec![Vec::new(); cell_count];
         let mut on_bound = vec![false; cell_count];
+        let mut near_bound = vec![false; cell_count];
         for (slot, lake) in hydrology.lakes.iter().enumerate() {
             let surface_m = lake.surface_elevation_m();
             let mut members: Vec<usize> = lake.cells().iter().map(|c| c.raw() as usize).collect();
             members.retain(|&cell| cell < cell_count);
+            let lake_cell_count = members.len();
             for &cell in &members {
                 on_bound[cell] = true;
             }
@@ -143,8 +227,37 @@ impl FineShoreline {
                     }
                 }
             }
+            // R4: a ring cell through which the P1 field opens a
+            // below-surface path from the lake to a cell off the bound
+            // holds no water at the lake level, so it carries none.
+            let p1 = P1Reach {
+                surface,
+                elevation_m,
+                vertex_m: vertex_elevation_m,
+                surface_m: f64::from(surface_m),
+            };
+            let seeds = &members[..lake_cell_count];
+            let reached = p1.reach(&members, seeds);
+            let carrying: Vec<usize> = members
+                .iter()
+                .enumerate()
+                .filter(|&(index, &cell)| {
+                    let ring = p1.ring(cell);
+                    let len = ring.len();
+                    index < depression
+                        || !ring.iter().enumerate().any(|(k, vertex)| {
+                            reached.contains(&(vertex.raw() as usize))
+                                && (!on_bound[neighbours[cell][k]]
+                                    || !on_bound[neighbours[cell][(k + len - 1) % len]])
+                        })
+                })
+                .map(|(_, &cell)| cell)
+                .collect();
             for &cell in &members {
                 on_bound[cell] = false;
+                near_bound[cell] = true;
+            }
+            for &cell in &carrying {
                 bound_lakes[cell].push(slot as u32);
             }
         }
@@ -183,7 +296,7 @@ impl FineShoreline {
             own_surface_m.push(own.map(|(_, candidate)| candidate.surface_m));
             near_water.push(
                 kind(cell) != SurfaceWaterKind::DryLand
-                    || !bound_lakes[cell].is_empty()
+                    || near_bound[cell]
                     || neighbours[cell]
                         .iter()
                         .any(|&next| kind(next) != SurfaceWaterKind::DryLand),
@@ -198,7 +311,7 @@ impl FineShoreline {
             {
                 others.push(ocean);
             }
-            others.extend(bound_lakes[cell].iter().map(|&slot| lake_candidate(slot)));
+            others.extend(bound_lakes[cell].iter().copied().map(lake_candidate));
             others.retain(|(body, _)| own.is_none_or(|(own_body, _)| own_body != *body));
             // Ascending surface, ties broken by the stable body identity so
             // the order never depends on enumeration.
@@ -385,6 +498,12 @@ mod tests {
     }
 
     fn layout() -> Layout {
+        layout_with(|_| None)
+    }
+
+    /// The layout with the P1 vertex elevations of chosen cells' rings
+    /// overridden (`lowered(cell)`); every other vertex stands at 80 m.
+    fn layout_with(lowered: impl Fn(usize) -> Option<f64>) -> Layout {
         let surface = surface();
         let count = surface.cells().len();
         let near = neighbours(&surface);
@@ -437,6 +556,14 @@ mod tests {
             None,
         )
         .unwrap()];
+        let mut vertex_elevation = vec![80.0; surface.vertices().len()];
+        for (cell, record) in surface.cells().iter().enumerate() {
+            if let Some(height) = lowered(cell) {
+                for vertex in &record.boundary_vertices {
+                    vertex_elevation[vertex.raw() as usize] = height;
+                }
+            }
+        }
         let water = SurfaceWaterField::from_kinds(kinds);
         let segments: [RiverSegment; 0] = [];
         let shoreline = FineShoreline::new(
@@ -448,6 +575,7 @@ mod tests {
                 fill_surface_m: &fill,
             },
             &elevation,
+            &vertex_elevation,
             0.0,
         );
         Layout {
@@ -511,5 +639,23 @@ mod tests {
             shoreline.bed_surface_m(rim, lake)
         );
         assert_eq!(shoreline.bed_surface_m(lake, id(layout.sill)), None);
+    }
+
+    /// LOD-1 spec R4: a ring cell whose P1 field (P5's sub-cell geometry)
+    /// stays below the lake surface from the lake's vertices to a cell off
+    /// the bound cannot hold the water, so it carries none — while it stays
+    /// near water — and a ring cell rising above the surface keeps the lake.
+    #[test]
+    fn a_ring_cell_the_p1_field_leaks_through_carries_no_water() {
+        let reference = layout();
+        let rim = reference.rim;
+        let layout = layout_with(|cell| (cell == rim).then_some(45.0));
+        let id = |cell: usize| CellId::from_raw(cell as u32);
+        assert!(reference.shoreline.on_lake_bound(id(rim), 0));
+        assert!(!layout.shoreline.on_lake_bound(id(rim), 0));
+        assert!(!layout.shoreline.is_inland(id(rim)));
+        for cell in [layout.lake, layout.fringe, layout.fringe_rim] {
+            assert!(layout.shoreline.on_lake_bound(id(cell), 0));
+        }
     }
 }
