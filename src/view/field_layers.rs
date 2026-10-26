@@ -1682,10 +1682,10 @@ where
         &mut candidate_state,
     );
     if current.prepared_state.fill_field.as_ref() != candidate_state.fill_field() {
-        candidate_state.range_mode = candidate_state
-            .fill_field()
-            .and_then(&preferred_range)
-            .unwrap_or(DisplayRangeMode::Data);
+        candidate_state.range_mode = comparison_keeps_manual(
+            candidate_state.range_mode,
+            candidate_state.fill_field().and_then(&preferred_range),
+        );
     }
     validate_diagnostics(diagnostics, cell_count)?;
     let next_diagnostics_fingerprint = diagnostics_fingerprint(diagnostics);
@@ -1953,16 +1953,18 @@ fn reconcile_spherical_state<F>(
     let fill_changed = state.fill_field() != fill.map(|entry| &entry.schema().id);
     state.fill_field = fill.map(|entry| entry.schema().id.clone());
     if fill_changed {
-        state.range_mode = state
-            .fill_field()
-            .and_then(preferred_range)
-            .unwrap_or(DisplayRangeMode::Data);
+        state.range_mode = comparison_keeps_manual(
+            state.range_mode,
+            state.fill_field().and_then(preferred_range),
+        );
     } else if matches!(state.range_mode, DisplayRangeMode::Manual(_)) {
         // Manual ranges only ever originate from a document preference (for
         // example the sea-anchored hypsometric radius), so when the same fill
         // field arrives from a new document the anchor must be re-derived;
         // schema/data selections are user choices and survive unchanged.
-        if let Some(preferred) = state.fill_field().and_then(preferred_range) {
+        if let Some(preferred @ DisplayRangeMode::Manual(_)) =
+            state.fill_field().and_then(preferred_range)
+        {
             state.range_mode = preferred;
         }
     }
@@ -2897,5 +2899,19 @@ mod vector_glyph_tests {
                 && repeated_high.revisions().vector_glyphs
                     != world_changed.revisions().vector_glyphs
         );
+    }
+}
+
+/// Comparison builds only: a Manual range survives a data-range preference.
+fn comparison_keeps_manual(
+    current: DisplayRangeMode,
+    preferred: Option<DisplayRangeMode>,
+) -> DisplayRangeMode {
+    match (current, preferred) {
+        (DisplayRangeMode::Manual(range), None | Some(DisplayRangeMode::Data)) => {
+            DisplayRangeMode::Manual(range)
+        }
+        (_, Some(preferred)) => preferred,
+        (_, None) => DisplayRangeMode::Data,
     }
 }
