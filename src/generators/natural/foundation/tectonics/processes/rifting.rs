@@ -77,56 +77,72 @@ fn ratio_to_q64(numerator: u128, denominator: u128) -> u128 {
     quotient
 }
 
-fn rift_rate_q32_with_scratch(
+/// Cortial rift rates of every live plate, in `state.plates` order, from one
+/// pass over the samples.
+///
+/// A plate counts each cell once, at its first sample there, exactly as a
+/// per-plate scan in sample order would, so every plate's area sums (and
+/// therefore its rate) are bit-identical to evaluating the plates one by one,
+/// at O(samples) instead of O(plates x samples) per step. `occupied` holds one
+/// bit per plate index per cell; callers keep fewer than 64 live plates
+/// (`MAXIMUM_RIFTED_LINEAGES`).
+fn rift_rates_q32(
     surface: &SphericalSurfaceSnapshot,
     state: &TectonicState,
-    lineage: LineageId,
     recipe: FormationTectonicRecipe,
-    represented: &mut [u8],
-) -> Result<u64, ProcessError> {
-    if state.plate(lineage).is_none() {
-        return Err(ProcessError::UnknownLineage { lineage });
-    }
-    debug_assert_eq!(represented.len(), surface.cells().len());
-    represented.fill(0);
-    let mut area = 0.0;
-    let mut continental_area = 0.0;
+    occupied: &mut Vec<u64>,
+) -> Result<Vec<u64>, ProcessError> {
+    debug_assert!(state.plates.len() < u64::BITS as usize);
+    let cell_count = surface.cells().len();
+    occupied.clear();
+    occupied.resize(cell_count, 0);
+    // (occupied area, continental area) per plate index.
+    let mut areas = vec![(0.0_f64, 0.0_f64); state.plates.len()];
     for (sample_index, sample) in state.samples.iter().enumerate() {
-        if sample.owner != lineage {
+        let Ok(plate) = state
+            .plates
+            .binary_search_by_key(&sample.owner, |plate| plate.lineage)
+        else {
             continue;
-        }
+        };
         let cell_index = sample.anchor.raw() as usize;
-        if cell_index >= represented.len() {
+        if cell_index >= cell_count {
             return Err(ProcessError::InvalidAnchor {
                 sample: sample_index,
                 anchor: sample.anchor,
-                cells: represented.len(),
+                cells: cell_count,
             });
         }
-        if represented[cell_index] == 0 {
-            represented[cell_index] = 1;
+        let bit = 1_u64 << plate;
+        if occupied[cell_index] & bit == 0 {
+            occupied[cell_index] |= bit;
             let cell_area = surface.cells()[cell_index].area.get();
-            area += cell_area;
+            areas[plate].0 += cell_area;
             if sample.kind == CrustKind::Continental {
-                continental_area += cell_area;
+                areas[plate].1 += cell_area;
             }
         }
     }
-    if area <= 0.0 {
-        return Ok(0);
-    }
     let average_plate_area = surface.total_cell_area().get() / state.plates.len() as f64;
-    let continental_fraction = continental_area / area;
-    let area_factor = (area / average_plate_area).clamp(0.0, 2.0);
     let recipe_gain = f64::from(recipe.rift_rate_permille) / 1_000.0;
-    let ppm = (BASE_RIFT_RATE_PPM_PER_MYR
-        * recipe_gain
-        * continental_fraction
-        * continental_fraction
-        * area_factor)
-        .round()
-        .clamp(0.0, f64::from(MAX_RIFT_RATE_PPM_PER_MYR)) as u32;
-    Ok(rate_q32_from_ppm(ppm))
+    Ok(areas
+        .into_iter()
+        .map(|(area, continental_area)| {
+            if area <= 0.0 {
+                return 0;
+            }
+            let continental_fraction = continental_area / area;
+            let area_factor = (area / average_plate_area).clamp(0.0, 2.0);
+            let ppm = (BASE_RIFT_RATE_PPM_PER_MYR
+                * recipe_gain
+                * continental_fraction
+                * continental_fraction
+                * area_factor)
+                .round()
+                .clamp(0.0, f64::from(MAX_RIFT_RATE_PPM_PER_MYR)) as u32;
+            rate_q32_from_ppm(ppm)
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -136,8 +152,11 @@ pub(super) fn rift_rate_q32(
     lineage: LineageId,
     recipe: FormationTectonicRecipe,
 ) -> Result<u64, ProcessError> {
-    let mut represented = vec![0; surface.cells().len()];
-    rift_rate_q32_with_scratch(surface, state, lineage, recipe, &mut represented)
+    let plate = state
+        .plates
+        .binary_search_by_key(&lineage, |plate| plate.lineage)
+        .map_err(|_| ProcessError::UnknownLineage { lineage })?;
+    Ok(rift_rates_q32(surface, state, recipe, &mut Vec::new())?[plate])
 }
 
 /// Evaluates every live plate's Cortial rift draw once per step on the
@@ -151,7 +170,7 @@ pub(super) fn rift_rate_q32(
 ///
 /// # Arguments
 ///
-/// * `represented` - per-cell scratch of at least `surface.cells().len()` bytes
+/// * `occupied` - reusable per-cell scratch for the batched rate pass
 ///
 /// # Errors
 ///
@@ -164,7 +183,7 @@ pub(in crate::generators::natural::foundation::tectonics) fn maybe_rift_plates(
     state: &mut TectonicState,
     recipe: FormationTectonicRecipe,
     streams: &LabeledSubstreams,
-    represented: &mut [u8],
+    occupied: &mut Vec<u64>,
 ) -> Result<ProcessStats, ProcessError> {
     let mut stats = ProcessStats::default();
     if state.plates.len() >= MAXIMUM_RIFTED_LINEAGES {
@@ -173,8 +192,8 @@ pub(in crate::generators::natural::foundation::tectonics) fn maybe_rift_plates(
     let mut drawn = Vec::new();
     let tracing = std::env::var_os("SEKAI_V5_TRACE").is_some();
     let mut expected_events = 0.0_f64;
-    for parent in &state.plates {
-        let rate = rift_rate_q32_with_scratch(surface, state, parent.lineage, recipe, represented)?;
+    let rates = rift_rates_q32(surface, state, recipe, occupied)?;
+    for (parent, &rate) in state.plates.iter().zip(&rates) {
         stats.rift_evaluations += 1;
         if tracing {
             expected_events += poisson_threshold_q64(rate, delta_myr) as f64 / 2.0_f64.powi(64);
@@ -942,7 +961,7 @@ mod tests {
                 &mut next,
                 recipe,
                 &streams,
-                &mut vec![0; surface.cells().len()],
+                &mut Vec::new(),
             )
             .unwrap();
             (next, stats)
@@ -1013,7 +1032,7 @@ mod tests {
             &mut next,
             recipe,
             &streams,
-            &mut vec![0; surface.cells().len()],
+            &mut Vec::new(),
         )
         .unwrap();
         assert_eq!(stats.rift_events, 0);
@@ -1049,7 +1068,7 @@ mod tests {
             &mut next,
             recipe,
             &streams,
-            &mut vec![0; surface.cells().len()],
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -1086,7 +1105,7 @@ mod tests {
             &mut next,
             recipe,
             &streams,
-            &mut vec![0; surface.cells().len()],
+            &mut Vec::new(),
         )
         .unwrap();
 
@@ -1142,7 +1161,7 @@ mod tests {
             &mut next,
             recipe,
             &streams,
-            &mut vec![0; surface.cells().len()],
+            &mut Vec::new(),
         )
         .unwrap();
 

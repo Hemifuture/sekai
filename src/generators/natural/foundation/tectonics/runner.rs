@@ -68,6 +68,7 @@ pub(super) fn evolve_current_state(
     let rift_delta_myr = rift_step_duration_myr(timeline)?;
     let initial = build_initial_state(surface, topology, spec, formation.resolved(), streams)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
+    let mut rift_occupied = Vec::new();
 
     for step in 0..timeline.step_count() {
         let (current, next, coverage, events, actions) = workspace.step_parts();
@@ -111,6 +112,7 @@ pub(super) fn evolve_current_state(
             &mut workspace,
             recipe,
             streams,
+            &mut rift_occupied,
         )?;
         if resample_due(&workspace) {
             resample_current_state(surface, topology, &mut workspace)?;
@@ -166,6 +168,7 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
     let mut material_ledger = EvolutionMaterialLedger::capture_initial(&initial)?;
     let mut lineage_ledger = EvolutionLineageLedger::capture_initial(&initial)?;
     let mut workspace = TectonicWorkspace::from_initial(initial);
+    let mut rift_occupied = Vec::new();
     let mobility = asthenosphere_mobility(spec.activity);
     apply_boundary_torques_to_current(surface, topology, &mut workspace, mobility)?;
 
@@ -228,6 +231,7 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
             &mut workspace,
             recipe,
             streams,
+            &mut rift_occupied,
         )?;
         if std::env::var_os("SEKAI_V5_TRACE").is_some() {
             let totals = workspace.current.material_totals()?;
@@ -400,6 +404,7 @@ fn rift_committed_plates(
     workspace: &mut TectonicWorkspace,
     recipe: FormationTectonicRecipe,
     streams: &LabeledSubstreams,
+    rift_occupied: &mut Vec<u64>,
 ) -> Result<(), RunnerError> {
     let live_plates = workspace.current.plates.len();
     let rift = maybe_rift_plates(
@@ -409,7 +414,7 @@ fn rift_committed_plates(
         &mut workspace.current,
         recipe,
         streams,
-        workspace.actions.rift_scratch(surface.cells().len()),
+        rift_occupied,
     )?;
     if std::env::var_os("SEKAI_V5_TRACE").is_some() {
         eprintln!(
