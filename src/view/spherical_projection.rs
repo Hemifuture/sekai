@@ -153,9 +153,7 @@ impl SphericalProjection {
         self,
         direction: UnitVector3,
     ) -> Result<ProjectionPoint, SphericalProjectionError> {
-        let [x, y, z] = direction.components();
-        let longitude = y.atan2(x);
-        let latitude = z.asin();
+        let (latitude, longitude) = crate::world::spatial::latitude_longitude_radians(direction);
         if !longitude.is_finite() || !latitude.is_finite() {
             return Err(SphericalProjectionError::NonFiniteInput);
         }

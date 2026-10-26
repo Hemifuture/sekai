@@ -92,6 +92,43 @@ pub fn canonical_east_north_basis(radial: UnitVector3) -> ([f64; 3], [f64; 3]) {
     }
 }
 
+/// Returns geographic `(latitude, longitude)` in radians for the canonical
+/// spin axis: latitude from +Z, longitude measured from +X toward +Y.
+pub fn latitude_longitude_radians(direction: UnitVector3) -> (f64, f64) {
+    let [x, y, z] = direction.components();
+    (z.asin(), y.atan2(x))
+}
+
+/// Gnomonic (central) projection onto the tangent plane at `anchor`, as
+/// `[east, north]` coordinates on the unit sphere (Snyder 1987, §22).
+///
+/// Great circles map to straight lines. Returns `None` for directions on or
+/// behind the anchor's horizon, where the projection is undefined.
+pub fn gnomonic_forward(anchor: UnitVector3, direction: UnitVector3) -> Option<[f64; 2]> {
+    let cosine = anchor.dot(direction);
+    if cosine <= 0.0 {
+        return None;
+    }
+    let (east, north) = canonical_east_north_basis(anchor);
+    let point = subtract(
+        scale(direction.components(), cosine.recip()),
+        anchor.components(),
+    );
+    Some([dot(point, east), dot(point, north)])
+}
+
+/// Inverts [`gnomonic_forward`]: maps `[east, north]` tangent-plane
+/// coordinates at `anchor` back to a direction on the unit sphere.
+pub fn gnomonic_inverse(anchor: UnitVector3, east_north: [f64; 2]) -> UnitVector3 {
+    let (east, north) = canonical_east_north_basis(anchor);
+    let point = add(
+        anchor.components(),
+        add(scale(east, east_north[0]), scale(north, east_north[1])),
+    );
+    UnitVector3::new(point[0], point[1], point[2])
+        .expect("anchor plus a finite tangent offset is a nonzero finite vector")
+}
+
 /// Returns the area of a spherical triangle on the unit sphere in steradians.
 pub fn spherical_triangle_area_unit(a: UnitVector3, b: UnitVector3, c: UnitVector3) -> f64 {
     spherical_triangle_area_unit_raw(a.components(), b.components(), c.components())

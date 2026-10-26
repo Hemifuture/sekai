@@ -20,6 +20,7 @@ mod profile;
 mod quality;
 mod relief;
 mod relief_spec;
+mod site_climatology;
 mod spec;
 mod spherical_climate;
 mod spherical_geology;
@@ -237,6 +238,15 @@ pub use relief_spec::{
     MAX_WATER_INVENTORY_RATIO, MIN_TARGET_LAND_FRACTION, MIN_WATER_INVENTORY_RATIO,
     OCEAN_FLOOR_EXPOSURE_HINT_FRACTION, RELIEF_SPEC_SCHEMA_V2, WATER_INVENTORY_RATIO_ADVISORY_MAX,
     WATER_INVENTORY_RATIO_ADVISORY_MIN,
+};
+pub(crate) use site_climatology::CELSIUS_TO_KELVIN_OFFSET_K;
+pub use site_climatology::{
+    site_climatology_fingerprint, AnchorAssessment, SiteAvailability, SiteCapabilityId,
+    SiteCapabilityReason, SiteCapabilityStatus, SiteClimatology, SiteClimatologyError,
+    SiteClimatologyMonth, SiteClimatologySource, SiteElevationSummary, SiteMethods, SiteRegion,
+    SiteRegionSummary, SiteSubstitute, ANCHOR_INLAND_MIN_CLIMATE_SPACINGS,
+    ANCHOR_RECOMMENDATION_COUNT, EADY_GROWTH_RATE_COEFFICIENT, SITE_CLIMATOLOGY_SCHEMA_V1,
+    WET_DAY_THRESHOLD_MM,
 };
 pub use spec::{
     NaturalSpecError, TectonicActivity, TectonicSpec, MAX_CONTINENTAL_CRUST_FRACTION,
