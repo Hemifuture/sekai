@@ -18,18 +18,24 @@
 
 use blake3::Hasher;
 
+mod lakes;
+
+use self::lakes::{LakeWalk, PrimitiveKey};
+use super::fine_shoreline::FineShoreline;
 use super::hierarchical_rivers::{fresh_reach_path_caches, ReachPathCache};
+use super::surface_water_geometry::{reconstruct_vertex_elevations, SurfaceWaterStencil};
 use super::terrain_amplification::{
     badlands_gate, erodibility_amplitude, langbein_schumm, sediment_damping,
     surface_roughness_hurst, AmplificationFieldsView, ConditioningView, FormationDerivationInputs,
     SurfaceRegime, TerrainAmplificationError, TerrainAmplifier, SHELF_BASE_AMPLITUDE_M,
     SHELF_TRANSITION_M,
 };
+use crate::engine::BuildCancellation;
 use crate::world::natural::{
-    RiverSegment, SurfaceWaterField, ELEVATION_MAX_M, ELEVATION_MIN_M,
+    Lake, RiverSegment, SurfaceWaterField, SurfaceWaterKind, ELEVATION_MAX_M, ELEVATION_MIN_M,
     FORMATION_SHELF_BREAK_DEPTH_M,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
+use crate::world::spatial::{spherical_triangle_area_unit, SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::{CellId, RootSeed};
 
 /// Domain separator for every v2 canonical seed (spec §2.1).
@@ -37,6 +43,16 @@ const DERIVATION_DOMAIN: &[u8] = b"sekai-t1v2-derivation-v1\0";
 /// Hard subdivision-path depth cap (spec §5): ≈2.4 m primitives at draft
 /// spacing, within the u64 ID encoding budget.
 pub const HIERARCHICAL_PATH_DEPTH_MAX: usize = 16;
+/// The T1 derived-value identity version (LOD-1 spec §3.6 D6), bumped by
+/// every change to the derived values the player sees and hashed into
+/// [`HierarchicalEvaluator::probe_fingerprint`]. The seed domain above
+/// stays fixed, so a bump never reshuffles the L2+ seeds. Version 1 is the
+/// T1 v2 derivation before LOD-1; 2 adopts the D1 P1 vertex anchors; 3 the
+/// D2 inland average-interpolating centroids; 4 the D3 base-level beds and
+/// the D4 fine-dry river clipping; 5 the R2 lake bound and scale-recursive
+/// lake connectivity; 6 the R2 lake-bed flattening and lake-bound near-water
+/// partition.
+const T1_DERIVATION_VERSION: u16 = 6;
 /// Frozen hierarchical probe count (spec §6).
 pub const HIERARCHICAL_PROBE_COUNT: usize = 256;
 /// Frozen probe path depths (spec §6): one probe block per depth.
@@ -129,6 +145,34 @@ pub struct HierarchicalProbe {
     pub path: HierarchicalPath,
 }
 
+/// What the terrain mesh draws at one direction for one level (LOD-1 spec
+/// §3.5 D5): the containing primitive's value and its fine-shoreline water
+/// class — the two facts a leaf's color is painted from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DerivedReading {
+    /// The root L0 cell of the containing primitive.
+    pub cell: CellId,
+    /// The primitive's published value.
+    pub value: PrimitiveValue,
+    /// The fine-shoreline class of that value (T1 v2.2 §5.1).
+    pub water: SurfaceWaterKind,
+}
+
+/// The published P5 hydrology the derivation conditions on: river
+/// network, water bodies, and the priority-flood fill surface that bounds
+/// each lake (LOD-1 spec R2.3(a)).
+#[derive(Debug, Clone, Copy)]
+pub struct PublishedHydrology<'a> {
+    /// The published river segments, in reach order.
+    pub segments: &'a [RiverSegment],
+    /// The published per-cell water classification.
+    pub surface_water: &'a SurfaceWaterField,
+    /// The published lakes (members and surfaces).
+    pub lakes: &'a [Lake],
+    /// The published priority-flood drainage surface per cell, in metres.
+    pub fill_surface_m: &'a [f32],
+}
+
 /// The primitive containing one direction at one level (spec §1 shell).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocatedPrimitive {
@@ -172,19 +216,26 @@ impl Conditions {
 }
 
 /// The two condition sources available inside one sector tree.
+#[derive(Clone, Copy)]
 struct SectorConditions {
     /// The root cell's conditions (all interior and spoke edges).
     root: Conditions,
     /// The two-cell mean across this sector's shared L0 boundary edge.
     boundary: Conditions,
+    /// The lake surface below which an interior or spoke edge carries no
+    /// increment (LOD-1 spec R2.3(c)); −∞ where no lake bed flattens.
+    root_bed_surface_m: f64,
+    /// The same for the shared boundary edge: lakes whose bound holds both
+    /// cells, so both sides derive the same anchors.
+    boundary_bed_surface_m: f64,
 }
 
 impl SectorConditions {
-    fn pick(&self, on_boundary_chain: bool) -> Conditions {
+    fn pick(&self, on_boundary_chain: bool) -> (Conditions, f64) {
         if on_boundary_chain {
-            self.boundary
+            (self.boundary, self.boundary_bed_surface_m)
         } else {
-            self.root
+            (self.root, self.root_bed_surface_m)
         }
     }
 }
@@ -218,6 +269,9 @@ pub struct HierarchicalEvaluator {
     /// accelerate — every point is the pure derivation's bit-exact
     /// value, deepened lazily as queries demand).
     river_paths: Vec<ReachPathCache>,
+    /// The water bodies every leaf can belong to (LOD-1 spec §3.4, R2):
+    /// display colors, river clipping, and picking all classify with it.
+    shoreline: FineShoreline,
     root_seed_raw: u64,
     // Self-contained copies of the validated surface geometry.
     ring_offsets: Vec<u32>,
@@ -226,6 +280,8 @@ pub struct HierarchicalEvaluator {
     cell_site: Vec<UnitVector3>,
     cell_centroid: Vec<UnitVector3>,
     cell_conditions: Vec<Conditions>,
+    /// Per-cell L1 centroid anchors (LOD-1 spec §3.2 D2).
+    centroid_value_m: Vec<f64>,
     vertex_position: Vec<UnitVector3>,
     vertex_value_m: Vec<f64>,
 }
@@ -238,54 +294,118 @@ impl HierarchicalEvaluator {
         root_seed: RootSeed,
     ) -> Result<Self, TerrainAmplificationError> {
         let amplifier = TerrainAmplifier::new(surface, fields, root_seed)?;
-        Ok(Self::from_amplifier(amplifier, surface, root_seed))
+        Self::from_amplifier(amplifier, surface, root_seed)
     }
 
     /// Assembles the engine straight from the published formation
-    /// product, river network included.
+    /// product, hydrology (water bodies and river network) included.
     pub fn from_formation_product(
         inputs: FormationDerivationInputs<'_>,
         root_seed: RootSeed,
     ) -> Result<Self, TerrainAmplificationError> {
         let surface = inputs.surface;
-        let amplifier = TerrainAmplifier::from_formation_product(inputs, root_seed)?;
-        Ok(Self::from_amplifier(amplifier, surface, root_seed))
+        let hydrology = inputs.formation.hydrology();
+        let amplifier = TerrainAmplifier::from_formation_fields(inputs, root_seed)?;
+        Self::from_amplifier(amplifier, surface, root_seed)?.with_hydrology(
+            surface,
+            PublishedHydrology {
+                segments: hydrology.river_segments(),
+                surface_water: hydrology.surface_water(),
+                lakes: hydrology.lakes(),
+                fill_surface_m: hydrology.drainage_surface_elevation_m().values(),
+            },
+        )
     }
 
-    /// Attaches the published river network for §4 corridor suppression.
-    pub fn with_rivers(
+    /// Attaches the published P5 hydrology: the water bodies that the fine
+    /// shoreline classifies leaves against (T1 v2.2 §5.1, LOD-1 spec R2)
+    /// and the river network for §4 corridor suppression.
+    ///
+    /// # Arguments
+    ///
+    /// * `surface` - The authoritative surface the hydrology indexes.
+    /// * `hydrology` - The published water bodies, rivers and fill surface.
+    ///
+    /// # Errors
+    ///
+    /// Returns the river-network validation errors of
+    /// [`TerrainAmplifier::with_rivers`].
+    pub fn with_hydrology(
         mut self,
         surface: &SphericalSurfaceSnapshot,
-        segments: &[RiverSegment],
-        surface_water: &SurfaceWaterField,
+        hydrology: PublishedHydrology<'_>,
     ) -> Result<Self, TerrainAmplificationError> {
-        self.amplifier = self
-            .amplifier
-            .with_rivers(surface, segments, surface_water)?;
+        let view = self.amplifier.conditioning();
+        let sea_level_m = view.sea_level_m as f32;
+        self.shoreline = FineShoreline::new(surface, &hydrology, view.elevation_m, sea_level_m);
+        self.centroid_value_m = self.centroid_anchor_values();
+        self.flood_level1_lakes(hydrology.lakes);
+        let shoreline = &self.shoreline;
+        self.amplifier = self.amplifier.with_rivers(
+            surface,
+            hydrology.segments,
+            hydrology.surface_water,
+            &|cell| shoreline.own_surface_m(cell).map(f64::from),
+        )?;
         self.river_paths = fresh_reach_path_caches(self.amplifier.river_reaches().len());
         Ok(self)
+    }
+
+    /// The water bodies of this world's published hydrology, per cell —
+    /// the single instance every classifier reads.
+    pub(super) fn shoreline(&self) -> &FineShoreline {
+        &self.shoreline
+    }
+
+    /// The L1 centroid anchors for the current water bodies (LOD-1 spec
+    /// §3.2 D2). A cell that sees a water body keeps its own value — the
+    /// P1 sub-cell node P5 publishes its water geometry from. An inland
+    /// cell, for which P5 publishes no sub-cell geometry, takes the
+    /// average-interpolating centroid `c' = 3·z − 2·v̄` (Sweldens &
+    /// Schröder 1996), `v̄` the fan-area-weighted mean of the sector edge
+    /// midpoints, so its fan-area-weighted L1 mean is exactly `z`.
+    fn centroid_anchor_values(&self) -> Vec<f64> {
+        let elevation_m = self.amplifier.conditioning().elevation_m;
+        (0..self.cell_conditions.len())
+            .map(|index| {
+                let z = f64::from(elevation_m[index]);
+                if !self.shoreline.is_inland(CellId::from_raw(index as u32)) {
+                    return z;
+                }
+                let (start, len) = self.ring_bounds(index as u32);
+                let centroid = self.cell_centroid[index];
+                let (mut edge_mean_m, mut area) = (0.0_f64, 0.0_f64);
+                for side in 0..len {
+                    let near = self.ring_vertices[start + side] as usize;
+                    let far = self.ring_vertices[start + (side + 1) % len] as usize;
+                    let weight = spherical_triangle_area_unit(
+                        centroid,
+                        self.vertex_position[near],
+                        self.vertex_position[far],
+                    );
+                    edge_mean_m +=
+                        weight * 0.5 * (self.vertex_value_m[near] + self.vertex_value_m[far]);
+                    area += weight;
+                }
+                3.0 * z - 2.0 * edge_mean_m / area
+            })
+            .collect()
     }
 
     fn from_amplifier(
         amplifier: TerrainAmplifier,
         surface: &SphericalSurfaceSnapshot,
         root_seed: RootSeed,
-    ) -> Self {
+    ) -> Result<Self, TerrainAmplificationError> {
         let cells = surface.cells();
-        let vertex_count = surface.vertices().len();
 
         let mut ring_offsets = Vec::with_capacity(cells.len() + 1);
         let mut ring_vertices = Vec::new();
         let mut ring_neighbors = Vec::new();
         ring_offsets.push(0_u32);
-        // Boundary-vertex anchors: the arithmetic mean of every adjacent
-        // cell's T0 elevation — the one declared cross-cell combination
-        // in the L0→L1 anchoring rule (spec §2.1).
-        let mut vertex_sum_m = vec![0.0_f64; vertex_count];
-        let mut vertex_shares = vec![0_u32; vertex_count];
-        let cell_conditions: Vec<Conditions> = {
+        let (cell_conditions, vertex_value_m) = {
             let view = amplifier.conditioning();
-            for (index, cell) in cells.iter().enumerate() {
+            for cell in cells {
                 for (side, &vertex) in cell.boundary_vertices.iter().enumerate() {
                     ring_vertices.push(vertex.raw());
                     let edge = surface
@@ -297,24 +417,28 @@ impl HierarchicalEvaluator {
                         edge.cells[0]
                     };
                     ring_neighbors.push(neighbor.raw());
-                    let slot = vertex.raw() as usize;
-                    vertex_sum_m[slot] += f64::from(view.elevation_m[index]);
-                    vertex_shares[slot] += 1;
                 }
                 ring_offsets.push(ring_vertices.len() as u32);
             }
-            (0..cells.len())
+            // Boundary-vertex anchors: P5's own P1 sub-cell vertex
+            // elevations (LOD-1 spec §3.1 D1, revising T1 v2 §2.1), so the
+            // derived shoreline and the published water geometry share one
+            // reconstruction instead of two definitions of one fact.
+            let elevation_m: Vec<f64> = view.elevation_m.iter().copied().map(f64::from).collect();
+            let cancellation = BuildCancellation::new();
+            let stencil = SurfaceWaterStencil::new(surface, &cancellation)?;
+            let vertex_value_m =
+                reconstruct_vertex_elevations(&stencil, &elevation_m, &cancellation)?;
+            let conditions: Vec<Conditions> = (0..cells.len())
                 .map(|index| cell_conditions(&view, index))
-                .collect()
+                .collect();
+            (conditions, vertex_value_m)
         };
-        let vertex_value_m: Vec<f64> = vertex_sum_m
-            .iter()
-            .zip(&vertex_shares)
-            .map(|(&sum, &shares)| sum / f64::from(shares.max(1)))
-            .collect();
 
-        Self {
+        let mut engine = Self {
             river_paths: fresh_reach_path_caches(amplifier.river_reaches().len()),
+            shoreline: FineShoreline::without_water(cells.len()),
+            centroid_value_m: Vec::new(),
             amplifier,
             root_seed_raw: root_seed.raw(),
             ring_offsets,
@@ -329,7 +453,9 @@ impl HierarchicalEvaluator {
                 .map(|vertex| vertex.position)
                 .collect(),
             vertex_value_m,
-        }
+        };
+        engine.centroid_value_m = engine.centroid_anchor_values();
+        Ok(engine)
     }
 
     /// The L0 cell primitive value: identically the T0 published
@@ -391,6 +517,34 @@ impl HierarchicalEvaluator {
         }
     }
 
+    /// A [`CentrelineCursor`] deciding fine-dry centreline points at the
+    /// display `level`.
+    pub(super) fn centreline_cursor(&self, level: u8) -> CentrelineCursor<'_> {
+        CentrelineCursor {
+            engine: self,
+            level,
+            walk: None,
+            lakes: LakeWalk::new(self),
+        }
+    }
+
+    /// The child of `frame` containing `direction`, chosen exactly as
+    /// [`Self::locate`] chooses it (largest interior margin over the same
+    /// renormalized-sum midpoint geometry the anchors carry).
+    fn containing_child(&self, frame: &TriangleFrame, direction: UnitVector3) -> u8 {
+        let children = subdivision_children(frame.corners.map(|anchor| anchor.position));
+        let mut child = 0;
+        let mut best = f64::NEG_INFINITY;
+        for (candidate, triangle) in children.iter().enumerate() {
+            let margin = interior_margin(triangle, direction);
+            if margin > best {
+                best = margin;
+                child = candidate;
+            }
+        }
+        child as u8
+    }
+
     /// The M1 amplifier inside this engine — the L0 fact source the
     /// hierarchical river module shares (reaches, beds, carve laws).
     pub(super) fn amplifier(&self) -> &TerrainAmplifier {
@@ -427,11 +581,13 @@ impl HierarchicalEvaluator {
         super::hierarchical_rivers::path_depth_cap(self, reach)
     }
 
-    /// Materializes one reach's dry-land polyline at `depth` (clamped to
-    /// each leg's cap). The path is split at its authoritative shared-edge
-    /// portal and omits water-cell interiors.
-    pub fn river_path(&self, reach: u32, depth: u8) -> Vec<UnitVector3> {
-        super::hierarchical_rivers::materialize_path(self, reach, depth)
+    /// Materializes one reach's drawn polyline pieces at display depth
+    /// `depth` (clamped to each leg's cap): the centroid–portal–centroid
+    /// path, kept only on its fine-dry vertices (LOD-1 spec §3.4 D4), so
+    /// an inflow ends and an outflow starts on the drawn water edge and an
+    /// overland reach breaks where it crosses fine water.
+    pub fn river_path(&self, reach: u32, depth: u8) -> Vec<Vec<UnitVector3>> {
+        super::hierarchical_rivers::materialize_pieces(self, reach, depth)
     }
 
     /// Locates the primitive of `level` containing `direction`.
@@ -452,15 +608,7 @@ impl HierarchicalEvaluator {
         let mut corners = [self.cell_centroid[cell_index as usize], near, far];
         let mut steps = [0_u8; HIERARCHICAL_PATH_DEPTH_MAX];
         for slot in steps.iter_mut().take(depth) {
-            let ab = geometric_midpoint(corners[0], corners[1]);
-            let bc = geometric_midpoint(corners[1], corners[2]);
-            let ca = geometric_midpoint(corners[2], corners[0]);
-            let children = [
-                [corners[0], ab, ca],
-                [ab, corners[1], bc],
-                [ca, bc, corners[2]],
-                [ab, bc, ca],
-            ];
+            let children = subdivision_children(corners);
             let mut child = 0;
             let mut best = f64::NEG_INFINITY;
             for (candidate, triangle) in children.iter().enumerate() {
@@ -491,6 +639,40 @@ impl HierarchicalEvaluator {
         }
     }
 
+    /// Reads what the display draws at `direction` for `level` (LOD-1 spec
+    /// §3.5 D5): the thin-shell value classified by this world's fine
+    /// shoreline — the same two functions the terrain mesh colors with.
+    ///
+    /// # Arguments
+    ///
+    /// * `direction` - The picked direction.
+    /// * `level` - The primitive level the display shows there.
+    ///
+    /// # Returns
+    ///
+    /// The root cell, the primitive value, and its water class.
+    pub fn read(&self, direction: UnitVector3, level: u8) -> DerivedReading {
+        match self.locate(direction, level) {
+            LocatedPrimitive::Cell(cell) => {
+                let value = self.cell_value(cell);
+                DerivedReading {
+                    cell,
+                    value,
+                    water: self.cell_water(cell, value.elevation_m),
+                }
+            }
+            LocatedPrimitive::Triangle { cell, sector, path } => {
+                let value = self.value(cell, sector, path.steps());
+                let key = PrimitiveKey::new(cell.raw(), sector, path.steps());
+                DerivedReading {
+                    cell,
+                    value,
+                    water: self.leaf_water(&mut LakeWalk::new(self), key, value.elevation_m),
+                }
+            }
+        }
+    }
+
     /// The frozen hierarchical probe set (spec §6): 64 cells spread
     /// evenly over the surface (`cell = ⌊j·N/64⌋`), sector `j mod
     /// ring_len`, path steps `(j + t) mod 4`, repeated per depth block
@@ -513,10 +695,12 @@ impl HierarchicalEvaluator {
             .collect()
     }
 
-    /// Blake3 over the little-endian f32 elevations of the frozen probe
-    /// set, in probe order (spec §6).
+    /// Blake3 over [`T1_DERIVATION_VERSION`] and the little-endian f32
+    /// elevations of the frozen probe set, in probe order (spec §6, LOD-1
+    /// spec §3.6).
     pub fn probe_fingerprint(&self) -> [u8; 32] {
         let mut hasher = Hasher::new();
+        hasher.update(&T1_DERIVATION_VERSION.to_le_bytes());
         for probe in self.probe_ids() {
             let value = self.value(probe.cell, probe.sector, probe.path.steps());
             hasher.update(&value.elevation_m.to_le_bytes());
@@ -537,10 +721,17 @@ impl HierarchicalEvaluator {
             "sector {sector} is outside the {len}-sector fan of cell {cell_index}"
         );
         let root = self.cell_conditions[cell_index as usize];
-        let neighbor = self.ring_neighbors[start + usize::from(sector)] as usize;
+        let neighbor = self.ring_neighbors[start + usize::from(sector)];
+        let cell = CellId::from_raw(cell_index);
+        let bed_surface = |surface: Option<f32>| surface.map_or(f64::NEG_INFINITY, f64::from);
         SectorConditions {
             root,
-            boundary: Conditions::mean(root, self.cell_conditions[neighbor]),
+            boundary: Conditions::mean(root, self.cell_conditions[neighbor as usize]),
+            root_bed_surface_m: bed_surface(self.shoreline.bed_surface_m(cell, cell)),
+            boundary_bed_surface_m: bed_surface(
+                self.shoreline
+                    .bed_surface_m(cell, CellId::from_raw(neighbor)),
+            ),
         }
     }
 
@@ -558,9 +749,7 @@ impl HierarchicalEvaluator {
             corners: [
                 Anchor {
                     position: self.cell_centroid[cell_index as usize],
-                    value_m: f64::from(
-                        self.amplifier.conditioning().elevation_m[cell_index as usize],
-                    ),
+                    value_m: self.centroid_value_m[cell_index as usize],
                     seed: self.anchor_seed(b"c", cell_index),
                 },
                 self.vertex_anchor(near),
@@ -586,10 +775,12 @@ impl HierarchicalEvaluator {
         conditions: &SectorConditions,
     ) -> [Anchor; 3] {
         let edge = |a: usize, b: usize, index: usize| {
+            let (edge_conditions, bed_surface_m) = conditions.pick(frame.boundary_edge[index]);
             self.midpoint_anchor(
                 &frame.corners[a],
                 &frame.corners[b],
-                conditions.pick(frame.boundary_edge[index]),
+                edge_conditions,
+                bed_surface_m,
                 level,
             )
         };
@@ -598,20 +789,28 @@ impl HierarchicalEvaluator {
 
     /// Derives one midpoint anchor (spec §2.1): geometric midpoint,
     /// endpoint mean plus the conditioned increment, and the canonical
-    /// sorted-seed hash. Every part is commutative in (a, b), so both
-    /// sides of a shared edge derive bit-identical anchors.
+    /// sorted-seed hash. An edge lying wholly below `bed_surface_m` is lake
+    /// bed and takes no increment (LOD-1 spec R2.3(c)). Every part is
+    /// commutative in (a, b), so both sides of a shared edge derive
+    /// bit-identical anchors.
     fn midpoint_anchor(
         &self,
         a: &Anchor,
         b: &Anchor,
         conditions: Conditions,
+        bed_surface_m: f64,
         level: u32,
     ) -> Anchor {
         let seed = self.midpoint_seed(&a.seed, &b.seed);
+        let mean_m = 0.5 * (a.value_m + b.value_m);
+        let value_m = if a.value_m.max(b.value_m) < bed_surface_m {
+            mean_m
+        } else {
+            mean_m + conditions.amplitude_m(level) * signed_unit_noise(&seed)
+        };
         Anchor {
             position: geometric_midpoint(a.position, b.position),
-            value_m: 0.5 * (a.value_m + b.value_m)
-                + conditions.amplitude_m(level) * signed_unit_noise(&seed),
+            value_m,
             seed,
         }
     }
@@ -803,6 +1002,50 @@ impl HierarchicalEvaluator {
         );
     }
 
+    /// Streams what the terrain mesh draws for every leaf `extra_levels`
+    /// below `(cell, sector, prefix)`, in the same depth-first order as
+    /// [`Self::for_each_leaf_value`]: each leaf's value with its fine
+    /// shoreline class — the per-leaf counterpart of [`Self::read`].
+    ///
+    /// # Arguments
+    ///
+    /// * `cell` - The root L0 cell.
+    /// * `sector` - The fan sector inside `cell`.
+    /// * `prefix` - The subdivision path of the subtree root.
+    /// * `extra_levels` - How many levels below the subtree root to emit.
+    /// * `sink` - Receives one reading per leaf.
+    pub fn for_each_leaf_reading(
+        &self,
+        cell: CellId,
+        sector: u8,
+        prefix: &[u8],
+        extra_levels: u8,
+        sink: &mut dyn FnMut(DerivedReading),
+    ) {
+        let root = PrimitiveKey::new(cell.raw(), sector, prefix);
+        if self
+            .shoreline
+            .row(cell)
+            .iter()
+            .any(|candidate| candidate.lake.is_some())
+        {
+            // A lake candidate classifies by primitive identity: the
+            // subtree is classified level by level (R2.3(b)).
+            self.for_each_lake_subtree_reading(root, extra_levels, sink);
+            return;
+        }
+        // No lake reaches this cell: only the per-value ocean test runs, and
+        // the walk is never consulted.
+        let mut walk = LakeWalk::new(self);
+        self.for_each_leaf_value(cell, sector, prefix, extra_levels, &mut |value| {
+            sink(DerivedReading {
+                cell,
+                value,
+                water: self.leaf_water(&mut walk, root, value.elevation_m),
+            });
+        });
+    }
+
     fn emit_leaf_values(
         &self,
         cell_index: usize,
@@ -826,6 +1069,158 @@ impl HierarchicalEvaluator {
                 conditions,
                 sink,
             );
+        }
+    }
+}
+
+/// Margin of the centreline decision bound over the f32 publication
+/// rounding (an f32 ulp at the elevation bounds is below a millimetre) and
+/// the f64 rounding of the anchors themselves.
+const CENTRELINE_DECISION_MARGIN_M: f64 = 0.01;
+
+/// Decides whether the fine shoreline paints centreline points dry at one
+/// level (LOD-1 spec §3.4 D4.2, R2). The ocean tests each point's value,
+/// the uncarved derived value floored by the reach bed; a lake tests the
+/// primitive containing the point with the same connectivity rule the mesh
+/// colors with (R2.3(b)), which reads uncarved values only.
+///
+/// Each value decision stops at the coarsest level that settles it: every
+/// split below level `l` moves an anchor by at most the conditioned
+/// amplitude `A(l)` (spec §7 invariant 3), so the leaf value stays inside
+/// its ancestor's corner range widened by the remaining amplitude sum.
+/// Points fed in path order share their upper primitives, so the cursor
+/// keeps the last walk and derives only the levels where the new point
+/// diverges; the lake walk memoizes connectivity across points.
+pub(super) struct CentrelineCursor<'a> {
+    engine: &'a HierarchicalEvaluator,
+    level: u8,
+    walk: Option<CursorWalk>,
+    lakes: LakeWalk<'a>,
+}
+
+/// The cached primitive walk of the cursor's last point.
+struct CursorWalk {
+    cell: u32,
+    sector: u8,
+    conditions: SectorConditions,
+    /// `frames[k]`: the primitive frame at path length `k` along `steps`.
+    frames: Vec<TriangleFrame>,
+    steps: Vec<u8>,
+    /// `remaining_m[k]`: the amplitude bound summed over the splits below
+    /// path length `k`.
+    remaining_m: Vec<f64>,
+}
+
+impl CentrelineCursor<'_> {
+    /// Whether the fine shoreline paints `direction` dry when its value is
+    /// floored by `bed_m`.
+    pub(super) fn is_dry(&mut self, direction: UnitVector3, bed_m: f64) -> bool {
+        let engine = self.engine;
+        let cell_index = engine.locate_cell_index(direction);
+        let cell = CellId::from_raw(cell_index);
+        let row = engine.shoreline.row(cell);
+        if let Some(ocean) = row.iter().find(|candidate| candidate.lake.is_none()) {
+            if !self.reaches(direction, cell_index, bed_m, ocean.surface_m) {
+                return false;
+            }
+        }
+        let Some(highest_lake_m) = row
+            .iter()
+            .filter(|candidate| candidate.lake.is_some())
+            .map(|candidate| candidate.surface_m)
+            .max_by(f32::total_cmp)
+        else {
+            return true;
+        };
+        // A lake primitive is water only below its surface, which the value
+        // bound settles for most points without any connectivity query.
+        if self.reaches(direction, cell_index, f64::INFINITY, highest_lake_m) {
+            return true;
+        }
+        let LocatedPrimitive::Triangle { sector, path, .. } = engine.locate(direction, self.level)
+        else {
+            return engine.shoreline.own_lake(cell).is_none();
+        };
+        let key = PrimitiveKey::new(cell_index, sector, path.steps());
+        !row.iter()
+            .filter_map(|candidate| candidate.lake)
+            .any(|lake| self.lakes.is_lake_water(lake, key))
+    }
+
+    /// Whether `min(uncarved value at direction, bed_m)`, rounded to f32,
+    /// reaches `surface_m`. The f32 rounding is monotone, so the min with
+    /// the bed splits into two comparisons.
+    fn reaches(
+        &mut self,
+        direction: UnitVector3,
+        cell_index: u32,
+        bed_m: f64,
+        surface_m: f32,
+    ) -> bool {
+        let engine = self.engine;
+        if (bed_m as f32) < surface_m {
+            return false;
+        }
+        if self.level == 0 {
+            return engine.amplifier.conditioning().elevation_m[cell_index as usize] >= surface_m;
+        }
+        let depth = usize::from(self.level - 1).min(HIERARCHICAL_PATH_DEPTH_MAX);
+        let sector = engine.locate_sector(cell_index, direction) as u8;
+        if !self
+            .walk
+            .as_ref()
+            .is_some_and(|walk| walk.cell == cell_index && walk.sector == sector)
+        {
+            self.walk = Some(CursorWalk::new(engine, cell_index, sector, depth));
+        }
+        let walk = self.walk.as_mut().expect("the walk was just installed");
+        let threshold_m = f64::from(surface_m);
+        for k in 0..depth {
+            let frame = walk.frames[k];
+            let values = frame.corners.map(|anchor| anchor.value_m);
+            let slack_m = walk.remaining_m[k] * (1.0 + 1.0e-9) + CENTRELINE_DECISION_MARGIN_M;
+            if values.iter().copied().fold(f64::INFINITY, f64::min) - slack_m >= threshold_m {
+                return true;
+            }
+            if values.iter().copied().fold(f64::NEG_INFINITY, f64::max) + slack_m < threshold_m {
+                return false;
+            }
+            let child = engine.containing_child(&frame, direction);
+            if walk.steps.get(k) != Some(&child) {
+                walk.steps.truncate(k);
+                walk.frames.truncate(k + 1);
+                let midpoints = engine.split_midpoints(&frame, k as u32 + 1, &walk.conditions);
+                walk.frames.push(child_frame(frame, midpoints, child));
+                walk.steps.push(child);
+            }
+        }
+        let [a, b, c] = &walk.frames[depth].corners;
+        ((a.value_m + b.value_m + c.value_m) / 3.0) as f32 >= surface_m
+    }
+}
+
+impl CursorWalk {
+    fn new(engine: &HierarchicalEvaluator, cell: u32, sector: u8, depth: usize) -> Self {
+        let conditions = engine.sector_conditions(cell, sector);
+        let amplitude_bound = |level: usize| {
+            conditions
+                .root
+                .amplitude_m(level as u32)
+                .max(conditions.boundary.amplitude_m(level as u32))
+        };
+        let mut remaining_m = vec![0.0_f64; depth + 1];
+        for k in (0..depth).rev() {
+            remaining_m[k] = remaining_m[k + 1] + amplitude_bound(k + 1);
+        }
+        let mut frames = Vec::with_capacity(depth + 1);
+        frames.push(engine.sector_frame(cell, sector));
+        Self {
+            cell,
+            sector,
+            conditions,
+            frames,
+            steps: Vec::with_capacity(depth),
+            remaining_m,
         }
     }
 }
@@ -928,13 +1323,37 @@ fn child_frame(frame: TriangleFrame, midpoints: [Anchor; 3], child: u8) -> Trian
     }
 }
 
-/// The renormalized-sum midpoint — the same commutative expression as the
-/// display subdivision, so geometry and values walk one tree.
-fn geometric_midpoint(a: UnitVector3, b: UnitVector3) -> UnitVector3 {
+/// The renormalized-sum midpoint of one subdivision edge — the single
+/// definition the value walk and the display geometry share, so both walk
+/// one tree. The sum is commutative, so both sides of a shared edge derive
+/// the bit-identical midpoint.
+///
+/// # Panics
+///
+/// Panics when `a` and `b` are antipodal, which no fan subdivision edge is.
+pub fn geometric_midpoint(a: UnitVector3, b: UnitVector3) -> UnitVector3 {
     let [ax, ay, az] = a.components();
     let [bx, by, bz] = b.components();
     UnitVector3::new(ax + bx, ay + by, az + bz)
         .expect("fan subdivision midpoints stay strictly inside one hemisphere")
+}
+
+/// The four children of one subdivision triangle in the frozen display
+/// order: 0 = (A, AB, CA), 1 = (AB, B, BC), 2 = (CA, BC, C), 3 = (AB, BC, CA).
+///
+/// # Arguments
+///
+/// * `corners` - The parent triangle's corners (A, B, C).
+///
+/// # Returns
+///
+/// The child corner triples, indexed by the path step that selects them.
+pub fn subdivision_children(corners: [UnitVector3; 3]) -> [[UnitVector3; 3]; 4] {
+    let [a, b, c] = corners;
+    let ab = geometric_midpoint(a, b);
+    let bc = geometric_midpoint(b, c);
+    let ca = geometric_midpoint(c, a);
+    [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
 }
 
 /// N(seed) ∈ [−1, 1] (spec §2.1): the first eight little-endian seed
@@ -963,7 +1382,7 @@ fn side(a: UnitVector3, b: UnitVector3, p: UnitVector3) -> f64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::HashSet;
 
     use super::*;
@@ -974,7 +1393,7 @@ mod tests {
     };
     use crate::world::{Meters, RiverSegmentId, SphericalSpaceSpec};
 
-    fn test_surface() -> SphericalSurfaceSnapshot {
+    pub(super) fn test_surface() -> SphericalSurfaceSnapshot {
         surface_with(162)
     }
 
@@ -993,11 +1412,38 @@ mod tests {
         SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; surface.cells().len()])
     }
 
+    /// The priority-flood fill a synthetic lake world publishes: lake cells
+    /// at their lake surface, edge neighbours below it filled up to it (the
+    /// flooded fringe of the depression), every other cell at its height.
+    pub(in crate::generators::natural) fn lake_fill_surface(
+        surface: &SphericalSurfaceSnapshot,
+        elevation_m: &[f32],
+        lakes: &[Lake],
+    ) -> Vec<f32> {
+        let mut fill = elevation_m.to_vec();
+        for lake in lakes {
+            let surface_m = lake.surface_elevation_m();
+            for cell in lake.cells() {
+                fill[cell.raw() as usize] = surface_m;
+                let record = &surface.cells()[cell.raw() as usize];
+                for &edge in &record.boundary_edges {
+                    if let Some(next) = surface.opposite_cell(*cell, edge) {
+                        let next = next.raw() as usize;
+                        if elevation_m[next] < surface_m {
+                            fill[next] = fill[next].max(surface_m);
+                        }
+                    }
+                }
+            }
+        }
+        fill
+    }
+
     /// Northern sloped land, flat southern abyssal plain, and an
     /// east/west erodibility split so adjacent cells carry different
     /// conditions (the cross-boundary invariant must not pass trivially).
-    struct SyntheticFields {
-        elevation: Vec<f32>,
+    pub(super) struct SyntheticFields {
+        pub(super) elevation: Vec<f32>,
         sediment: Vec<f32>,
         erodibility: Vec<f32>,
         precipitation: Vec<f32>,
@@ -1009,7 +1455,7 @@ mod tests {
     }
 
     impl SyntheticFields {
-        fn new(surface: &SphericalSurfaceSnapshot) -> Self {
+        pub(super) fn new(surface: &SphericalSurfaceSnapshot) -> Self {
             let cells = surface.cells();
             let mut fields = Self {
                 elevation: Vec::new(),
@@ -1041,7 +1487,22 @@ mod tests {
             fields
         }
 
-        fn view(&self) -> AmplificationFieldsView<'_> {
+        /// A lake-free publication over these fields: the fill surface of
+        /// a world without depressions is the terrain itself.
+        fn hydrology<'a>(
+            &'a self,
+            segments: &'a [RiverSegment],
+            surface_water: &'a SurfaceWaterField,
+        ) -> PublishedHydrology<'a> {
+            PublishedHydrology {
+                segments,
+                surface_water,
+                lakes: &[],
+                fill_surface_m: &self.elevation,
+            }
+        }
+
+        pub(super) fn view(&self) -> AmplificationFieldsView<'_> {
             AmplificationFieldsView {
                 final_elevation_m: &self.elevation,
                 sea_level_m: 0.0,
@@ -1130,6 +1591,123 @@ mod tests {
             all
         });
         assert_eq!(sequential, threaded);
+    }
+
+    /// LOD-1 spec §3.1 D1 / §4 I2: the L1 boundary-vertex anchors are the
+    /// P5 P1 sub-cell vertex elevations, bit for bit — one fact source for
+    /// the derived shoreline and the published water geometry.
+    #[test]
+    fn boundary_vertex_anchors_are_the_p5_p1_vertex_elevations() {
+        let (evaluator, surface) = evaluator();
+        let fields = SyntheticFields::new(&surface);
+        let elevation: Vec<f64> = fields.elevation.iter().copied().map(f64::from).collect();
+        let cancellation = crate::engine::BuildCancellation::new();
+        let stencil =
+            super::super::surface_water_geometry::SurfaceWaterStencil::new(&surface, &cancellation)
+                .unwrap();
+        let expected = super::super::surface_water_geometry::reconstruct_vertex_elevations(
+            &stencil,
+            &elevation,
+            &cancellation,
+        )
+        .unwrap();
+        assert_eq!(
+            evaluator
+                .vertex_value_m
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The synthetic water publication: every cell below sea level is
+    /// ocean, so a fixture has inland, coastal, and ocean cells.
+    fn ocean_below_sea_level(fields: &SyntheticFields) -> SurfaceWaterField {
+        SurfaceWaterField::from_kinds(
+            fields
+                .elevation
+                .iter()
+                .map(|&elevation| {
+                    if elevation < 0.0 {
+                        SurfaceWaterKind::Ocean
+                    } else {
+                        SurfaceWaterKind::DryLand
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    pub(super) fn wet_evaluator() -> (HierarchicalEvaluator, SphericalSurfaceSnapshot) {
+        let surface = test_surface();
+        let fields = SyntheticFields::new(&surface);
+        let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(42))
+            .unwrap()
+            .with_hydrology(
+                &surface,
+                fields.hydrology(&[], &ocean_below_sea_level(&fields)),
+            )
+            .unwrap();
+        (evaluator, surface)
+    }
+
+    /// LOD-1 spec §3.2 D2 and §4 I3/I6: an inland cell's area-weighted L1
+    /// fan mean equals its P5 value within the floating-point bound (f64
+    /// recursive summation `γ_n` over the anchor magnitudes, Higham 2002
+    /// §4.2, plus half an f32 ulp of the largest published face); a cell
+    /// that sees water keeps the P1 centroid node bit-exactly; and only
+    /// cells whose leaves can never be water get the correction.
+    #[test]
+    fn inland_fans_average_to_the_cell_value_and_near_water_fans_keep_p1() {
+        let (evaluator, surface) = wet_evaluator();
+        let mut inland = 0;
+        let mut near_water = 0;
+        for cell in surface.cells() {
+            let index = cell.id.raw() as usize;
+            let z = f64::from(evaluator.cell_value(cell.id).elevation_m);
+            if !evaluator.shoreline().is_inland(cell.id) {
+                near_water += 1;
+                assert_eq!(evaluator.centroid_value_m[index].to_bits(), z.to_bits());
+                continue;
+            }
+            inland += 1;
+            assert!(evaluator.shoreline().never_wet(cell.id));
+            let sectors = evaluator.sector_count(cell.id);
+            let (mut weighted, mut area, mut largest_face) = (0.0_f64, 0.0_f64, 0.0_f32);
+            let mut anchor_magnitude = evaluator.centroid_value_m[index].abs();
+            let (start, len) = evaluator.ring_bounds(cell.id.raw());
+            for &vertex in &evaluator.ring_vertices[start..start + len] {
+                anchor_magnitude =
+                    anchor_magnitude.max(evaluator.vertex_value_m[vertex as usize].abs());
+            }
+            for sector in 0..sectors as u8 {
+                let [a, b, c] = evaluator.sector_corners(cell.id, sector);
+                let weight = crate::world::spatial::spherical_triangle_area_unit(a, b, c);
+                let face = evaluator.value(cell.id, sector, &[]).elevation_m;
+                weighted += weight * f64::from(face);
+                area += weight;
+                largest_face = largest_face.max(face.abs());
+            }
+            let terms = (4 * sectors + 4) as f64;
+            let unit_roundoff = f64::EPSILON / 2.0;
+            let gamma = terms * unit_roundoff / (1.0 - terms * unit_roundoff);
+            let half_ulp =
+                0.5 * f64::from(f32::from_bits(largest_face.to_bits() + 1) - largest_face);
+            let bound = 3.0 * gamma * anchor_magnitude + half_ulp;
+            let residual = (weighted / area - z).abs();
+            assert!(
+                residual <= bound,
+                "cell {index}: inland fan mean misses the cell value by {residual} > {bound}"
+            );
+        }
+        assert!(
+            inland > 0 && near_water > 0,
+            "{inland} inland, {near_water} near water"
+        );
     }
 
     /// Spec §7 invariant 2: both cells sharing an L0 boundary edge derive
@@ -1225,6 +1803,7 @@ mod tests {
                         for (index, (a, b)) in [(0, 1), (1, 2), (2, 0)].into_iter().enumerate() {
                             let bound = conditions
                                 .pick(frame.boundary_edge[index])
+                                .0
                                 .amplitude_m(level);
                             let offset = midpoints[index].value_m
                                 - 0.5 * (frame.corners[a].value_m + frame.corners[b].value_m);
@@ -1289,7 +1868,10 @@ mod tests {
         ];
         let carved = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(9))
             .unwrap()
-            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
+            .with_hydrology(
+                &surface,
+                fields.hydrology(&segments, &dry_surface_water(&surface)),
+            )
             .unwrap();
 
         // The carve surface descends along the chain (M1 module criteria
@@ -1333,13 +1915,20 @@ mod tests {
     /// stair coastline itself is quantized by whole percentage points, so
     /// the statistic would measure fixture coarseness, not derivation
     /// drift. The real product tier is gated in
-    /// `tests/hierarchical_product_gates.rs`.
+    /// `tests/hierarchical_product_gates.rs`. The fixture publishes its
+    /// ocean like the product does: without published water every cell is
+    /// inland (LOD-1 spec §3.2), and the coast would not be a coast.
     #[test]
     fn deep_land_fraction_matches_l0() {
         let surface = surface_with(642);
         let fields = SyntheticFields::new(&surface);
-        let evaluator =
-            HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(42)).unwrap();
+        let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(42))
+            .unwrap()
+            .with_hydrology(
+                &surface,
+                fields.hydrology(&[], &ocean_below_sea_level(&fields)),
+            )
+            .unwrap();
         let total = 16_384_usize;
         let mut l0_land = 0_u32;
         let mut deep_land = 0_u32;

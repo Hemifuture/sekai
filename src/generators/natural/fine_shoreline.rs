@@ -1,29 +1,36 @@
-//! Fine-domain shoreline of the T1 v2.2 spec §5.1: per-leaf water
-//! classification against the published P5 water bodies.
+//! Fine-domain shoreline: the per-cell water bodies a derived leaf can
+//! belong to (T1 v2.2 spec §5.1, revised for lakes by LOD-1 spec R2).
 //!
-//! A derived leaf is water exactly when some P5 water body `W` both owns
-//! the leaf's root cell or one of its edge neighbours, and has a surface
-//! above the leaf's derived elevation (ocean: the formal sea level; lake:
-//! its published surface). Candidates are tried root-owner first, then by
-//! ascending surface, and the first one above the leaf wins (spec §9.3
-//! ruling). The shoreline is therefore the water-surface contour of the
-//! same derived field the terrain colors use, confined to the bodies and
-//! their one ring, so a dry cell with no water neighbour never floods.
+//! The ocean keeps the §5.1 rule: a leaf of the ocean's cells or their edge
+//! ring is ocean when its derived value lies below the formal sea level. A
+//! lake `W` is a candidate exactly on its hydrological bound `B_W` (R2.3(a)):
+//! the depression at the lake level — the lake cells plus the cells P5's
+//! priority-flood fill raises to the same level with a flooded centroid —
+//! and the dry ring that holds the water there. Cells past the spill (below
+//! the fill level, or at it with a dry centroid), the ocean and other lakes'
+//! cells are not on the bound. Whether a lake candidate's leaf is water is
+//! the scale-recursive connectivity rule of the hierarchical evaluator
+//! (R2.3(b)); this module only stores the bound and the level-1 seeds.
 //! This is display derivation only: P5 schema, volumes and topology are
 //! untouched.
 
-use crate::world::natural::{Lake, SurfaceWaterField, SurfaceWaterKind};
+use std::collections::VecDeque;
+
+use super::hierarchical_derivation::PublishedHydrology;
+use crate::world::natural::SurfaceWaterKind;
 use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::{CellId, LakeId};
 
-/// One P5 water body visible from a cell: its kind and its surface.
+/// One P5 water body visible from a cell: its kind, its surface and, for
+/// a lake, its slot in the published lake list.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct WaterCandidate {
-    kind: SurfaceWaterKind,
-    surface_m: f32,
+pub(super) struct WaterCandidate {
+    pub(super) kind: SurfaceWaterKind,
+    pub(super) surface_m: f32,
+    pub(super) lake: Option<u32>,
 }
 
-/// Body identity for de-duplicating ring candidates; the ocean is one body.
+/// Body identity for ordering candidates; the ocean is one body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum WaterBody {
     Ocean,
@@ -36,115 +43,300 @@ enum WaterBody {
 pub struct FineShoreline {
     row_start: Vec<u32>,
     candidates: Vec<WaterCandidate>,
+    /// Per candidate: bit `s` set when sector `s` of the row's cell is in
+    /// the lake's level-1 water (R2.3(b)); always 0 for the ocean.
+    level1_water: Vec<u64>,
+    /// Per cell: the surface of the water body owning the cell, if any.
+    own_surface_m: Vec<Option<f32>>,
+    /// Per cell: the lake slot when the cell is a P5 lake cell.
+    own_lake: Vec<Option<u32>>,
+    /// Per lake slot: the published surface.
+    lake_surface_m: Vec<f32>,
+    /// Per cell: whether the cell or an edge neighbour is a P5 water cell,
+    /// or the cell is on a lake bound — the LOD-1 spec §3.2 D2 near-water
+    /// partition as extended by R2.3(d).
+    near_water: Vec<bool>,
 }
 
 impl FineShoreline {
-    /// Builds the candidate rows from the published P5 hydrology.
+    /// Builds the candidate rows and lake bounds from the published P5
+    /// hydrology.
     ///
     /// # Arguments
     ///
     /// * `surface` - The authoritative surface the hydrology indexes.
-    /// * `water` - The published P5 per-cell water classification.
-    /// * `lakes` - The published P5 lakes (members and surfaces).
+    /// * `hydrology` - The published P5 water bodies and fill surface.
+    /// * `elevation_m` - The authoritative cell elevations.
     /// * `sea_level_m` - The formal sea level the ocean surface uses.
     ///
     /// # Returns
     ///
     /// The classifier; a cell missing from the hydrology contributes no
     /// candidate, which leaves its leaves dry.
-    pub fn new(
+    pub(super) fn new(
         surface: &SphericalSurfaceSnapshot,
-        water: &SurfaceWaterField,
-        lakes: &[Lake],
+        hydrology: &PublishedHydrology<'_>,
+        elevation_m: &[f32],
         sea_level_m: f32,
     ) -> Self {
         let cell_count = surface.cells().len();
-        let mut lake_of = vec![None; cell_count];
-        for lake in lakes {
-            for cell in lake.cells() {
-                if let Some(slot) = lake_of.get_mut(cell.raw() as usize) {
-                    *slot = Some((lake.id(), lake.surface_elevation_m()));
-                }
-            }
-        }
-        let body_of = |cell: usize| -> Option<(WaterBody, WaterCandidate)> {
-            match water.get(cell)? {
-                SurfaceWaterKind::DryLand => None,
-                SurfaceWaterKind::Ocean => Some((
-                    WaterBody::Ocean,
-                    WaterCandidate {
-                        kind: SurfaceWaterKind::Ocean,
-                        surface_m: sea_level_m,
-                    },
-                )),
-                SurfaceWaterKind::Lake => lake_of[cell].map(|(id, surface_m)| {
-                    (
-                        WaterBody::Lake(id),
-                        WaterCandidate {
-                            kind: SurfaceWaterKind::Lake,
-                            surface_m,
-                        },
-                    )
-                }),
-            }
-        };
-
-        let mut row_start = Vec::with_capacity(cell_count + 1);
-        let mut candidates = Vec::new();
-        let mut ring = Vec::new();
-        for (cell, record) in surface.cells().iter().enumerate() {
-            row_start.push(candidates.len() as u32);
-            let own = body_of(cell);
-            if let Some((_, candidate)) = own {
-                candidates.push(candidate);
-            }
-            ring.clear();
-            ring.extend(
+        let water = hydrology.surface_water;
+        let kind = |cell: usize| water.get(cell).unwrap_or(SurfaceWaterKind::DryLand);
+        let neighbours: Vec<Vec<usize>> = surface
+            .cells()
+            .iter()
+            .map(|record| {
                 record
                     .boundary_edges
                     .iter()
                     .filter_map(|&edge| surface.opposite_cell(record.id, edge))
-                    .filter_map(|neighbour| body_of(neighbour.raw() as usize))
-                    .filter(|(body, _)| own.is_none_or(|(own_body, _)| own_body != *body)),
+                    .map(|cell| cell.raw() as usize)
+                    .collect()
+            })
+            .collect();
+        let mut own_lake = vec![None; cell_count];
+        for (slot, lake) in hydrology.lakes.iter().enumerate() {
+            for cell in lake.cells() {
+                if let Some(entry) = own_lake.get_mut(cell.raw() as usize) {
+                    *entry = Some(slot as u32);
+                }
+            }
+        }
+        let fill = |cell: usize| hydrology.fill_surface_m.get(cell).copied();
+        let elevation = |cell: usize| elevation_m.get(cell).copied();
+        // Per cell: the lakes whose bound contains it (R2.3(a)).
+        let mut bound_lakes: Vec<Vec<u32>> = vec![Vec::new(); cell_count];
+        let mut on_bound = vec![false; cell_count];
+        for (slot, lake) in hydrology.lakes.iter().enumerate() {
+            let surface_m = lake.surface_elevation_m();
+            let mut members: Vec<usize> = lake.cells().iter().map(|c| c.raw() as usize).collect();
+            members.retain(|&cell| cell < cell_count);
+            for &cell in &members {
+                on_bound[cell] = true;
+            }
+            // The depression at the lake level: cells the fill raises to
+            // the lake surface whose centroid lies below it.
+            let mut queue: VecDeque<usize> = members.iter().copied().collect();
+            while let Some(cell) = queue.pop_front() {
+                for &next in &neighbours[cell] {
+                    if !on_bound[next]
+                        && kind(next) == SurfaceWaterKind::DryLand
+                        && fill(next) == Some(surface_m)
+                        && elevation(next).is_some_and(|z| z < surface_m)
+                    {
+                        on_bound[next] = true;
+                        members.push(next);
+                        queue.push_back(next);
+                    }
+                }
+            }
+            // The dry ring holding the water at the lake level.
+            let depression = members.len();
+            for index in 0..depression {
+                for &next in &neighbours[members[index]] {
+                    if !on_bound[next]
+                        && kind(next) == SurfaceWaterKind::DryLand
+                        && fill(next).is_some_and(|level| level > surface_m)
+                    {
+                        on_bound[next] = true;
+                        members.push(next);
+                    }
+                }
+            }
+            for &cell in &members {
+                on_bound[cell] = false;
+                bound_lakes[cell].push(slot as u32);
+            }
+        }
+
+        let lake_candidate = |slot: u32| {
+            let lake = &hydrology.lakes[slot as usize];
+            (
+                WaterBody::Lake(lake.id()),
+                WaterCandidate {
+                    kind: SurfaceWaterKind::Lake,
+                    surface_m: lake.surface_elevation_m(),
+                    lake: Some(slot),
+                },
+            )
+        };
+        let ocean = (
+            WaterBody::Ocean,
+            WaterCandidate {
+                kind: SurfaceWaterKind::Ocean,
+                surface_m: sea_level_m,
+                lake: None,
+            },
+        );
+        let mut row_start = Vec::with_capacity(cell_count + 1);
+        let mut candidates = Vec::new();
+        let mut own_surface_m = Vec::with_capacity(cell_count);
+        let mut near_water = Vec::with_capacity(cell_count);
+        let mut others = Vec::new();
+        for cell in 0..cell_count {
+            row_start.push(candidates.len() as u32);
+            let own = match kind(cell) {
+                SurfaceWaterKind::DryLand => None,
+                SurfaceWaterKind::Ocean => Some(ocean),
+                SurfaceWaterKind::Lake => own_lake[cell].map(lake_candidate),
+            };
+            own_surface_m.push(own.map(|(_, candidate)| candidate.surface_m));
+            near_water.push(
+                kind(cell) != SurfaceWaterKind::DryLand
+                    || !bound_lakes[cell].is_empty()
+                    || neighbours[cell]
+                        .iter()
+                        .any(|&next| kind(next) != SurfaceWaterKind::DryLand),
             );
+            if let Some((_, candidate)) = own {
+                candidates.push(candidate);
+            }
+            others.clear();
+            if neighbours[cell]
+                .iter()
+                .any(|&next| kind(next) == SurfaceWaterKind::Ocean)
+            {
+                others.push(ocean);
+            }
+            others.extend(bound_lakes[cell].iter().map(|&slot| lake_candidate(slot)));
+            others.retain(|(body, _)| own.is_none_or(|(own_body, _)| own_body != *body));
             // Ascending surface, ties broken by the stable body identity so
-            // the order never depends on edge enumeration.
-            ring.sort_by(|(left_body, left), (right_body, right)| {
+            // the order never depends on enumeration.
+            others.sort_by(|(left_body, left), (right_body, right)| {
                 left.surface_m
                     .total_cmp(&right.surface_m)
                     .then(left_body.cmp(right_body))
             });
-            ring.dedup_by_key(|(body, _)| *body);
-            candidates.extend(ring.iter().map(|(_, candidate)| *candidate));
+            others.dedup_by_key(|(body, _)| *body);
+            candidates.extend(others.iter().map(|(_, candidate)| *candidate));
         }
         row_start.push(candidates.len() as u32);
         Self {
             row_start,
+            level1_water: vec![0; candidates.len()],
             candidates,
+            own_surface_m,
+            own_lake,
+            lake_surface_m: hydrology
+                .lakes
+                .iter()
+                .map(|lake| lake.surface_elevation_m())
+                .collect(),
+            near_water,
         }
     }
 
-    /// Classifies one derived leaf of `cell` by its derived elevation.
-    ///
-    /// # Arguments
-    ///
-    /// * `cell` - The leaf's root cell.
-    /// * `elevation_m` - The leaf's derived face value.
-    ///
-    /// # Returns
-    ///
-    /// The kind of the first candidate body whose surface lies strictly
-    /// above the leaf, else [`SurfaceWaterKind::DryLand`].
-    pub fn classify(&self, cell: CellId, elevation_m: f32) -> SurfaceWaterKind {
+    /// The classifier of a world without published water: every row is
+    /// empty, so every leaf is dry and every cell is inland.
+    pub(super) fn without_water(cell_count: usize) -> Self {
+        Self {
+            row_start: vec![0; cell_count + 1],
+            candidates: Vec::new(),
+            level1_water: Vec::new(),
+            own_surface_m: vec![None; cell_count],
+            own_lake: vec![None; cell_count],
+            lake_surface_m: Vec::new(),
+            near_water: vec![false; cell_count],
+        }
+    }
+
+    fn row_range(&self, cell: CellId) -> std::ops::Range<usize> {
         let index = cell.raw() as usize;
-        let (Some(&start), Some(&end)) = (self.row_start.get(index), self.row_start.get(index + 1))
-        else {
-            return SurfaceWaterKind::DryLand;
-        };
-        self.candidates[start as usize..end as usize]
+        match (self.row_start.get(index), self.row_start.get(index + 1)) {
+            (Some(&start), Some(&end)) => start as usize..end as usize,
+            _ => 0..0,
+        }
+    }
+
+    /// The ordered water candidates of `cell`: its own body first, then the
+    /// others by ascending surface.
+    pub(super) fn row(&self, cell: CellId) -> &[WaterCandidate] {
+        &self.candidates[self.row_range(cell)]
+    }
+
+    /// Whether `cell` is on the bound of lake `lake`.
+    pub(super) fn on_lake_bound(&self, cell: CellId, lake: u32) -> bool {
+        self.row(cell)
             .iter()
-            .find(|candidate| elevation_m < candidate.surface_m)
-            .map_or(SurfaceWaterKind::DryLand, |candidate| candidate.kind)
+            .any(|candidate| candidate.lake == Some(lake))
+    }
+
+    /// Whether sector `sector` of `cell` is in lake `lake`'s level-1 water.
+    pub(super) fn in_level1_water(&self, cell: CellId, sector: u8, lake: u32) -> bool {
+        let range = self.row_range(cell);
+        self.candidates[range.clone()]
+            .iter()
+            .zip(&self.level1_water[range])
+            .any(|(candidate, mask)| candidate.lake == Some(lake) && mask >> sector & 1 == 1)
+    }
+
+    /// Records the level-1 water of lake `lake` in `cell` (bit per sector).
+    pub(super) fn set_level1_water(&mut self, cell: CellId, lake: u32, sectors: u64) {
+        let range = self.row_range(cell);
+        for (candidate, mask) in self.candidates[range.clone()]
+            .iter()
+            .zip(&mut self.level1_water[range])
+        {
+            if candidate.lake == Some(lake) {
+                *mask = sectors;
+            }
+        }
+    }
+
+    /// The published surface of lake slot `lake`.
+    pub(super) fn lake_surface_m(&self, lake: u32) -> f32 {
+        self.lake_surface_m[lake as usize]
+    }
+
+    /// The lake slot of `cell` when it is a P5 lake cell.
+    pub(super) fn own_lake(&self, cell: CellId) -> Option<u32> {
+        self.own_lake.get(cell.raw() as usize).copied().flatten()
+    }
+
+    /// The surface of the P5 water body owning `cell` (ocean: the formal
+    /// sea level; lake: its published surface), or `None` on dry land —
+    /// the erosion base level of the LOD-1 spec §3.3 D3.
+    pub(super) fn own_surface_m(&self, cell: CellId) -> Option<f32> {
+        self.own_surface_m
+            .get(cell.raw() as usize)
+            .copied()
+            .flatten()
+    }
+
+    /// Whether `cell` is inland in the LOD-1 spec §3.2 D2 partition.
+    pub(super) fn is_inland(&self, cell: CellId) -> bool {
+        !self
+            .near_water
+            .get(cell.raw() as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The lake surface below which the lake bed shared by `a` and `b`
+    /// (pass the same cell twice for one cell's interior) is flattened
+    /// (LOD-1 spec R2.3(c)): the highest surface among the lakes whose
+    /// bound holds both cells, or `None` when either cell sees the ocean
+    /// or no lake holds both. Symmetric in `a` and `b`.
+    pub(super) fn bed_surface_m(&self, a: CellId, b: CellId) -> Option<f32> {
+        let sees_ocean = |cell: CellId| {
+            self.row(cell)
+                .iter()
+                .any(|candidate| candidate.lake.is_none())
+        };
+        if sees_ocean(a) || sees_ocean(b) {
+            return None;
+        }
+        self.row(a)
+            .iter()
+            .filter_map(|candidate| candidate.lake)
+            .filter(|&lake| self.on_lake_bound(b, lake))
+            .map(|lake| self.lake_surface_m(lake))
+            .max_by(f32::total_cmp)
+    }
+
+    /// Whether no leaf of `cell` can ever be water: it has no candidate.
+    pub(super) fn never_wet(&self, cell: CellId) -> bool {
+        self.row_range(cell).is_empty()
     }
 }
 
@@ -152,6 +344,7 @@ impl FineShoreline {
 mod tests {
     use super::*;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
+    use crate::world::natural::{Lake, RiverSegment, SurfaceWaterField};
     use crate::world::{Meters, SphericalSpaceSpec};
 
     fn surface() -> SphericalSurfaceSnapshot {
@@ -165,38 +358,75 @@ mod tests {
         .unwrap()
     }
 
-    /// Picks an ocean cell, a lake cell two rings away from it, the dry
-    /// cell between them, and a dry cell touching neither.
-    fn layout(surface: &SphericalSurfaceSnapshot) -> (usize, usize, usize, usize) {
-        let count = surface.cells().len();
-        let mut neighbours = vec![Vec::new(); count];
+    fn neighbours(surface: &SphericalSurfaceSnapshot) -> Vec<Vec<usize>> {
+        let mut neighbours = vec![Vec::new(); surface.cells().len()];
         for edge in surface.edges() {
             let [a, b] = edge.cells.map(|cell| cell.raw() as usize);
             neighbours[a].push(b);
             neighbours[b].push(a);
         }
-        let ocean = 0;
-        let between = neighbours[ocean][0];
-        let lake = *neighbours[between]
+        neighbours
+    }
+
+    /// One lake cell at 50 m with a fill-level fringe cell (flooded
+    /// centroid), a spill-side cell at the lake level with a dry centroid,
+    /// a cell below the lake level past the spill, and an ocean cell two
+    /// rings out; every other cell rises above the lake.
+    struct Layout {
+        lake: usize,
+        fringe: usize,
+        sill: usize,
+        low: usize,
+        rim: usize,
+        fringe_rim: usize,
+        ocean: usize,
+        far: usize,
+        shoreline: FineShoreline,
+    }
+
+    fn layout() -> Layout {
+        let surface = surface();
+        let count = surface.cells().len();
+        let near = neighbours(&surface);
+        let lake = 0;
+        let (fringe, sill, low, rim) = (near[lake][0], near[lake][1], near[lake][2], near[lake][3]);
+        let fringe_rim = *near[fringe]
             .iter()
-            .find(|&&cell| cell != ocean && !neighbours[ocean].contains(&cell))
+            .find(|&&cell| cell != lake && !near[lake].contains(&cell))
+            .unwrap();
+        // Three rings out: no ring cell of the lake sees this ocean.
+        let mut ring = vec![usize::MAX; count];
+        ring[lake] = 0;
+        let mut queue = VecDeque::from([lake]);
+        while let Some(cell) = queue.pop_front() {
+            for &next in &near[cell] {
+                if ring[next] == usize::MAX {
+                    ring[next] = ring[cell] + 1;
+                    queue.push_back(next);
+                }
+            }
+        }
+        let ocean = (0..count)
+            .find(|&cell| ring[cell] == 3 && !near[cell].contains(&fringe_rim))
             .unwrap();
         let far = (0..count)
             .find(|&cell| {
-                ![ocean, lake].contains(&cell)
-                    && !neighbours[cell].contains(&ocean)
-                    && !neighbours[cell].contains(&lake)
+                ring[cell] >= 2
+                    && cell != ocean
+                    && !near[fringe].contains(&cell)
+                    && !near[cell].contains(&ocean)
             })
             .unwrap();
-        (ocean, between, lake, far)
-    }
-
-    fn classifier(surface: &SphericalSurfaceSnapshot) -> (FineShoreline, [usize; 4]) {
-        let (ocean, between, lake, far) = layout(surface);
-        let count = surface.cells().len();
         let mut kinds = vec![SurfaceWaterKind::DryLand; count];
-        kinds[ocean] = SurfaceWaterKind::Ocean;
         kinds[lake] = SurfaceWaterKind::Lake;
+        kinds[ocean] = SurfaceWaterKind::Ocean;
+        let mut elevation = vec![80.0_f32; count];
+        let mut fill = vec![80.0_f32; count];
+        (elevation[lake], fill[lake]) = (40.0, 50.0);
+        (elevation[fringe], fill[fringe]) = (49.5, 50.0);
+        (elevation[sill], fill[sill]) = (50.0, 50.0);
+        (elevation[low], fill[low]) = (30.0, 30.0);
+        (elevation[ocean], fill[ocean]) = (-500.0, -500.0);
         let lakes = vec![Lake::new(
             LakeId::from_raw(0),
             vec![CellId::from_raw(lake as u32)],
@@ -207,36 +437,79 @@ mod tests {
             None,
         )
         .unwrap()];
-        (
-            FineShoreline::new(surface, &SurfaceWaterField::from_kinds(kinds), &lakes, 0.0),
-            [ocean, between, lake, far],
-        )
+        let water = SurfaceWaterField::from_kinds(kinds);
+        let segments: [RiverSegment; 0] = [];
+        let shoreline = FineShoreline::new(
+            &surface,
+            &PublishedHydrology {
+                segments: &segments,
+                surface_water: &water,
+                lakes: &lakes,
+                fill_surface_m: &fill,
+            },
+            &elevation,
+            0.0,
+        );
+        Layout {
+            lake,
+            fringe,
+            sill,
+            low,
+            rim,
+            fringe_rim,
+            ocean,
+            far,
+            shoreline,
+        }
     }
 
+    /// LOD-1 spec R2.3(a): the lake bound is the depression at the lake
+    /// level (lake and flooded fringe cells) plus its dry ring above the
+    /// level; the spill side, the ocean and cells beyond stay off it.
     #[test]
-    fn leaves_follow_the_water_surface_inside_the_ring_only() {
-        let surface = surface();
-        let (shoreline, [ocean, between, lake, far]) = classifier(&surface);
-        let at = |cell: usize, elevation: f32| {
-            shoreline.classify(CellId::from_raw(cell as u32), elevation)
+    fn the_lake_bound_is_the_depression_and_its_holding_ring() {
+        let layout = layout();
+        let on = |cell: usize| {
+            layout
+                .shoreline
+                .on_lake_bound(CellId::from_raw(cell as u32), 0)
         };
+        for cell in [layout.lake, layout.fringe, layout.rim, layout.fringe_rim] {
+            assert!(on(cell), "cell {cell} holds the lake");
+        }
+        for cell in [layout.sill, layout.low, layout.ocean, layout.far] {
+            assert!(!on(cell), "cell {cell} is not the lake's");
+        }
+        let own = layout.shoreline.row(CellId::from_raw(layout.lake as u32));
+        assert_eq!(own[0].lake, Some(0), "the root's own body comes first");
+        assert_eq!(
+            layout
+                .shoreline
+                .own_lake(CellId::from_raw(layout.lake as u32)),
+            Some(0)
+        );
+    }
 
-        // Inside a body: below its surface is water, above is an island.
-        assert_eq!(at(ocean, -1.0), SurfaceWaterKind::Ocean);
-        assert_eq!(at(ocean, 0.0), SurfaceWaterKind::DryLand);
-        assert_eq!(at(lake, 49.0), SurfaceWaterKind::Lake);
-        assert_eq!(at(lake, 50.0), SurfaceWaterKind::DryLand);
-        // A lake cell's leaf that dips below sea level next to no ocean
-        // stays lake: the root owner comes first.
-        assert_eq!(at(lake, -10.0), SurfaceWaterKind::Lake);
-        // The ring: the lower surface is tried first, so a leaf below sea
-        // level between ocean and lake joins the ocean, a leaf between the
-        // two surfaces joins the lake.
-        assert_eq!(at(between, -1.0), SurfaceWaterKind::Ocean);
-        assert_eq!(at(between, 10.0), SurfaceWaterKind::Lake);
-        assert_eq!(at(between, 60.0), SurfaceWaterKind::DryLand);
-        // Outside every ring nothing floods, however low (closed basins
-        // below sea level stay dry).
-        assert_eq!(at(far, -500.0), SurfaceWaterKind::DryLand);
+    /// The D2 near-water partition is own or edge-neighbour water or a lake
+    /// bound (R2.3(d)); a cell with no candidate can never be wet.
+    #[test]
+    fn near_water_and_candidates_follow_the_published_water() {
+        let layout = layout();
+        let shoreline = &layout.shoreline;
+        let id = |cell: usize| CellId::from_raw(cell as u32);
+        assert!(!shoreline.is_inland(id(layout.sill)));
+        assert!(shoreline.never_wet(id(layout.sill)));
+        assert!(!shoreline.never_wet(id(layout.fringe_rim)));
+        assert!(shoreline.is_inland(id(layout.far)) && shoreline.never_wet(id(layout.far)));
+        // R2.3(d): a bound cell away from any water body is near water too.
+        assert!(!shoreline.is_inland(id(layout.fringe_rim)));
+        // R2.3(c): the bed flattens on the bound only, symmetrically.
+        let (lake, rim) = (id(layout.lake), id(layout.rim));
+        assert_eq!(shoreline.bed_surface_m(lake, lake), Some(50.0));
+        assert_eq!(
+            shoreline.bed_surface_m(lake, rim),
+            shoreline.bed_surface_m(rim, lake)
+        );
+        assert_eq!(shoreline.bed_surface_m(lake, id(layout.sill)), None);
     }
 }

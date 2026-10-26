@@ -40,7 +40,6 @@ pub use climate_rule_input::{
     RuleClimateResolutionStage, RuleClimateResolutionStageInputs,
 };
 pub use erosion::{FluvialErosionError, FluvialErosionGenerator};
-pub use fine_shoreline::FineShoreline;
 pub use formation::{
     annual_precipitation_total_bias, causal_natural_formation_graph,
     causal_natural_formation_graph_with_geometry, classify_substrate_bedrock,
@@ -110,7 +109,8 @@ pub use geologic_rule_input::{
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use hierarchical_derivation::{
-    HierarchicalEvaluator, HierarchicalPath, HierarchicalProbe, LocatedPrimitive, PrimitiveValue,
+    geometric_midpoint, subdivision_children, DerivedReading, HierarchicalEvaluator,
+    HierarchicalPath, HierarchicalProbe, LocatedPrimitive, PrimitiveValue, PublishedHydrology,
     HIERARCHICAL_PATH_DEPTH_MAX, HIERARCHICAL_PROBE_COUNT,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
