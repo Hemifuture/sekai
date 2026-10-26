@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 
 use rayon::prelude::*;
 use sekai::generators::natural::{
-    fibonacci_probe, FineShoreline, FormationDerivationInputs, HierarchicalEvaluator,
-    LocatedPrimitive,
+    fibonacci_probe, subdivision_children, FineShoreline, FormationDerivationInputs,
+    HierarchicalEvaluator, LocatedPrimitive,
 };
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
@@ -754,4 +754,303 @@ fn pick_display(fixture: &CausalFormationFixture, tier: &str) {
             100.0 * derived as f64 / total as f64
         );
     }
+}
+
+/// One lake's fine-shoreline statistics over its cells and two edge rings
+/// (LOD-1 spec R2.4 / R2.7): the lake-water area per level and, at the top
+/// level, the water pieces, enclosed islands and shoreline leaf edges.
+struct LakeShoreStats {
+    /// Index `level - 1`: (lake-water leaf area, P5 lake-cell area).
+    area: Vec<(f64, f64)>,
+    components: usize,
+    island_area: f64,
+    wet_area: f64,
+    shore_edges: usize,
+    shore_on_cell_edge: usize,
+    hard_cut_edges: usize,
+}
+
+/// One drawn leaf of the statistics walk.
+struct ShoreLeaf {
+    cell: usize,
+    lake: bool,
+    below_surface: bool,
+    area: f64,
+    edges: [([u64; 3], [u64; 3]); 3],
+}
+
+/// Every leaf `level - 1` levels below the sectors of `cells`, with the
+/// class the mesh paints it with and its three edge keys (sorted corner
+/// bits), the corners from the production subdivision geometry.
+fn shore_leaves(
+    evaluator: &HierarchicalEvaluator,
+    cells: &[usize],
+    level: u8,
+    surface_m: f32,
+) -> Vec<ShoreLeaf> {
+    fn corners_at(corners: [UnitVector3; 3], depth: u8, out: &mut Vec<[UnitVector3; 3]>) {
+        if depth == 0 {
+            out.push(corners);
+            return;
+        }
+        for child in subdivision_children(corners) {
+            corners_at(child, depth - 1, out);
+        }
+    }
+    let key = |point: UnitVector3| point.components().map(f64::to_bits);
+    let mut leaves = Vec::new();
+    for &index in cells {
+        let cell = CellId::from_raw(index as u32);
+        for sector in 0..evaluator.sector_count(cell) as u8 {
+            let mut geometry = Vec::new();
+            corners_at(
+                evaluator.sector_corners(cell, sector),
+                level - 1,
+                &mut geometry,
+            );
+            let mut geometry = geometry.into_iter();
+            evaluator.for_each_leaf_reading(cell, sector, &[], level - 1, &mut |reading| {
+                let corners = geometry
+                    .next()
+                    .expect("geometry and readings share the depth-first order");
+                let edge = |a: usize, b: usize| {
+                    let (p, q) = (key(corners[a]), key(corners[b]));
+                    if p <= q {
+                        (p, q)
+                    } else {
+                        (q, p)
+                    }
+                };
+                leaves.push(ShoreLeaf {
+                    cell: index,
+                    lake: reading.water == SurfaceWaterKind::Lake,
+                    below_surface: reading.value.elevation_m < surface_m,
+                    area: spherical_triangle_area_unit(corners[0], corners[1], corners[2]),
+                    edges: [edge(0, 1), edge(1, 2), edge(2, 0)],
+                });
+            });
+        }
+    }
+    leaves
+}
+
+/// Per lake of the fixture: [`LakeShoreStats`] for levels `1..=top_level`.
+fn lake_shore_stats(fixture: &CausalFormationFixture, top_level: u8) -> Vec<LakeShoreStats> {
+    use std::collections::{HashMap, VecDeque};
+
+    let evaluator = evaluator_for(fixture);
+    let formation = fixture.artifact.bundle().surface_formation();
+    let hydrology = formation.hydrology();
+    let filled = hydrology.drainage_surface_elevation_m().values();
+    let elevation = formation.terrain_fields().current_elevation_m();
+    let cell_count = fixture.surface.cells().len();
+    let mut neighbours = vec![Vec::new(); cell_count];
+    for edge in fixture.surface.edges() {
+        let [a, b] = edge.cells.map(|cell| cell.raw() as usize);
+        neighbours[a].push(b);
+        neighbours[b].push(a);
+    }
+    hydrology
+        .lakes()
+        .par_iter()
+        .map(|lake| {
+            let surface_m = lake.surface_elevation_m();
+            let mut ring = vec![usize::MAX; cell_count];
+            let mut queue: VecDeque<usize> = lake
+                .cells()
+                .iter()
+                .map(|cell| cell.raw() as usize)
+                .collect();
+            for &cell in &queue {
+                ring[cell] = 0;
+            }
+            let mut region = Vec::new();
+            while let Some(cell) = queue.pop_front() {
+                region.push(cell);
+                if ring[cell] == 2 {
+                    continue;
+                }
+                for &next in &neighbours[cell] {
+                    if ring[next] == usize::MAX {
+                        ring[next] = ring[cell] + 1;
+                        queue.push_back(next);
+                    }
+                }
+            }
+            // The spill side of the lake (R2.3(a)): below the fill level,
+            // or at it with an unflooded centroid.
+            let spill_side = |cell: usize| {
+                filled[cell] < surface_m
+                    || (filled[cell] == surface_m && elevation[cell] >= surface_m)
+            };
+            let mut stats = LakeShoreStats {
+                area: Vec::new(),
+                components: 0,
+                island_area: 0.0,
+                wet_area: 0.0,
+                shore_edges: 0,
+                shore_on_cell_edge: 0,
+                hard_cut_edges: 0,
+            };
+            for level in 1..=top_level {
+                let leaves = shore_leaves(&evaluator, &region, level, surface_m);
+                let lake_area: f64 = leaves
+                    .iter()
+                    .filter(|leaf| ring[leaf.cell] == 0)
+                    .map(|leaf| leaf.area)
+                    .sum();
+                let wet_area: f64 = leaves
+                    .iter()
+                    .filter(|leaf| leaf.lake)
+                    .map(|leaf| leaf.area)
+                    .sum();
+                stats.area.push((wet_area, lake_area));
+                if level < top_level {
+                    continue;
+                }
+                stats.wet_area = wet_area;
+                let mut adjacency = vec![[usize::MAX; 3]; leaves.len()];
+                let mut open: HashMap<([u64; 3], [u64; 3]), (usize, usize)> = HashMap::new();
+                for (index, leaf) in leaves.iter().enumerate() {
+                    for (side, edge) in leaf.edges.iter().enumerate() {
+                        if let Some((other, other_side)) = open.remove(edge) {
+                            adjacency[index][side] = other;
+                            adjacency[other][other_side] = index;
+                        } else {
+                            open.insert(*edge, (index, side));
+                        }
+                    }
+                }
+                // Water pieces, and dry pieces that never reach the outer
+                // ring (islands enclosed by lake water).
+                let mut seen = vec![false; leaves.len()];
+                for start in 0..leaves.len() {
+                    if seen[start] {
+                        continue;
+                    }
+                    let wet = leaves[start].lake;
+                    let (mut area, mut open_piece) = (0.0, false);
+                    let mut stack = vec![start];
+                    seen[start] = true;
+                    while let Some(index) = stack.pop() {
+                        area += leaves[index].area;
+                        open_piece |= ring[leaves[index].cell] == 2;
+                        for &next in &adjacency[index] {
+                            if next == usize::MAX {
+                                open_piece = true;
+                            } else if !seen[next] && leaves[next].lake == wet {
+                                seen[next] = true;
+                                stack.push(next);
+                            }
+                        }
+                    }
+                    if wet {
+                        stats.components += 1;
+                    } else if !open_piece {
+                        stats.island_area += area;
+                    }
+                }
+                for (index, leaf) in leaves.iter().enumerate() {
+                    if !leaf.lake {
+                        continue;
+                    }
+                    for &next in &adjacency[index] {
+                        if next == usize::MAX || leaves[next].lake {
+                            continue;
+                        }
+                        let other = &leaves[next];
+                        stats.shore_edges += 1;
+                        stats.shore_on_cell_edge += usize::from(other.cell != leaf.cell);
+                        stats.hard_cut_edges +=
+                            usize::from(other.below_surface && spill_side(other.cell));
+                    }
+                }
+            }
+            stats
+        })
+        .collect()
+}
+
+/// The R2.7 gate quantities aggregated over the lakes of one tier.
+struct LakeShoreSummary {
+    components_total: usize,
+    components_median: usize,
+    island_share_mean: f64,
+    shore_on_cell_edge: f64,
+    hard_cut: f64,
+    adjacent_ratios: Vec<f64>,
+}
+
+fn summarize_lake_shore(tier: &str, top_level: u8, stats: &[LakeShoreStats]) -> LakeShoreSummary {
+    let mut components: Vec<usize> = stats.iter().map(|s| s.components).collect();
+    components.sort_unstable();
+    let island_share: Vec<f64> = stats
+        .iter()
+        .filter(|s| s.wet_area > 0.0)
+        .map(|s| s.island_area / s.wet_area)
+        .collect();
+    let shore: usize = stats.iter().map(|s| s.shore_edges).sum();
+    let on_edge: usize = stats.iter().map(|s| s.shore_on_cell_edge).sum();
+    let hard: usize = stats.iter().map(|s| s.hard_cut_edges).sum();
+    // Adjacent-level ratios from level 3 on, where the parent level shows
+    // at least 5 % of the lake cells (R2.4).
+    let adjacent_ratios: Vec<f64> = stats
+        .iter()
+        .flat_map(|s| {
+            let ratio = |k: usize| s.area[k].0 / s.area[k].1;
+            (2..s.area.len())
+                .filter(|&k| ratio(k - 1) >= 0.05)
+                .map(|k| ratio(k) / ratio(k - 1))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let summary = LakeShoreSummary {
+        components_total: components.iter().sum(),
+        components_median: components[components.len() / 2],
+        island_share_mean: island_share.iter().sum::<f64>() / island_share.len().max(1) as f64,
+        shore_on_cell_edge: on_edge as f64 / shore.max(1) as f64,
+        hard_cut: hard as f64 / shore.max(1) as f64,
+        adjacent_ratios,
+    };
+    let per_level: Vec<String> = (0..usize::from(top_level))
+        .map(|k| {
+            let wet: f64 = stats.iter().map(|s| s.area[k].0).sum();
+            let lake: f64 = stats.iter().map(|s| s.area[k].1).sum();
+            format!("L{} {:.3}", k + 1, wet / lake)
+        })
+        .collect();
+    eprintln!(
+        "[lake shore {tier}] {} lakes; L{top_level} water pieces total {} median {}; enclosed \
+         islands / water (mean per lake) {:.4}; shoreline on cell edges {:.4}, hard cuts {:.4} \
+         of {shore} shoreline leaf edges",
+        stats.len(),
+        summary.components_total,
+        summary.components_median,
+        summary.island_share_mean,
+        summary.shore_on_cell_edge,
+        summary.hard_cut,
+    );
+    eprintln!(
+        "[lake shore {tier}] lake water / P5 lake cells (all lakes) per level: {}",
+        per_level.join(", ")
+    );
+    eprintln!(
+        "[lake shore {tier}] adjacent-level area ratio | {}",
+        quantiles(&mut summary.adjacent_ratios.clone())
+    );
+    summary
+}
+
+/// LOD-1 spec R2 baseline and observation probe: the R2.7 gate quantities
+/// on the shipped classification, printed without asserting.
+#[test]
+#[ignore = "release-only offline lake shoreline probe (LOD-1 spec R2.7)"]
+fn lake_shoreline_probe() {
+    summarize_lake_shore("draft", 6, &lake_shore_stats(causal_formation_fixture(), 6));
+}
+
+#[test]
+#[ignore = "release-only offline Standard re-check (LOD-1 spec R2.7)"]
+fn lake_shoreline_probe_standard() {
+    summarize_lake_shore("standard", 5, &lake_shore_stats(standard_fixture(), 5));
 }

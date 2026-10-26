@@ -500,11 +500,7 @@ impl HierarchicalEvaluator {
     /// [`Self::locate`] chooses it (largest interior margin over the same
     /// renormalized-sum midpoint geometry the anchors carry).
     fn containing_child(&self, frame: &TriangleFrame, direction: UnitVector3) -> u8 {
-        let [a, b, c] = frame.corners.map(|anchor| anchor.position);
-        let ab = geometric_midpoint(a, b);
-        let bc = geometric_midpoint(b, c);
-        let ca = geometric_midpoint(c, a);
-        let children = [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]];
+        let children = subdivision_children(frame.corners.map(|anchor| anchor.position));
         let mut child = 0;
         let mut best = f64::NEG_INFINITY;
         for (candidate, triangle) in children.iter().enumerate() {
@@ -580,15 +576,7 @@ impl HierarchicalEvaluator {
         let mut corners = [self.cell_centroid[cell_index as usize], near, far];
         let mut steps = [0_u8; HIERARCHICAL_PATH_DEPTH_MAX];
         for slot in steps.iter_mut().take(depth) {
-            let ab = geometric_midpoint(corners[0], corners[1]);
-            let bc = geometric_midpoint(corners[1], corners[2]);
-            let ca = geometric_midpoint(corners[2], corners[0]);
-            let children = [
-                [corners[0], ab, ca],
-                [ab, corners[1], bc],
-                [ca, bc, corners[2]],
-                [ab, bc, ca],
-            ];
+            let children = subdivision_children(corners);
             let mut child = 0;
             let mut best = f64::NEG_INFINITY;
             for (candidate, triangle) in children.iter().enumerate() {
@@ -958,6 +946,35 @@ impl HierarchicalEvaluator {
         );
     }
 
+    /// Streams what the terrain mesh draws for every leaf `extra_levels`
+    /// below `(cell, sector, prefix)`, in the same depth-first order as
+    /// [`Self::for_each_leaf_value`]: each leaf's value with its fine
+    /// shoreline class — the per-leaf counterpart of [`Self::read`].
+    ///
+    /// # Arguments
+    ///
+    /// * `cell` - The root L0 cell.
+    /// * `sector` - The fan sector inside `cell`.
+    /// * `prefix` - The subdivision path of the subtree root.
+    /// * `extra_levels` - How many levels below the subtree root to emit.
+    /// * `sink` - Receives one reading per leaf.
+    pub fn for_each_leaf_reading(
+        &self,
+        cell: CellId,
+        sector: u8,
+        prefix: &[u8],
+        extra_levels: u8,
+        sink: &mut dyn FnMut(DerivedReading),
+    ) {
+        self.for_each_leaf_value(cell, sector, prefix, extra_levels, &mut |value| {
+            sink(DerivedReading {
+                cell,
+                value,
+                water: self.shoreline.classify(cell, value.elevation_m),
+            });
+        });
+    }
+
     fn emit_leaf_values(
         &self,
         cell_index: usize,
@@ -1200,13 +1217,37 @@ fn child_frame(frame: TriangleFrame, midpoints: [Anchor; 3], child: u8) -> Trian
     }
 }
 
-/// The renormalized-sum midpoint — the same commutative expression as the
-/// display subdivision, so geometry and values walk one tree.
-fn geometric_midpoint(a: UnitVector3, b: UnitVector3) -> UnitVector3 {
+/// The renormalized-sum midpoint of one subdivision edge — the single
+/// definition the value walk and the display geometry share, so both walk
+/// one tree. The sum is commutative, so both sides of a shared edge derive
+/// the bit-identical midpoint.
+///
+/// # Panics
+///
+/// Panics when `a` and `b` are antipodal, which no fan subdivision edge is.
+pub fn geometric_midpoint(a: UnitVector3, b: UnitVector3) -> UnitVector3 {
     let [ax, ay, az] = a.components();
     let [bx, by, bz] = b.components();
     UnitVector3::new(ax + bx, ay + by, az + bz)
         .expect("fan subdivision midpoints stay strictly inside one hemisphere")
+}
+
+/// The four children of one subdivision triangle in the frozen display
+/// order: 0 = (A, AB, CA), 1 = (AB, B, BC), 2 = (CA, BC, C), 3 = (AB, BC, CA).
+///
+/// # Arguments
+///
+/// * `corners` - The parent triangle's corners (A, B, C).
+///
+/// # Returns
+///
+/// The child corner triples, indexed by the path step that selects them.
+pub fn subdivision_children(corners: [UnitVector3; 3]) -> [[UnitVector3; 3]; 4] {
+    let [a, b, c] = corners;
+    let ab = geometric_midpoint(a, b);
+    let bc = geometric_midpoint(b, c);
+    let ca = geometric_midpoint(c, a);
+    [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
 }
 
 /// N(seed) ∈ [−1, 1] (spec §2.1): the first eight little-endian seed

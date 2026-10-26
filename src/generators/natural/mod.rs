@@ -108,8 +108,9 @@ pub use geologic_rule_input::{
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use hierarchical_derivation::{
-    DerivedReading, HierarchicalEvaluator, HierarchicalPath, HierarchicalProbe, LocatedPrimitive,
-    PrimitiveValue, HIERARCHICAL_PATH_DEPTH_MAX, HIERARCHICAL_PROBE_COUNT,
+    geometric_midpoint, subdivision_children, DerivedReading, HierarchicalEvaluator,
+    HierarchicalPath, HierarchicalProbe, LocatedPrimitive, PrimitiveValue,
+    HIERARCHICAL_PATH_DEPTH_MAX, HIERARCHICAL_PROBE_COUNT,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};
 pub use hydro_erosion_rule_input::{

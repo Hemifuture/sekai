@@ -31,8 +31,8 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::generators::natural::{
-    DerivedReading, HierarchicalEvaluator, HierarchicalPath, LocatedPrimitive, PrimitiveValue,
-    HIERARCHICAL_PATH_DEPTH_MAX,
+    geometric_midpoint, subdivision_children, DerivedReading, HierarchicalEvaluator,
+    HierarchicalPath, LocatedPrimitive, HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::view::{
     project_unit_direction, AmplifiedSurfaceMesh, GlobeCamera, MapScreenTransform, ProjectionPoint,
@@ -713,16 +713,7 @@ fn walk_node(
         emit(target_level - node_level, batches, leaves);
         return;
     }
-    let ab = direction_midpoint(corners[0], corners[1]);
-    let bc = direction_midpoint(corners[1], corners[2]);
-    let ca = direction_midpoint(corners[2], corners[0]);
-    let children = [
-        [corners[0], ab, ca],
-        [ab, corners[1], bc],
-        [ca, bc, corners[2]],
-        [ab, bc, ca],
-    ];
-    for (child, child_corners) in children.into_iter().enumerate() {
+    for (child, child_corners) in subdivision_children(corners).into_iter().enumerate() {
         prefix[usize::from(depth)] = child as u8;
         walk_node(
             cap,
@@ -899,15 +890,15 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
         &mut midpoints,
         &mut triangles,
     )?;
-    let mut values = Vec::with_capacity(batch.leaves());
-    context.evaluator.for_each_leaf_value(
+    let mut readings = Vec::with_capacity(batch.leaves());
+    context.evaluator.for_each_leaf_reading(
         cell,
         batch.sector,
         batch.prefix.steps(),
         batch.extra,
-        &mut |value| values.push(value),
+        &mut |reading| readings.push(reading),
     );
-    if values.len() * TRIANGLE_CORNERS != triangles.len() {
+    if readings.len() * TRIANGLE_CORNERS != triangles.len() {
         return None;
     }
     let mut directions: Vec<[f64; 3]> = vertices
@@ -919,7 +910,7 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
         let provoking = u32::try_from(directions.len()).ok()?;
         let corner = directions[triangle[0] as usize];
         directions.push(corner);
-        colors.push(flat_color(context, cell, values[leaf]));
+        colors.push(flat_color(context, &readings[leaf]));
         triangle[0] = provoking;
     }
     Some(CachedBatch {
@@ -935,24 +926,9 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
 /// commutative renormalized-sum midpoint.
 fn descend_prefix(mut corners: [UnitVector3; 3], steps: &[u8]) -> [UnitVector3; 3] {
     for &child in steps {
-        let ab = direction_midpoint(corners[0], corners[1]);
-        let bc = direction_midpoint(corners[1], corners[2]);
-        let ca = direction_midpoint(corners[2], corners[0]);
-        corners = match child {
-            0 => [corners[0], ab, ca],
-            1 => [ab, corners[1], bc],
-            2 => [ca, bc, corners[2]],
-            _ => [ab, bc, ca],
-        };
+        corners = subdivision_children(corners)[usize::from(child)];
     }
     corners
-}
-
-fn direction_midpoint(a: UnitVector3, b: UnitVector3) -> UnitVector3 {
-    let [ax, ay, az] = a.components();
-    let [bx, by, bz] = b.components();
-    UnitVector3::new(ax + bx, ay + by, az + bz)
-        .expect("fan subdivision midpoints stay strictly inside one hemisphere")
 }
 
 /// Recursive four-way subdivision preserving winding order; leaves emit
@@ -994,7 +970,7 @@ fn midpoint_index(
     if let Some(&existing) = midpoints.get(&key) {
         return Some(existing);
     }
-    let direction = direction_midpoint(vertices[a as usize], vertices[b as usize]);
+    let direction = geometric_midpoint(vertices[a as usize], vertices[b as usize]);
     let index = u32::try_from(vertices.len()).ok()?;
     vertices.push(direction);
     midpoints.insert(key, index);
@@ -1003,15 +979,12 @@ fn midpoint_index(
 
 /// One leaf's water-aware color: the shoreline is the water-surface
 /// contour of the derived field, so it refines with every level.
-fn flat_color(context: &AmplifiedDetailContext, cell: CellId, value: PrimitiveValue) -> [u8; 4] {
+fn flat_color(context: &AmplifiedDetailContext, reading: &DerivedReading) -> [u8; 4] {
     let base = crate::view::terrain_water_color(
-        value.elevation_m,
+        reading.value.elevation_m,
         context.sea_level_m,
         context.display_radius_m,
-        context
-            .evaluator
-            .shoreline()
-            .classify(cell, value.elevation_m),
+        reading.water,
     );
     let components = base.components();
     [
@@ -1610,13 +1583,10 @@ mod tests {
                     let [cx, cy, cz] = corner(2);
                     let centroid =
                         UnitVector3::new(ax + bx + cx, ay + by + cy, az + bz + cz).unwrap();
-                    let located = match context.evaluator.locate(centroid, batch.leaf_level()) {
-                        LocatedPrimitive::Cell(cell) => context.evaluator.cell_value(cell),
-                        LocatedPrimitive::Triangle { cell, sector, path } => {
-                            context.evaluator.value(cell, sector, path.steps())
-                        }
-                    };
-                    let expected = flat_color(&context, CellId::from_raw(batch.cell), located);
+                    let expected = flat_color(
+                        &context,
+                        &context.evaluator.read(centroid, batch.leaf_level()),
+                    );
                     assert_eq!(
                         mesh.colors()[indices[base] as usize],
                         expected,
@@ -1662,15 +1632,8 @@ mod tests {
                     drawn.elevation_m.to_bits()
                 );
                 assert_eq!(
-                    reading.water,
-                    context
-                        .evaluator
-                        .shoreline()
-                        .classify(cell, drawn.elevation_m)
-                );
-                assert_eq!(
                     mesh.colors()[indices[base] as usize],
-                    flat_color(&context, cell, reading.value),
+                    flat_color(&context, &reading),
                     "the picked reading is what the leaf is painted from"
                 );
                 water_kinds.insert(reading.water);
