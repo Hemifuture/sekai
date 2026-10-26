@@ -136,8 +136,8 @@ pub use rule_input::{
 };
 pub use site_climatology::{
     climate_grid_spacing_m, eady_growth_rate_per_day, recommend_site_anchors,
-    sample_site_climatology, site_climate_profile_name, toward_bearing_deg, SiteAnchorCandidate,
-    SiteClimatologyInputs, SiteFootprint,
+    sample_site_climatology, toward_bearing_deg, SiteAnchorCandidate, SiteClimatologyInputs,
+    SiteFootprint,
 };
 pub use stage::TectonicSpecArtifact;
 pub use surface_water_geometry::{

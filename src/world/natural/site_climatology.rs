@@ -8,6 +8,7 @@
 use serde::Serialize;
 use thiserror::Error;
 
+use crate::world::natural::{ClimateModelProfile, NaturalQualityProfile};
 use crate::world::CellId;
 
 /// The only export schema written by this build.
@@ -125,10 +126,10 @@ pub struct SiteClimatologySource {
     pub global_circulation_fingerprint: String,
     /// Published `GlobalCirculationSnapshot` schema version.
     pub global_circulation_schema: u16,
-    /// Closed P4 model profile, e.g. `c2_layered_v1`.
-    pub climate_profile: String,
+    /// Closed P4 model profile.
+    pub climate_profile: ClimateModelProfile,
     /// Natural quality profile the world was built at.
-    pub quality_profile: String,
+    pub quality_profile: NaturalQualityProfile,
     /// Cargo package version of the exporting build.
     pub sekai_package_version: String,
 }

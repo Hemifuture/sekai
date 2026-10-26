@@ -8,13 +8,13 @@ use std::f64::consts::PI;
 
 use crate::world::natural::{
     saturation_specific_humidity_kg_kg, AnchorAssessment, ClimateCapabilityAvailability,
-    ClimateCapabilityId, ClimateLayerRole, ClimateModelProfile, GlobalCirculationSnapshot,
-    SiteAvailability, SiteCapabilityId, SiteCapabilityReason, SiteCapabilityStatus,
-    SiteClimatology, SiteClimatologyError, SiteClimatologyMonth, SiteClimatologySource,
-    SiteElevationSummary, SiteMethods, SiteRegion, SiteRegionSummary, SiteSubstitute,
-    SurfaceWaterField, SurfaceWaterKind, ANCHOR_INLAND_MIN_CLIMATE_SPACINGS,
-    ANCHOR_RECOMMENDATION_COUNT, CELSIUS_TO_KELVIN_OFFSET_K, CLIMATE_MONTH_COUNT,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, EADY_GROWTH_RATE_COEFFICIENT, EARTH_ROTATION_RATE_RAD_S,
+    ClimateCapabilityId, ClimateLayerRole, GlobalCirculationSnapshot, SiteAvailability,
+    SiteCapabilityId, SiteCapabilityReason, SiteCapabilityStatus, SiteClimatology,
+    SiteClimatologyError, SiteClimatologyMonth, SiteClimatologySource, SiteElevationSummary,
+    SiteMethods, SiteRegion, SiteRegionSummary, SiteSubstitute, SurfaceWaterField,
+    SurfaceWaterKind, ANCHOR_INLAND_MIN_CLIMATE_SPACINGS, ANCHOR_RECOMMENDATION_COUNT,
+    CELSIUS_TO_KELVIN_OFFSET_K, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    EADY_GROWTH_RATE_COEFFICIENT, EARTH_ROTATION_RATE_RAD_S,
     P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K, SITE_CLIMATOLOGY_SCHEMA_V1, STANDARD_GRAVITY_M_S2,
     WET_DAY_THRESHOLD_MM,
 };
@@ -476,18 +476,6 @@ fn capabilities(climate: &GlobalCirculationSnapshot) -> Vec<SiteCapabilityStatus
         ),
         tropical_cyclones,
     ]
-}
-
-fn profile_name(profile: ClimateModelProfile) -> &'static str {
-    match profile {
-        ClimateModelProfile::C1SingleLayerV1 => "c1_single_layer_v1",
-        ClimateModelProfile::C2LayeredV1 => "c2_layered_v1",
-    }
-}
-
-/// Returns the closed P4 model profile name recorded in the export source.
-pub fn site_climate_profile_name(climate: &GlobalCirculationSnapshot) -> &'static str {
-    profile_name(climate.profile())
 }
 
 /// Samples the region and assembles the complete export document.

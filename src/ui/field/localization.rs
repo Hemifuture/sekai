@@ -19,6 +19,66 @@ pub(crate) const P4_WATER_FLUX_UNIT: &str = "mm/day";
 pub(crate) const P4_RADIATIVE_FLUX_UNIT: &str = "W/m²";
 pub(crate) const EARTH_REFERENCE_LABEL: &str = "地球参考";
 
+pub(crate) const SITE_CLIMATOLOGY_HEADING: &str = "站点气候";
+pub(crate) const SITE_HEADING_LABEL: &str = "朝向（+X 自东顺时针，°）";
+pub(crate) const SITE_SCALE_LABEL: &str = "尺度（行星米 / 游戏米）";
+pub(crate) const SITE_HALF_EXTENT_LABEL: &str = "游戏世界半边长（m）";
+pub(crate) const SITE_USE_SELECTION_LABEL: &str = "以选中单元为锚点";
+pub(crate) const SITE_RECOMMEND_LABEL: &str = "推荐锚点";
+pub(crate) const SITE_USE_CANDIDATE_LABEL: &str = "使用";
+pub(crate) const SITE_EXPORT_LABEL: &str = "导出";
+pub(crate) const SITE_FINGERPRINT_LABEL: &str = "导出指纹";
+pub(crate) const SITE_NO_ANCHOR_HINT: &str = "在地图或球体上点击一个单元，然后设为锚点";
+pub(crate) const SITE_FORMATION_ONLY_HINT: &str = "站点气候只对形成链世界可用";
+pub(crate) const SITE_NO_CANDIDATE_HINT: &str = "没有满足全部条件的锚点";
+pub(crate) const SITE_UNAVAILABLE_LABEL: &str = "不可得";
+pub(crate) const SITE_MONTH_COLUMNS: [&str; 9] = [
+    "月",
+    "气温 °C",
+    "降水 mm/日",
+    "地形雨占比",
+    "相对湿度",
+    "引导风 m/s",
+    "去向 °",
+    "Eady /日",
+    "湿日比例",
+];
+
+/// Product label of an exported site-climatology capability.
+pub(crate) const fn site_capability_label(
+    id: crate::world::natural::SiteCapabilityId,
+) -> &'static str {
+    use crate::world::natural::SiteCapabilityId as Id;
+    match id {
+        Id::SteeringWind => "引导风（上层风）",
+        Id::VerticalWindShear => "垂直风切变",
+        Id::EadyGrowthRate => "Eady 增长率",
+        Id::RelativeHumidity => "相对湿度",
+        Id::WetDayStatistics => "湿日统计",
+        Id::ConvectivePrecipitationShare => "对流降水占比",
+        Id::DiurnalTemperatureRange => "气温日较差",
+        Id::WindVariability => "风速分布与风向稳定度",
+        Id::CloudCover => "云量",
+        Id::TropicalCycloneClimatology => "热带气旋气候学",
+    }
+}
+
+/// Product explanation of why a site-climatology capability is not available.
+pub(crate) const fn site_capability_reason_label(
+    reason: crate::world::natural::SiteCapabilityReason,
+) -> &'static str {
+    use crate::world::natural::SiteCapabilityReason as Reason;
+    match reason {
+        Reason::NoUpperLayer => "P4 为单层布局，没有上层",
+        Reason::NoVerifiedWetDayRelationship => "由月降水推湿日频率的关系尚无可核对的出处",
+        Reason::NoPrecipitationTypeDiagnostic => "P4 不区分对流与大尺度降水",
+        Reason::NoDiurnalCycle => "P4 只发布月均值，没有日变化",
+        Reason::NoTransientStatistics => "P4 只发布月均矢量，没有瞬变方差",
+        Reason::CloudsNotImplemented => "云与地表能量（P6）尚未实现",
+        Reason::P4CapabilityUnavailable => "P4 能力清单标为不可得",
+    }
+}
+
 pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
     let Some(tail) = key.strip_prefix(NATURAL_FIELD_PREFIX) else {
         return Cow::Borrowed(key);

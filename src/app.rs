@@ -8,6 +8,7 @@ mod field_document;
 mod frame_stats;
 mod natural_field_payloads;
 mod pipeline;
+mod site_climatology;
 mod spherical_formation_display;
 #[cfg_attr(not(test), allow(dead_code))]
 mod spherical_natural_display;
@@ -622,6 +623,8 @@ pub struct TemplateApp {
     #[serde(skip)]
     spherical_inspector_cache: SphericalInspectorCache,
     #[serde(skip)]
+    site_climatology: site_climatology::SiteClimatologyPanel,
+    #[serde(skip)]
     stage_cache: MemoryStageCache,
     #[serde(skip, default = "frame_stats::runtime_frame_sampler")]
     frame_sampler: FrameSampler,
@@ -656,6 +659,7 @@ impl Default for TemplateApp {
             active_runtime_stage_ids: Vec::new(),
             spherical_runtime_error: None,
             spherical_inspector_cache: SphericalInspectorCache::default(),
+            site_climatology: site_climatology::SiteClimatologyPanel::default(),
             stage_cache: MemoryStageCache::new(),
             frame_sampler: frame_stats::runtime_frame_sampler(),
             frame_stats_persisted_canvas_state: None,
@@ -1752,7 +1756,39 @@ impl TemplateApp {
                     ui.label("球面世界尚未发布");
                 });
             }
+            self.paint_site_footprint(ui, rect);
         });
+    }
+
+    /// Outlines the site-climatology footprint over the canvas: the sampled
+    /// square solid, the requested square dashed when it was widened.
+    fn paint_site_footprint(&self, ui: &egui::Ui, rect: egui::Rect) {
+        let Some((effective, requested)) = self.site_climatology.outlines() else {
+            return;
+        };
+        let canvas_size = [f64::from(rect.width()), f64::from(rect.height())];
+        let painter = ui.painter_at(rect);
+        let to_screen = |point: [f64; 2]| rect.min + egui::vec2(point[0] as f32, point[1] as f32);
+        let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 196, 0));
+        for [start, end] in self
+            .spherical_canvas_state
+            .project_polyline_to_screen(effective, canvas_size)
+        {
+            painter.line_segment([to_screen(start), to_screen(end)], stroke);
+        }
+        if let Some(requested) = requested {
+            for [start, end] in self
+                .spherical_canvas_state
+                .project_polyline_to_screen(requested, canvas_size)
+            {
+                painter.extend(egui::Shape::dashed_line(
+                    &[to_screen(start), to_screen(end)],
+                    egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
+                    4.0,
+                    3.0,
+                ));
+            }
+        }
     }
 
     fn setup_fonts(ctx: &egui::Context) {
@@ -2062,6 +2098,11 @@ impl eframe::App for TemplateApp {
                                 ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
                             }
                         }
+                        self.site_climatology.show(
+                            ui,
+                            presentation.document(),
+                            self.spherical_canvas_state.field_state().selected_entity(),
+                        );
                     });
                     if let Some(status) = self.spherical_runtime_error.as_deref() {
                         ui.separator();

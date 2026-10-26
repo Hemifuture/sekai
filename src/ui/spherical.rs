@@ -422,6 +422,33 @@ impl SphericalCanvasState {
         Some(SelectedSurfaceEntity::Cell(cell))
     }
 
+    /// Projects a polyline of unit directions into visible logical-pixel
+    /// segments of the active view, for egui overlays drawn over the canvas.
+    pub fn project_polyline_to_screen(
+        &self,
+        points: &[crate::world::spatial::UnitVector3],
+        canvas_size: [f64; 2],
+    ) -> Vec<[[f64; 2]; 2]> {
+        points
+            .windows(2)
+            .filter_map(|pair| match self.view_mode {
+                SphericalViewMode::Map => {
+                    let start = self.projection.forward(pair[0]).ok()?;
+                    let end = self.projection.forward(pair[1]).ok()?;
+                    let start = self.map_projection_point_to_screen(start, canvas_size);
+                    let end = self.map_projection_point_to_screen(end, canvas_size);
+                    // A segment spanning half the canvas crosses the map seam.
+                    ((start[0] - end[0]).abs() < 0.5 * canvas_size[0]).then_some([start, end])
+                }
+                SphericalViewMode::Globe => self.globe_camera.project_visible_segment_to_screen(
+                    pair[0].components().map(|component| component as f32),
+                    pair[1].components().map(|component| component as f32),
+                    canvas_size,
+                ),
+            })
+            .collect()
+    }
+
     fn screen_direction(
         &self,
         screen: [f64; 2],

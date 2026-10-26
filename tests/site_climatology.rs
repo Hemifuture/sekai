@@ -214,8 +214,8 @@ fn source() -> SiteClimatologySource {
         graph_contract_version: 1,
         global_circulation_fingerprint: "p4".to_owned(),
         global_circulation_schema: GLOBAL_CIRCULATION_SCHEMA_V2,
-        climate_profile: "test".to_owned(),
-        quality_profile: "draft".to_owned(),
+        climate_profile: ClimateModelProfile::C2LayeredV1,
+        quality_profile: NaturalQualityProfile::Draft,
         sekai_package_version: "test".to_owned(),
     }
 }
@@ -377,5 +377,89 @@ fn recommended_anchors_meet_every_inland_criterion() {
             let other_centroid = surface.cells()[other.cell.raw() as usize].centroid;
             assert!(central_angle(centroid, other_centroid) * 6_371_000.0 >= spacing);
         }
+    }
+}
+
+mod support;
+
+/// Spec §9.0 Stage 0 measurement on the ordinary Draft/seed-42 corpus member
+/// (Release, offline): P4 spacing, sampled-cell counts across every dry-land
+/// anchor for the Qinglan mapping, and the recommended anchors. Prints only;
+/// numbers are recorded in the spec, not pinned here.
+#[test]
+#[ignore = "Release-only offline Stage 0 measurement"]
+fn stage0_measures_draft_footprints_and_recommendations() {
+    let fixture = support::causal_formation::causal_formation_fixture();
+    let bundle = fixture.artifact.bundle();
+    let formation = bundle.surface_formation();
+    let inputs = SiteClimatologyInputs {
+        surface: &fixture.surface,
+        climate: bundle.climate(),
+        surface_water: formation.hydrology().surface_water(),
+        elevation_m: formation.terrain_fields().current_elevation_m(),
+        climate_face_resolution: NaturalQualityProfile::Draft.climate_face_resolution(),
+    };
+    println!(
+        "P4 spacing: {:.1} km",
+        climate_grid_spacing_m(6_371_000.0, inputs.climate_face_resolution) / 1_000.0
+    );
+    let template = SiteRegion::new(CellId::from_raw(0), 0.0, 1.0, 8_192.0).unwrap();
+    let mut counts = Vec::new();
+    let mut source_template = source();
+    source_template.climate_profile = bundle.climate().profile();
+    for cell in fixture.surface.cells() {
+        if inputs.surface_water.get(cell.id.raw() as usize) != Some(SurfaceWaterKind::DryLand) {
+            continue;
+        }
+        let site = sample_site_climatology(
+            &inputs,
+            &template.with_anchor(cell.id),
+            source_template.clone(),
+        )
+        .unwrap();
+        counts.push(site.region.cell_count);
+    }
+    counts.sort_unstable();
+    println!(
+        "dry-land anchors {}: cells min {} p10 {} median {} p90 {} max {}",
+        counts.len(),
+        counts[0],
+        counts[counts.len() / 10],
+        counts[counts.len() / 2],
+        counts[counts.len() * 9 / 10],
+        counts[counts.len() - 1]
+    );
+    let started = std::time::Instant::now();
+    let candidates = recommend_site_anchors(&inputs, &template).unwrap();
+    println!(
+        "recommendation: {} candidates in {:.2} s",
+        candidates.len(),
+        started.elapsed().as_secs_f64()
+    );
+    for candidate in &candidates {
+        let site = sample_site_climatology(
+            &inputs,
+            &template.with_anchor(candidate.cell),
+            source_template.clone(),
+        )
+        .unwrap();
+        let january = &site.months[0];
+        let july = &site.months[6];
+        println!(
+            "cell {} at {:+.1}, {:+.1}: relief {:.0} m, coast {:.0} km, cells {}, \
+             T jan/jul {:.1}/{:.1} C, P jan/jul {:.2}/{:.2} mm/d, bearing jan {:.0}, eady jan {:?}",
+            candidate.cell.raw(),
+            site.region.anchor_lat_deg,
+            site.region.anchor_lon_deg,
+            candidate.assessment.footprint_relief_m,
+            candidate.assessment.coast_distance_m.unwrap_or(f64::NAN) / 1_000.0,
+            site.region.cell_count,
+            january.air_temperature_c,
+            july.air_temperature_c,
+            january.precipitation_mm_day,
+            july.precipitation_mm_day,
+            january.steering_flow_toward_bearing_deg,
+            january.eady_growth_rate_per_day,
+        );
     }
 }
