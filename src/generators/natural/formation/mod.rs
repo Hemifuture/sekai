@@ -9,7 +9,6 @@ pub(in crate::generators::natural) mod global_circulation;
 mod global_circulation_stage;
 mod graph;
 mod primary_relief;
-#[cfg(test)]
 mod reduced_climate;
 mod surface_formation;
 mod world;

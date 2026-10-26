@@ -19,7 +19,8 @@ use serde_json::{json, Value};
 
 use super::{
     dot, norm, solve_reduced_climate, vapour_column_mass_kg_m2, IceAlbedoFeedback,
-    OutgoingLongwaveClosure, ReducedGrid, ReducedInputs, ReducedPhysics, ReducedWorkClimate,
+    OutgoingLongwaveClosure, ReducedClimateGeometry, ReducedInputs, ReducedPhysics,
+    ReducedWorkClimate,
 };
 use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use crate::generators::natural::formation::global_circulation::{
@@ -258,7 +259,7 @@ fn published_from_snapshot(snapshot: &GlobalCirculationSnapshot) -> Published {
 /// Global budget numbers on the work grid (production `final_cycle_budget`
 /// semantics: area-month means, CERES planetary albedo of the surface albedo).
 fn budget_report(
-    grid: &ReducedGrid,
+    grid: &ReducedClimateGeometry,
     forcing: &GlobalClimateForcing,
     work: &ReducedWorkClimate,
 ) -> ClimateBudgetReport {
@@ -660,12 +661,7 @@ fn a10_reduced_climate_probe() {
         started.elapsed().as_secs_f64()
     ));
     let started = Instant::now();
-    let grid = crate::generators::natural::circulation::CubedSphereGrid::new(
-        domain.face_resolution(),
-        domain.climate_surface().radius().get(),
-    )
-    .expect("grid");
-    let reduced_grid = ReducedGrid::new(&grid);
+    let reduced_grid = ReducedClimateGeometry::new(&domain, &|| false).expect("geometry");
     let grid_seconds = started.elapsed().as_secs_f64();
     log(format!(
         "reduced grid precompute {grid_seconds:.4} s (seed-independent), cells {}",
@@ -1257,7 +1253,11 @@ fn neighbour_lapse(
 }
 
 /// Annual work-grid fields for offline pattern analysis.
-fn work_grid_dump(grid: &ReducedGrid, inputs: &ReducedInputs, work: &ReducedWorkClimate) -> Value {
+fn work_grid_dump(
+    grid: &ReducedClimateGeometry,
+    inputs: &ReducedInputs,
+    work: &ReducedWorkClimate,
+) -> Value {
     let mean = |m: &[f64; MONTHS]| m.iter().sum::<f64>() / MONTHS as f64;
     let mean_vector = |m: &[[f64; 3]; MONTHS]| {
         let mut s = [0.0; 3];

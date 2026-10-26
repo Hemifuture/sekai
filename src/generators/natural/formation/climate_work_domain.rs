@@ -155,7 +155,7 @@ fn map_error(error: ConservativeRemapError) -> ClimateWorkDomainBuildError {
     }
 }
 
-fn map_grid_error(error: CubedSphereGridError) -> ClimateWorkDomainBuildError {
+pub(super) fn map_grid_error(error: CubedSphereGridError) -> ClimateWorkDomainBuildError {
     if error == CubedSphereGridError::Cancelled {
         ClimateWorkDomainBuildError::Cancelled
     } else {

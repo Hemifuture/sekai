@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
+use super::reduced_climate::ReducedClimateGeometry;
 use super::{
     ClimateWorkDomainBuildError, ClimateWorkDomainBuilder, FormationGeometry,
     NaturalQualityProfileArtifact,
@@ -26,20 +27,41 @@ const CANCELLED_CODE: &str = "engine.cancelled";
 /// rebound to its authoritative surface through [`Self::rehydrate`] so forged
 /// overlap support or tangent transforms cannot acquire an Artifact identity.
 ///
+/// The artifact also carries the reduced climate's seed-independent geometry of the domain
+/// (A10 design section 10 T2). It is a pure function of the snapshot, so it is neither
+/// serialized nor compared, and it is prewarmed wherever the domain is.
+///
 /// ```compile_fail
 /// use sekai::generators::natural::ClimateWorkDomainArtifact;
 ///
 /// let _: ClimateWorkDomainArtifact = serde_json::from_str("{}").unwrap();
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClimateWorkDomainArtifact {
     snapshot: ClimateWorkDomainSnapshot,
+    #[serde(skip)]
+    reduced_geometry: Arc<ReducedClimateGeometry>,
+}
+
+impl PartialEq for ClimateWorkDomainArtifact {
+    fn eq(&self, other: &Self) -> bool {
+        self.snapshot == other.snapshot
+    }
 }
 
 impl ClimateWorkDomainArtifact {
-    pub(crate) const fn new(snapshot: ClimateWorkDomainSnapshot) -> Self {
-        Self { snapshot }
+    pub(crate) fn new(
+        snapshot: ClimateWorkDomainSnapshot,
+        cancellation: &crate::engine::BuildCancellation,
+    ) -> Result<Self, ClimateWorkDomainBuildError> {
+        let reduced_geometry = Arc::new(ReducedClimateGeometry::new(&snapshot, &|| {
+            cancellation.is_cancelled()
+        })?);
+        Ok(Self {
+            snapshot,
+            reduced_geometry,
+        })
     }
 
     /// Builds a work-domain artifact for one authoritative surface and profile.
@@ -48,7 +70,10 @@ impl ClimateWorkDomainArtifact {
         profile: crate::world::natural::NaturalQualityProfile,
         cancellation: &crate::engine::BuildCancellation,
     ) -> Result<Self, ClimateWorkDomainBuildError> {
-        ClimateWorkDomainBuilder::build(surface, profile, cancellation).map(Self::new)
+        Self::new(
+            ClimateWorkDomainBuilder::build(surface, profile, cancellation)?,
+            cancellation,
+        )
     }
 
     /// Revalidates a portable work-domain snapshot against its source surface.
@@ -66,12 +91,23 @@ impl ClimateWorkDomainArtifact {
                     ClimateWorkDomainBuildError::Validation(error)
                 }
             })?;
-        Ok(Self::new(snapshot))
+        Self::new(snapshot, cancellation)
     }
 
     /// Borrows the reconstructable work-domain snapshot.
     pub const fn snapshot(&self) -> &ClimateWorkDomainSnapshot {
         &self.snapshot
+    }
+
+    /// Borrows the reduced climate's seed-independent geometry of this domain.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the reduced climate stage from A10 T8")
+    )]
+    pub(in crate::generators::natural) fn reduced_climate_geometry(
+        &self,
+    ) -> &ReducedClimateGeometry {
+        &self.reduced_geometry
     }
 }
 
@@ -162,8 +198,10 @@ impl Stage for ClimateWorkDomainStage {
             &cancellation,
         )
         .map_err(domain_failure)?;
+        let artifact =
+            ClimateWorkDomainArtifact::new(snapshot, &cancellation).map_err(domain_failure)?;
         rng.check_cancelled().map_err(|_| cancelled())?;
-        Ok(ClimateWorkDomainArtifact::new(snapshot))
+        Ok(artifact)
     }
 }
 
