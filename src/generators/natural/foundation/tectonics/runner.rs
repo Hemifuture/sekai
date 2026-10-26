@@ -214,7 +214,8 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
                 rebin.rebinned_samples, rebin.split_fills, fill.spawned_samples
             );
         }
-        maybe_rift_plates(
+        let live_plates = current.plates.len();
+        let rift = maybe_rift_plates(
             step,
             rift_delta_myr,
             surface,
@@ -224,6 +225,15 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
             recipe,
             streams,
         )?;
+        if std::env::var_os("SEKAI_V5_TRACE").is_some() {
+            eprintln!(
+                "[v5-trace] step {step} rift: live={live_plates} evaluated={} pending_skips={}                  events={} continental_cuts={}",
+                rift.rift_evaluations,
+                rift.rift_pending_skips,
+                rift.rift_events,
+                rift.rift_continental_cuts
+            );
+        }
         advance_solid_crust_ages(next, process_delta_myr)?;
         actions.preserve_minimum_live_lineages(
             &next.samples,

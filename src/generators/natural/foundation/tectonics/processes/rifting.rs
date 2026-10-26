@@ -168,8 +168,10 @@ pub(in crate::generators::natural::foundation::tectonics) fn maybe_rift_plates(
             break;
         }
         if actions.lineage_has_pending_changes(&current.samples, parent.lineage) {
+            stats.rift_pending_skips += 1;
             continue;
         }
+        stats.rift_evaluations += 1;
         let rate = {
             let represented = actions.rift_scratch(surface.cells().len());
             rift_rate_q32_with_scratch(surface, current, parent.lineage, recipe, represented)?
@@ -203,7 +205,7 @@ pub(in crate::generators::natural::foundation::tectonics) fn maybe_rift_plates(
         if child_count < 2 {
             continue;
         }
-        if !split_plate(
+        let Some(continental_children) = split_plate(
             step,
             surface,
             current,
@@ -214,10 +216,21 @@ pub(in crate::generators::natural::foundation::tectonics) fn maybe_rift_plates(
             parent,
             &sample_indices,
             child_count,
-        )? {
+        )?
+        else {
             continue;
-        }
+        };
         stats.rift_events += 1;
+        if continental_children >= 2 {
+            stats.rift_continental_cuts += 1;
+        }
+        trace_fracture(
+            "rift",
+            step,
+            parent.lineage,
+            child_count,
+            continental_children,
+        );
         stats.spawned_lineages += child_count as u32;
         stats.transferred_samples += sample_indices.len() as u32;
     }
@@ -348,6 +361,24 @@ pub(in crate::generators::natural::foundation::tectonics) fn mechanically_fragme
         }
         ledger.record_mechanical_fragmentation();
         fragmentation_count += 1;
+        if std::env::var_os("SEKAI_V5_TRACE").is_some() {
+            let mut continental = vec![false; lineages.len()];
+            for sample in &state.samples {
+                if sample.kind != CrustKind::Continental {
+                    continue;
+                }
+                if let Some(child) = lineages.iter().position(|&lineage| lineage == sample.owner) {
+                    continental[child] = true;
+                }
+            }
+            trace_fracture(
+                "area-cap",
+                step,
+                parent.lineage,
+                lineages.len(),
+                continental.iter().filter(|&&cut| cut).count(),
+            );
+        }
     }
     Ok(fragmentation_count)
 }
@@ -464,7 +495,7 @@ fn split_plate(
     parent: ActivePlate,
     sample_indices: &[usize],
     child_count: usize,
-) -> Result<bool, ProcessError> {
+) -> Result<Option<usize>, ProcessError> {
     let seed_indices = farthest_sample_seeds(
         current,
         sample_indices,
@@ -523,7 +554,13 @@ fn split_plate(
         .iter()
         .any(|&size| size < MINIMUM_SAMPLES_PER_RIFT_CHILD)
     {
-        return Ok(false);
+        return Ok(None);
+    }
+    let mut continental = vec![false; child_count];
+    for (&sample_index, &child) in sample_indices.iter().zip(&assignments) {
+        if current.samples[sample_index].kind == CrustKind::Continental {
+            continental[child] = true;
+        }
     }
 
     let mut lineages = Vec::with_capacity(child_count);
@@ -551,7 +588,24 @@ fn split_plate(
     }
     next.plates.sort_by_key(|plate| plate.lineage);
     next.initiation.replace_lineage(parent.lineage, &lineages);
-    Ok(true)
+    Ok(Some(continental.iter().filter(|&&cut| cut).count()))
+}
+
+/// One `SEKAI_V5_TRACE` line per fracture event (G4 §8 runner row): step,
+/// mechanism, parent, child count and how many children hold continental crust.
+fn trace_fracture(
+    mechanism: &str,
+    step: u16,
+    parent: LineageId,
+    children: usize,
+    continental_children: usize,
+) {
+    if std::env::var_os("SEKAI_V5_TRACE").is_some() {
+        eprintln!(
+            "[v5-trace] step {step} fracture: mechanism={mechanism} parent={} children={children}              continental_children={continental_children}",
+            parent.raw()
+        );
+    }
 }
 
 fn farthest_sample_seeds(

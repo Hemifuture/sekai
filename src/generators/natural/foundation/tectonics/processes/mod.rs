@@ -547,6 +547,13 @@ pub(super) struct ProcessStats {
     pub(super) split_fills: u32,
     pub(super) rebinned_samples: u32,
     pub(super) rift_events: u32,
+    /// Live plates whose Poisson rift draw was evaluated this step.
+    pub(super) rift_evaluations: u32,
+    /// Live plates whose rift draw was skipped because the lineage had
+    /// pending process actions in the same batch (G4 §1.3 H2 diagnostic).
+    pub(super) rift_pending_skips: u32,
+    /// Rift events that left continental samples in at least two children.
+    pub(super) rift_continental_cuts: u32,
     pub(super) spawned_lineages: u32,
     pub(super) relaxed_samples: u32,
 }
