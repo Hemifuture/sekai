@@ -1,0 +1,152 @@
+
+running 1 test
+built in 45 s, cells 79212, build hash 5039b0bcbe8a40d980015569240697dd7a5e04dc02a9829e444f18b66a5a3bea
+all (cell,month) 950544: oro>0 62490 (6.57%); cells with any oro>0 10942/79212
+dry-land (cell,month) 252720: oro>0 30139 (11.93%); dry-land cells any 6537/21060
+area-weighted oro/total: global 0.0761, dry land 0.1761; max oro 74.355 mm/d
+  lat -90..-80: dry-land cells 58, any oro 55 (94.8%)
+  lat -80..-70: dry-land cells 600, any oro 416 (69.3%)
+  lat -70..-60: dry-land cells 1564, any oro 583 (37.3%)
+  lat -60..-50: dry-land cells 2018, any oro 991 (49.1%)
+  lat -50..-40: dry-land cells 1450, any oro 807 (55.7%)
+  lat -40..-30: dry-land cells 1984, any oro 613 (30.9%)
+  lat -30..-20: dry-land cells 1873, any oro 446 (23.8%)
+  lat -20..-10: dry-land cells 2006, any oro 714 (35.6%)
+  lat -10..+0: dry-land cells 2463, any oro 538 (21.8%)
+  lat +0..+10: dry-land cells 2615, any oro 356 (13.6%)
+  lat +10..+20: dry-land cells 1857, any oro 320 (17.2%)
+  lat +20..+30: dry-land cells 1461, any oro 179 (12.3%)
+  lat +30..+40: dry-land cells 948, any oro 411 (43.4%)
+  lat +40..+50: dry-land cells 163, any oro 108 (66.3%)
+dry-land LCL (m) where oro>0: p10 0 p50 524 p90 971; where oro=0: p10 421 p50 942 p90 2047
+anchor 6584 at +11.07, +63.24
+  cells within 300 km: 54, max oro any month 0, elev min 332 max 2976
+  smoothed h at anchor 1087 m; max uplift over 36 bearings 1500 m (toward bearing 340 deg)
+  m01 uplift along upper wind  -157 m
+  m01 T   10.6 q 0.00607 RH 0.77 LCL   483 m  P 2.735 oro 0.0000  upper EN [-2.5,-3.2] near EN [-5.2,+3.8]
+  m02 uplift along upper wind -1492 m
+  m02 T   10.4 q 0.00597 RH 0.77 LCL   490 m  P 5.867 oro 0.0000  upper EN [+0.8,-2.9] near EN [+0.1,+5.1]
+  m03 uplift along upper wind  -862 m
+  m03 T   11.4 q 0.00608 RH 0.73 LCL   577 m  P 5.572 oro 0.0000  upper EN [-0.8,-3.7] near EN [+0.7,+2.2]
+  m04 uplift along upper wind   +34 m
+  m04 T   12.8 q 0.00625 RH 0.69 LCL   698 m  P 2.587 oro 0.0000  upper EN [-6.1,-5.5] near EN [-2.3,-2.7]
+  m05 uplift along upper wind  +966 m
+  m05 T   14.1 q 0.00642 RH 0.64 LCL   820 m  P 0.000 oro 0.0000  upper EN [-3.8,+0.6] near EN [+1.9,+1.2]
+  m06 uplift along upper wind +1385 m
+  m06 T   15.1 q 0.00638 RH 0.60 LCL   955 m  P 0.038 oro 0.0000  upper EN [-1.5,+2.7] near EN [+3.4,+0.5]
+  m07 uplift along upper wind +1025 m
+  m07 T   15.7 q 0.00637 RH 0.58 LCL  1025 m  P 0.101 oro 0.0000  upper EN [-4.6,+1.3] near EN [-2.5,-2.6]
+  m08 uplift along upper wind  +330 m
+  m08 T   16.0 q 0.00640 RH 0.57 LCL  1064 m  P 0.137 oro 0.0000  upper EN [-3.7,-2.6] near EN [-3.8,-6.0]
+  m09 uplift along upper wind  -824 m
+  m09 T   16.0 q 0.00640 RH 0.57 LCL  1054 m  P 0.129 oro 0.0000  upper EN [-0.6,-2.2] near EN [-2.8,-3.3]
+  m10 uplift along upper wind -1285 m
+  m10 T   15.2 q 0.00619 RH 0.58 LCL  1013 m  P 0.103 oro 0.0000  upper EN [+1.3,-1.4] near EN [-2.8,-0.7]
+  m11 uplift along upper wind  -368 m
+  m11 T   13.5 q 0.00611 RH 0.64 LCL   836 m  P 0.074 oro 0.0000  upper EN [-1.3,-2.7] near EN [-6.5,-0.5]
+  m12 uplift along upper wind  -276 m
+  m12 T   11.7 q 0.00605 RH 0.71 LCL   623 m  P 0.002 oro 0.0000  upper EN [-0.7,-1.2] near EN [-5.4,+4.1]
+anchor 24157 at +30.84, +42.29
+  cells within 300 km: 37, max oro any month 0, elev min 18 max 353
+  smoothed h at anchor 100 m; max uplift over 36 bearings 104 m (toward bearing 340 deg)
+  m01 uplift along upper wind   +56 m
+  m01 T    8.0 q 0.00353 RH 0.53 LCL  1101 m  P 0.149 oro 0.0000  upper EN [+12.1,+11.9] near EN [-1.3,-7.0]
+  m02 uplift along upper wind   +56 m
+  m02 T    7.5 q 0.00346 RH 0.54 LCL  1074 m  P 1.387 oro 0.0000  upper EN [+15.5,+11.3] near EN [-1.2,-7.6]
+  m03 uplift along upper wind   -12 m
+  m03 T    8.2 q 0.00337 RH 0.50 LCL  1204 m  P 0.818 oro 0.0000  upper EN [+17.6,+5.7] near EN [-2.6,-11.1]
+  m04 uplift along upper wind   -12 m
+  m04 T   10.0 q 0.00335 RH 0.44 LCL  1435 m  P 0.000 oro 0.0000  upper EN [+14.1,+4.3] near EN [-8.8,-8.4]
+  m05 uplift along upper wind   +56 m
+  m05 T   12.5 q 0.00330 RH 0.37 LCL  1759 m  P 0.042 oro 0.0000  upper EN [+12.0,+9.6] near EN [-10.1,+0.4]
+  m06 uplift along upper wind   +56 m
+  m06 T   14.3 q 0.00331 RH 0.33 LCL  1980 m  P 0.173 oro 0.0000  upper EN [+15.9,+12.8] near EN [-4.2,+4.7]
+  m07 uplift along upper wind   -12 m
+  m07 T   15.5 q 0.00334 RH 0.31 LCL  2105 m  P 0.262 oro 0.0000  upper EN [+18.1,+7.7] near EN [-0.4,-0.2]
+  m08 uplift along upper wind   -46 m
+  m08 T   16.2 q 0.00333 RH 0.29 LCL  2197 m  P 0.257 oro 0.0000  upper EN [+13.5,+2.4] near EN [-2.7,-5.3]
+  m09 uplift along upper wind   -12 m
+  m09 T   16.3 q 0.00332 RH 0.29 LCL  2223 m  P 0.158 oro 0.0000  upper EN [+13.3,+3.8] near EN [-0.2,-4.3]
+  m10 uplift along upper wind   -12 m
+  m10 T   15.2 q 0.00337 RH 0.32 LCL  2055 m  P 0.500 oro 0.0000  upper EN [+12.9,+5.6] near EN [+0.4,-4.5]
+  m11 uplift along upper wind   -22 m
+  m11 T   12.9 q 0.00344 RH 0.37 LCL  1747 m  P 1.065 oro 0.0000  upper EN [+12.7,+8.7] near EN [+0.3,-4.5]
+  m12 uplift along upper wind   +56 m
+  m12 T   10.5 q 0.00347 RH 0.44 LCL  1429 m  P 0.035 oro 0.0000  upper EN [+11.9,+11.4] near EN [-0.7,-5.6]
+climate-grid land cell-months (land>0.5): pred>0&pub>0 1425, pred>0&pub=0 48, pred=0&pub>0 3667, pred=0&pub=0 15056
+  anchor#1 grid 958 m01: h   103 |grad| 0.00043 U 17.3 uplift    -60 m LCL   513 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m01: h    24 |grad| 0.00013 U 16.9 uplift    -32 m LCL  1371 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m01: h   239 |grad| 0.00072 U 16.3 uplift   +168 m LCL   287 m -> predicted 0.0000 published 0.0416 mm/d
+  anchor#1 grid 991 m01: h   173 |grad| 0.00104 U 19.9 uplift   +257 m LCL   967 m -> predicted 0.0000 published 0.0005 mm/d
+  anchor#0 grid 2662 m01: h   460 |grad| 0.00191 U  3.7 uplift   -169 m LCL   559 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m01: h  1143 |grad| 0.00282 U  4.0 uplift   -289 m LCL   477 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m02: h   103 |grad| 0.00043 U 18.9 uplift    -76 m LCL   476 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m02: h    24 |grad| 0.00013 U 19.4 uplift    -34 m LCL  1344 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m02: h   239 |grad| 0.00072 U 16.7 uplift   +136 m LCL   272 m -> predicted 0.0000 published 0.2168 mm/d
+  anchor#1 grid 991 m02: h   173 |grad| 0.00104 U 21.6 uplift   +232 m LCL   825 m -> predicted 0.0000 published 0.0028 mm/d
+  anchor#0 grid 2662 m02: h   460 |grad| 0.00191 U  3.1 uplift   -560 m LCL   587 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m02: h  1143 |grad| 0.00282 U  2.9 uplift   -803 m LCL   483 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m03: h   103 |grad| 0.00043 U 18.1 uplift   -102 m LCL   725 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m03: h    24 |grad| 0.00013 U 18.8 uplift    -36 m LCL  1418 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m03: h   239 |grad| 0.00072 U 14.9 uplift    +75 m LCL   556 m -> predicted 0.0000 published 0.0885 mm/d
+  anchor#1 grid 991 m03: h   173 |grad| 0.00104 U 19.3 uplift   +168 m LCL   888 m -> predicted 0.0000 published 0.0011 mm/d
+  anchor#0 grid 2662 m03: h   460 |grad| 0.00191 U  2.7 uplift   -418 m LCL   671 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m03: h  1143 |grad| 0.00282 U  3.7 uplift   -601 m LCL   569 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m04: h   103 |grad| 0.00043 U 13.4 uplift   -102 m LCL  1150 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m04: h    24 |grad| 0.00013 U 15.4 uplift    -36 m LCL  1568 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m04: h   239 |grad| 0.00072 U 10.0 uplift   +101 m LCL  1018 m -> predicted 0.0000 published 0.0011 mm/d
+  anchor#1 grid 991 m04: h   173 |grad| 0.00104 U 15.2 uplift   +176 m LCL  1125 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m04: h   460 |grad| 0.00191 U  6.8 uplift    -14 m LCL   780 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m04: h  1143 |grad| 0.00282 U  8.1 uplift   -145 m LCL   692 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m05: h   103 |grad| 0.00043 U 14.1 uplift    -67 m LCL  1678 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m05: h    24 |grad| 0.00013 U 16.0 uplift    -34 m LCL  1801 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m05: h   239 |grad| 0.00072 U 11.6 uplift   +176 m LCL  1599 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 991 m05: h   173 |grad| 0.00104 U 15.7 uplift   +247 m LCL  1510 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m05: h   460 |grad| 0.00191 U  2.6 uplift   +457 m LCL   866 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m05: h  1143 |grad| 0.00282 U  3.8 uplift   +550 m LCL   817 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m06: h   103 |grad| 0.00043 U 19.8 uplift    -68 m LCL  2019 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m06: h    24 |grad| 0.00013 U 20.8 uplift    -33 m LCL  1971 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m06: h   239 |grad| 0.00072 U 17.2 uplift   +170 m LCL  1969 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 991 m06: h   173 |grad| 0.00104 U 20.0 uplift   +247 m LCL  1875 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m06: h   460 |grad| 0.00191 U  3.0 uplift   +517 m LCL   963 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m06: h  1143 |grad| 0.00282 U  3.2 uplift   +828 m LCL   953 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m07: h   103 |grad| 0.00043 U 19.1 uplift    -95 m LCL  2183 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m07: h    24 |grad| 0.00013 U 20.0 uplift    -36 m LCL  2082 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m07: h   239 |grad| 0.00072 U 16.4 uplift   +126 m LCL  2154 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 991 m07: h   173 |grad| 0.00104 U 19.8 uplift   +199 m LCL  2139 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m07: h   460 |grad| 0.00191 U  4.5 uplift   +514 m LCL   997 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m07: h  1143 |grad| 0.00282 U  4.7 uplift   +612 m LCL  1024 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m08: h   103 |grad| 0.00043 U 13.5 uplift   -109 m LCL  2280 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m08: h    24 |grad| 0.00013 U 13.9 uplift    -36 m LCL  2172 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m08: h   239 |grad| 0.00072 U 10.5 uplift    +73 m LCL  2223 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 991 m08: h   173 |grad| 0.00104 U 13.9 uplift   +149 m LCL  2303 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m08: h   460 |grad| 0.00191 U  3.9 uplift   +185 m LCL  1017 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m08: h  1143 |grad| 0.00282 U  4.4 uplift    -61 m LCL  1063 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m09: h   103 |grad| 0.00043 U 12.7 uplift   -103 m LCL  2295 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m09: h    24 |grad| 0.00013 U 14.6 uplift    -36 m LCL  2200 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m09: h   239 |grad| 0.00072 U 10.3 uplift   +101 m LCL  2202 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 991 m09: h   173 |grad| 0.00104 U 14.5 uplift   +176 m LCL  2362 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m09: h   460 |grad| 0.00191 U  1.6 uplift    +11 m LCL  1024 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m09: h  1143 |grad| 0.00282 U  2.2 uplift   -564 m LCL  1056 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m10: h   103 |grad| 0.00043 U 12.6 uplift    -92 m LCL  1993 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m10: h    24 |grad| 0.00013 U 15.0 uplift    -36 m LCL  2095 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m10: h   239 |grad| 0.00072 U 10.5 uplift   +138 m LCL  1866 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 991 m10: h   173 |grad| 0.00104 U 14.6 uplift   +207 m LCL  2204 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m10: h   460 |grad| 0.00191 U  1.2 uplift   -115 m LCL  1006 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m10: h  1143 |grad| 0.00282 U  1.9 uplift   -807 m LCL  1012 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m11: h   103 |grad| 0.00043 U 14.5 uplift    -73 m LCL  1471 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m11: h    24 |grad| 0.00013 U 15.9 uplift    -34 m LCL  1883 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m11: h   239 |grad| 0.00072 U 12.9 uplift   +172 m LCL  1289 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 991 m11: h   173 |grad| 0.00104 U 16.5 uplift   +243 m LCL  1837 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m11: h   460 |grad| 0.00191 U  1.7 uplift    +43 m LCL   864 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m11: h  1143 |grad| 0.00282 U  3.0 uplift   -465 m LCL   832 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 958 m12: h   103 |grad| 0.00043 U 16.4 uplift    -60 m LCL   943 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 959 m12: h    24 |grad| 0.00013 U 16.6 uplift    -32 m LCL  1657 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 990 m12: h   239 |grad| 0.00072 U 15.2 uplift   +175 m LCL   696 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#1 grid 991 m12: h   173 |grad| 0.00104 U 18.9 uplift   +258 m LCL  1405 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2662 m12: h   460 |grad| 0.00191 U  1.0 uplift   -157 m LCL   664 m -> predicted 0.0000 published 0.0000 mm/d
+  anchor#0 grid 2694 m12: h  1143 |grad| 0.00282 U  1.4 uplift   -423 m LCL   617 m -> predicted 0.0000 published 0.0000 mm/d
+test orographic_probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 47.41s
+
