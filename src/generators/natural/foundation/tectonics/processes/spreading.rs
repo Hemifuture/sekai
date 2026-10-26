@@ -19,6 +19,7 @@ use crate::generators::natural::foundation::tectonics::model::{
     CrustSample, EvolutionMaterialLedger, FormationTectonicRecipe, LineageId, MaterialColumn,
     TectonicState, NEW_OCEANIC_CRUST_THICKNESS_KM,
 };
+use crate::generators::natural::foundation::tectonics::resample::voronoi_interface_distance_m;
 use crate::generators::natural::topology::NaturalTopologyIndex;
 use crate::world::natural::{
     CrustKind, SphericalOrogenyKind, CONTINENTAL_CRUST_AGE_SENTINEL_MYR,
@@ -259,12 +260,16 @@ pub(in crate::generators::natural::foundation::tectonics) fn fill_spreading_gaps
         } else {
             None
         };
-        let sample = match donated {
+        let mut sample = match donated {
             Some(material) => {
                 continental_rift_fill_sample(cell.centroid, gap.cell, owner, lineation, material)
             }
             None => ocean(next)?,
         };
+        // A new cell-resolved column's interface lies on its own cell edges
+        // (P2 boundary-noise spec §5.3).
+        sample.interface_distance_m =
+            Some(voronoi_interface_distance_m(surface, gap.cell, sample.kind));
         spawned.push(sample);
         stats.spawned_samples += 1;
     }
@@ -320,6 +325,9 @@ pub(in crate::generators::natural::foundation::tectonics) fn rebin_interior_gaps
         // plate's parcels stay where they landed and the resample spreads the
         // group's volume over its cells, so nothing is created or shuffled.
         let mut marker = current.samples[occupant];
+        // A marker only keeps coverage; it never informs the interface (P2
+        // boundary-noise spec §13 Q8).
+        marker.interface_distance_m = None;
         marker.position = surface.cells()[hole].centroid;
         marker.anchor = CellId::from_raw(hole as u32);
         marker.material = MaterialColumn::pure(
@@ -561,6 +569,7 @@ fn oceanic_spreading_sample(
             area_m2,
             NEW_OCEANIC_CRUST_THICKNESS_KM,
         )?,
+        interface_distance_m: None,
     })
 }
 
@@ -586,6 +595,7 @@ fn continental_rift_fill_sample(
         orogeny: SphericalOrogenyKind::None,
         orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
         material,
+        interface_distance_m: None,
     }
 }
 

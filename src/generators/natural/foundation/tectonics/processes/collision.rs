@@ -489,6 +489,7 @@ mod tests {
                 40.0,
             )
             .unwrap(),
+            interface_distance_m: None,
         }
     }
 

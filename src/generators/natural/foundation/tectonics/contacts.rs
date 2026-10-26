@@ -533,6 +533,7 @@ mod tests {
                 },
             )
             .unwrap(),
+            interface_distance_m: None,
         }
     }
 

@@ -426,6 +426,7 @@ mod tests {
                     orogeny: SphericalOrogenyKind::None,
                     orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
                     material: MaterialColumn::pure(kind, cell.area.get(), thickness_km).unwrap(),
+                    interface_distance_m: None,
                 }
             })
             .collect();

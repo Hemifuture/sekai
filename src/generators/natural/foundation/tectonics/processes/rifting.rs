@@ -719,6 +719,7 @@ mod tests {
                         if plate_index == 0 { 40.0 } else { 7.0 },
                     )
                     .unwrap(),
+                    interface_distance_m: None,
                 }
             })
             .collect();

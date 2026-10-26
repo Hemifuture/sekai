@@ -16,6 +16,7 @@ use super::model::{
     ActivePlate, CrustSample, FormationTectonicRecipe, LineageId, MaterialColumn,
     TectonicModelError, TectonicState,
 };
+use super::resample::reinitialize_interface_distance;
 use crate::generators::natural::foundation::crust_physics::{
     continental_isostatic_elevation_m, oceanic_plate_cooling_elevation_m,
 };
@@ -124,6 +125,17 @@ pub(super) fn build_initial_state_v5(
     );
     let mut state = TectonicState::new(samples, plates, spec.plate_count.into())?;
     mark_dominant_continental_lineages(&mut state, surface, topology);
+    // The opening interface lies on the Voronoi edges of the opening mask
+    // (P2 boundary-noise spec §5.2); samples are one per cell in cell order.
+    let kinds = state
+        .samples
+        .iter()
+        .map(|sample| sample.kind)
+        .collect::<Vec<_>>();
+    let distances = reinitialize_interface_distance(surface, topology, &kinds, None);
+    for (sample, distance) in state.samples.iter_mut().zip(distances) {
+        sample.interface_distance_m = Some(distance);
+    }
     Ok(state)
 }
 
@@ -590,6 +602,7 @@ fn initial_crust_samples(
                 orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
                 material: MaterialColumn::pure(kind, cell.area.get(), thickness_km)
                     .expect("validated initialized crust has a valid material column"),
+                interface_distance_m: None,
             }
         })
         .collect()

@@ -46,6 +46,12 @@ pub(super) struct CrustSample {
     pub(super) orogeny: SphericalOrogenyKind,
     pub(super) orogeny_age_myr: f32,
     pub(super) material: MaterialColumn,
+    /// Signed great-circle distance to the continent-ocean interface, metres,
+    /// positive on the continental side: the semi-Lagrangian level set that
+    /// carries the sub-cell coastline across resamples (P2 boundary-noise
+    /// spec §5; Osher & Sethian 1988, Strain 1999). `None` marks a hole marker,
+    /// which only keeps coverage and never informs the interface.
+    pub(super) interface_distance_m: Option<f32>,
 }
 
 impl CrustSample {
@@ -1124,6 +1130,7 @@ mod tests {
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
             material,
+            interface_distance_m: None,
         };
         let state = TectonicState::new(
             vec![

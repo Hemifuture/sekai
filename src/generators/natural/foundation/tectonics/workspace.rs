@@ -107,6 +107,7 @@ mod tests {
             orogeny: SphericalOrogenyKind::None,
             orogeny_age_myr: NO_OROGENY_AGE_SENTINEL_MYR,
             material: MaterialColumn::pure(CrustKind::Continental, 1.0, 35.0).unwrap(),
+            interface_distance_m: None,
         };
         let state = TectonicState::new(
             vec![sample],

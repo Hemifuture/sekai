@@ -295,6 +295,7 @@ mod tests {
                 7.0,
             )
             .unwrap(),
+            interface_distance_m: None,
         };
         let continent = CrustSample {
             position: surface.cell(edge.cells[1]).unwrap().site,
@@ -313,6 +314,7 @@ mod tests {
                 40.0,
             )
             .unwrap(),
+            interface_distance_m: None,
         };
         let plates = vec![
             ActivePlate::new(descending, edge.cells[0], rotation),

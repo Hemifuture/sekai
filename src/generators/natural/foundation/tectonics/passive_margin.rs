@@ -134,6 +134,7 @@ mod tests {
                 if index == margin { 35.0 } else { 7.0 },
             )
             .unwrap(),
+            interface_distance_m: None,
         };
         let mut passive = (0..surface.cells().len()).map(make).collect::<Vec<_>>();
         let mut active = passive.clone();

@@ -167,6 +167,7 @@ mod tests {
                 },
             )
             .unwrap(),
+            interface_distance_m: None,
         };
         let samples = vec![
             make(0, CrustKind::Oceanic, 20.0, -1_000.0),

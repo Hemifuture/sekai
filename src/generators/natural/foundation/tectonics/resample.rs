@@ -717,6 +717,155 @@ fn rebalance_columns_to_cells(
     Ok(())
 }
 
+/// Signed distance from a cell's site to its nearest Voronoi edge, positive
+/// for continental crust: the interface of a cell-resolved feature lies on its
+/// cell boundary, which is exactly what a per-cell mask encodes (P2
+/// boundary-noise spec §5.2). Used for the opening mask and new samples.
+pub(super) fn voronoi_interface_distance_m(
+    surface: &SphericalSurfaceSnapshot,
+    cell: CellId,
+    kind: CrustKind,
+) -> f32 {
+    let nearest_edge_m = surface
+        .cell_edges(cell)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|&edge| surface.edge(edge))
+        .map(|edge| {
+            let side = usize::from(edge.cells[1] == cell);
+            edge.center_distances_to_midpoint[side].get()
+        })
+        .fold(f64::INFINITY, f64::min);
+    signed_by_kind(nearest_edge_m, kind) as f32
+}
+
+fn signed_by_kind(distance_m: f64, kind: CrustKind) -> f64 {
+    match kind {
+        CrustKind::Continental => distance_m,
+        CrustKind::Oceanic => -distance_m,
+    }
+}
+
+fn kind_of_interface_distance(distance_m: f64) -> CrustKind {
+    // Ties go to continental crust, as in `MaterialColumn::compatibility_kind`.
+    if distance_m >= 0.0 {
+        CrustKind::Continental
+    } else {
+        CrustKind::Oceanic
+    }
+}
+
+/// Rebuilds the signed interface distance of every cell from the final kind
+/// mask without moving its zero set (Sussman, Smereka & Osher 1994, in the
+/// direct closest-point form).
+///
+/// Each edge between cells of different kind contributes one zero crossing:
+/// the linear zero of the interpolated distance along the centroid chord when
+/// both endpoint values agree with the final kinds, otherwise (a kind changed
+/// discretely, or no interpolated value exists) the Voronoi edge midpoint.
+/// Distances then spread outward by closest-point propagation over the cell
+/// graph, so every cell reaches its nearest crossing in `O(n log n)`. A mask
+/// without any interface gives every cell the antipodal distance with its
+/// own sign.
+///
+/// # Arguments
+///
+/// * `kinds` - final crust kind of every authoritative cell
+/// * `interpolated` - the distance interpolated at every centroid, if any
+///
+/// # Returns
+///
+/// One signed distance in metres per cell, positive on continental crust.
+pub(super) fn reinitialize_interface_distance(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    kinds: &[CrustKind],
+    interpolated: Option<&[Option<f64>]>,
+) -> Vec<f32> {
+    let cells = surface.cells();
+    let mut crossings: Vec<UnitVector3> = Vec::new();
+    // Best (1 - cos angle, crossing) per cell; 1 - cos is monotone in angle.
+    let mut best: Vec<Option<(f64, usize)>> = vec![None; cells.len()];
+    let mut queue = BinaryHeap::new();
+    let offer = |cell: usize,
+                 crossing: usize,
+                 point: UnitVector3,
+                 best: &mut Vec<_>,
+                 queue: &mut BinaryHeap<_>| {
+        let key = 1.0 - cells[cell].centroid.dot(point);
+        let better = match best[cell] {
+            None => true,
+            Some((incumbent, index)) => key < incumbent || (key == incumbent && crossing < index),
+        };
+        if better {
+            best[cell] = Some((key, crossing));
+            // `key` is non-negative, so its IEEE bits order like the value.
+            queue.push(Reverse((key.max(0.0).to_bits(), cell, crossing)));
+        }
+    };
+    for edge in surface.edges() {
+        let [first, second] = edge.cells.map(|cell| cell.raw() as usize);
+        if kinds[first] == kinds[second] {
+            continue;
+        }
+        let linear = interpolated.and_then(|values| match (values[first], values[second]) {
+            (Some(a), Some(b))
+                if kind_of_interface_distance(a) == kinds[first]
+                    && kind_of_interface_distance(b) == kinds[second]
+                    && a != b =>
+            {
+                let t = a / (a - b);
+                let [pa, pb] =
+                    [cells[first].centroid, cells[second].centroid].map(UnitVector3::components);
+                UnitVector3::new(
+                    pa[0] + t * (pb[0] - pa[0]),
+                    pa[1] + t * (pb[1] - pa[1]),
+                    pa[2] + t * (pb[2] - pa[2]),
+                )
+                .ok()
+            }
+            _ => None,
+        });
+        let point = linear.unwrap_or(edge.midpoint);
+        let index = crossings.len();
+        crossings.push(point);
+        offer(first, index, point, &mut best, &mut queue);
+        offer(second, index, point, &mut best, &mut queue);
+    }
+    while let Some(Reverse((bits, cell, crossing))) = queue.pop() {
+        if best[cell] != Some((f64::from_bits(bits), crossing)) {
+            continue;
+        }
+        for arc in &topology.arcs()[cell] {
+            offer(
+                arc.neighbor.raw() as usize,
+                crossing,
+                crossings[crossing],
+                &mut best,
+                &mut queue,
+            );
+        }
+    }
+    let radius = surface.radius().get();
+    best.iter()
+        .zip(kinds)
+        .zip(cells)
+        .map(|((best, &kind), cell)| {
+            let distance = match best {
+                Some((_, crossing)) => {
+                    cell.centroid
+                        .dot(crossings[*crossing])
+                        .clamp(-1.0, 1.0)
+                        .acos()
+                        * radius
+                }
+                None => std::f64::consts::PI * radius,
+            };
+            signed_by_kind(distance, kind) as f32
+        })
+        .collect()
+}
+
 /// Cells of `kind` other than `start` in breadth-first order from it.
 fn cells_of_kind_by_distance(
     topology: &NaturalTopologyIndex,
@@ -1613,6 +1762,7 @@ fn interpolate_material(
             }
         },
         material: winner.material,
+        interface_distance_m: winner.interface_distance_m,
     }
 }
 
@@ -1819,8 +1969,9 @@ fn dot(first: [f64; 3], second: [f64; 3]) -> f64 {
 mod tests {
     use super::{
         canonicalize_final_plates, conservative_material_remap, conservative_material_resample_v5,
-        occupied_material_area, rebalance_columns_to_cells, resample_current_state,
-        resampling_interval_steps, ResampleError,
+        kind_of_interface_distance, occupied_material_area, rebalance_columns_to_cells,
+        reinitialize_interface_distance, resample_current_state, resampling_interval_steps,
+        ResampleError,
     };
     use crate::generators::natural::foundation::tectonics::contacts::CoverageScratch;
     use crate::generators::natural::foundation::tectonics::model::{
@@ -1840,6 +1991,75 @@ mod tests {
         canonical_east_north_basis, SphericalNaturalSurface, SphericalSurfaceSnapshot, UnitVector3,
     };
     use crate::world::{CellId, Meters, PlateId, SphericalSpaceSpec};
+
+    /// Signed analytic distance to the great circle with pole `pole`.
+    fn great_circle_distance(surface: &SphericalSurfaceSnapshot, pole: UnitVector3) -> Vec<f64> {
+        let radius = surface.radius().get();
+        surface
+            .cells()
+            .iter()
+            .map(|cell| cell.centroid.dot(pole).clamp(-1.0, 1.0).asin() * radius)
+            .collect()
+    }
+
+    fn largest_center_distance_m(surface: &SphericalSurfaceSnapshot) -> f64 {
+        surface
+            .edges()
+            .iter()
+            .map(|edge| edge.center_distance.get())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn opening_interface_distance_reproduces_any_cell_mask() {
+        let (surface, topology) = fixture(642);
+        let kinds = (0..surface.cells().len())
+            .map(|index| {
+                if index % 7 < 3 {
+                    CrustKind::Continental
+                } else {
+                    CrustKind::Oceanic
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let distances = reinitialize_interface_distance(&surface, &topology, &kinds, None);
+
+        for (&distance, &kind) in distances.iter().zip(&kinds) {
+            assert_eq!(kind_of_interface_distance(f64::from(distance)), kind);
+        }
+    }
+
+    #[test]
+    fn reinitialization_keeps_the_zero_set_and_restores_distance() {
+        let (surface, topology) = fixture(2_562);
+        let pole = UnitVector3::new(0.3, -0.5, 0.81).unwrap();
+        let exact = great_circle_distance(&surface, pole);
+        let kinds = exact
+            .iter()
+            .map(|&distance| kind_of_interface_distance(distance))
+            .collect::<Vec<_>>();
+        // A distorted but sign-correct field: linear interpolation leaves
+        // values off the distance function, never off the zero set.
+        let distorted = exact
+            .iter()
+            .map(|&distance| Some(distance * (1.0 + 0.5 * (distance / 1.0e6).sin().abs())))
+            .collect::<Vec<_>>();
+
+        let distances =
+            reinitialize_interface_distance(&surface, &topology, &kinds, Some(&distorted));
+
+        // Closest-point distances to crossings spaced at most one cell apart
+        // along the interface are exact to within half a cell spacing.
+        let tolerance = 0.5 * largest_center_distance_m(&surface);
+        for ((&found, &expected), &kind) in distances.iter().zip(&exact).zip(&kinds) {
+            assert_eq!(kind_of_interface_distance(f64::from(found)), kind);
+            assert!(
+                (f64::from(found) - expected).abs() <= tolerance,
+                "distance {found} vs {expected} exceeds {tolerance}"
+            );
+        }
+    }
 
     fn fixture(cells: u32) -> (SphericalSurfaceSnapshot, NaturalTopologyIndex) {
         let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
@@ -1908,6 +2128,7 @@ mod tests {
                 },
             )
             .unwrap(),
+            interface_distance_m: None,
         }
     }
 
