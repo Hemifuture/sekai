@@ -4,6 +4,11 @@
 //! The production modules land task by task (section 10) and stay off the causal chain until
 //! T8 switches it; `prototype` is the test-only offline probe whose physics they port.
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "built by the reduced climate stage from A10 T8")
+)]
+mod forcing;
 mod geometry;
 #[cfg(test)]
 mod prototype;

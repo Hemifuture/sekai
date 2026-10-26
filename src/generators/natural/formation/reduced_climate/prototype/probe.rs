@@ -29,6 +29,9 @@ use crate::generators::natural::formation::global_circulation::{
     project_monthly_tangent_vectors_cancellable, GlobalClimateForcing,
     SELECTED_PRODUCTION_INTEGRATOR,
 };
+use crate::generators::natural::formation::reduced_climate::forcing::{
+    ReducedClimateForcing, ReducedClimateTerrain,
+};
 use crate::generators::natural::formation::surface_formation::generation::{
     advance_surface_processes, SurfaceProcessInputs,
 };
@@ -36,21 +39,21 @@ use crate::generators::natural::formation::surface_formation::FormationState;
 use crate::generators::natural::random::LabeledSubstreams;
 use crate::generators::natural::surface_water_geometry::SurfaceWaterStencil;
 use crate::generators::natural::{
-    quality, ClimateWorkDomainBuilder, EvolvedTectonicGenerator, FormationHydrologyGenerator,
+    quality, ClimateWorkDomainArtifact, EvolvedTectonicGenerator, FormationHydrologyGenerator,
     GeologicSubstrateGenerator, GlobalCirculationGenerator, GlobalClimateForcingBuilder,
     PrimaryReliefGenerator, SurfaceFormationGenerator, SurfaceFormationInputs,
 };
-use crate::generators::spatial::{remap_intensive_f32, ProfileSurfaceBuilder};
+use crate::generators::spatial::ProfileSurfaceBuilder;
 use crate::world::natural::{
-    atmospheric_reference_surface_height_m, expected_global_circulation_dense_state_bytes,
-    saturation_specific_humidity_kg_kg, ClimateBudgetReport, ClimateCapabilitySet,
-    ClimateCheckpoint, ClimateLayerLayout, ClimateModelProfile, ClimateQuantizationId,
-    ClimateRemapReport, ClimateSolveReport, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec,
-    GlobalCirculationFields, GlobalCirculationSnapshot, HydroErosionSpec, MonthlyScalarField,
-    MonthlyVector3Field, NaturalQualityProfile, NaturalQualityReport, ReliefSpec,
-    ResolvedWorldFormation, ResolvedWorldFormationPreset, SphericalHydrologySnapshot,
-    SurfaceWaterGeometry, TectonicSpec, WorldFormationPreset, CLIMATE_MONTH_COUNT,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
+    expected_global_circulation_dense_state_bytes, saturation_specific_humidity_kg_kg,
+    ClimateBudgetReport, ClimateCapabilitySet, ClimateCheckpoint, ClimateLayerLayout,
+    ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport,
+    ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, GlobalCirculationFields,
+    GlobalCirculationSnapshot, HydroErosionSpec, MonthlyScalarField, MonthlyVector3Field,
+    NaturalQualityProfile, NaturalQualityReport, ReliefSpec, ResolvedWorldFormation,
+    ResolvedWorldFormationPreset, SphericalHydrologySnapshot, SurfaceWaterGeometry, TectonicSpec,
+    WorldFormationPreset, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
+    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
     GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP, GLOBAL_CIRCULATION_SCHEMA_V2,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1, SURFACE_FORMATION_HORIZON_YEARS,
 };
@@ -82,23 +85,26 @@ struct Published {
 }
 
 /// Authoritative reference heights `h_c` and the scheme-C work mean `H = M h`.
-fn reference_heights(
-    domain: &ClimateWorkDomainSnapshot,
+/// The production minimal forcing (design section 10 T3) of one terrain.
+fn reduced_forcing(
+    domain: &ClimateWorkDomainArtifact,
     elevation_m: &[f32],
     water: &SurfaceWaterGeometry,
-) -> (Vec<f64>, Vec<f64>) {
-    let sea = water.sea_level_m();
-    let h_c: Vec<f32> = elevation_m
-        .iter()
-        .zip(water.ocean_area_fraction())
-        .map(|(&z, &ocean)| atmospheric_reference_surface_height_m(z - sea, 1.0 - ocean) as f32)
-        .collect();
-    let work =
-        remap_intensive_f32(domain.source_to_climate(), &h_c).expect("reference height remap");
-    (
-        h_c.iter().map(|&v| f64::from(v)).collect(),
-        work.iter().map(|&v| f64::from(v)).collect(),
+    relative_permeability: &[f32],
+    spec: &ClimateSpec,
+) -> ReducedClimateForcing {
+    ReducedClimateForcing::build(
+        domain.snapshot(),
+        domain.reduced_climate_geometry(),
+        ReducedClimateTerrain {
+            elevation_m,
+            surface_water_geometry: water,
+            relative_permeability,
+        },
+        spec,
+        &BuildCancellation::new(),
     )
+    .expect("reduced forcing")
 }
 
 fn to_monthly(values: &[[f64; MONTHS]]) -> Monthly {
@@ -117,7 +123,7 @@ fn to_monthly_vector(values: &[[[f64; 3]; MONTHS]]) -> MonthlyVector {
 fn project_all(
     surface: &SphericalSurfaceSnapshot,
     domain: &ClimateWorkDomainSnapshot,
-    forcing: &GlobalClimateForcing,
+    forcing: &ReducedClimateForcing,
     work: &ReducedWorkClimate,
     cell_heights: &[f64],
     cancellation: &BuildCancellation,
@@ -188,7 +194,7 @@ fn project_all(
 fn project_for_p5(
     surface: &SphericalSurfaceSnapshot,
     domain: &ClimateWorkDomainSnapshot,
-    forcing: &GlobalClimateForcing,
+    forcing: &ReducedClimateForcing,
     work: &ReducedWorkClimate,
     cancellation: &BuildCancellation,
 ) -> Published {
@@ -213,8 +219,8 @@ fn project_for_p5(
         cancellation,
     )
     .expect("current projection");
-    for (vectors, &land) in current.iter_mut().zip(forcing.source_publishes_land()) {
-        if land == 1.0 {
+    for (vectors, &land) in current.iter_mut().zip(&forcing.cell_publishes_land) {
+        if land {
             *vectors = [[0.0; 3]; MONTHS];
         }
     }
@@ -260,7 +266,7 @@ fn published_from_snapshot(snapshot: &GlobalCirculationSnapshot) -> Published {
 /// semantics: area-month means, CERES planetary albedo of the surface albedo).
 fn budget_report(
     grid: &ReducedClimateGeometry,
-    forcing: &GlobalClimateForcing,
+    forcing: &ReducedClimateForcing,
     work: &ReducedWorkClimate,
 ) -> ClimateBudgetReport {
     let (mut asr, mut olr, mut incoming, mut reflected, mut weight) = (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -273,7 +279,7 @@ fn budget_report(
             asr += area * work.monthly_absorbed_shortwave_w_m2[cell][month];
             olr += area * work.outgoing_longwave_w_m2[cell][month];
             let top = EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2
-                * f64::from(forcing.monthly_insolation_fraction()[cell][month]);
+                * forcing.monthly_insolation_fraction[cell][month];
             incoming += area * top;
             reflected += area * top * planetary;
             weight += area;
@@ -653,15 +659,20 @@ fn a10_reduced_climate_probe() {
         &cancellation,
     )
     .expect("P1");
-    let domain =
-        ClimateWorkDomainBuilder::build(bundle.authoritative_surface(), profile, &cancellation)
+    let domain_artifact =
+        ClimateWorkDomainArtifact::build(bundle.authoritative_surface(), profile, &cancellation)
             .expect("domain");
+    let domain = domain_artifact.snapshot();
     log(format!(
         "P1 + climate domain {:.3} s (seed-independent)",
         started.elapsed().as_secs_f64()
     ));
     let started = Instant::now();
-    let reduced_grid = ReducedClimateGeometry::new(&domain, &|| false).expect("geometry");
+    let reduced_grid = ReducedClimateGeometry::new(domain, &|| false).expect("geometry");
+    assert_eq!(
+        reduced_grid.edges.len(),
+        domain_artifact.reduced_climate_geometry().edges.len()
+    );
     let grid_seconds = started.elapsed().as_secs_f64();
     log(format!(
         "reduced grid precompute {grid_seconds:.4} s (seed-independent), cells {}",
@@ -730,7 +741,7 @@ fn a10_reduced_climate_probe() {
         &relief,
         substrate.relative_permeability(),
         &climate_spec,
-        &domain,
+        domain,
         &cancellation,
     )
     .expect("start forcing");
@@ -739,7 +750,7 @@ fn a10_reduced_climate_probe() {
     let (baseline_start, start_correction) =
         GlobalCirculationGenerator::generate_capturing_start_correction(
             surface,
-            &domain,
+            domain,
             &start_forcing,
             ClimateModelProfile::C2LayeredV1,
             &cancellation,
@@ -754,7 +765,7 @@ fn a10_reduced_climate_probe() {
             tectonics: &evolved,
             substrate: &substrate,
             relief: &relief,
-            domain: &domain,
+            domain,
             climate_spec: &climate_spec,
             initial_climate: &baseline_start,
             formation_spec: &surface_spec,
@@ -783,7 +794,7 @@ fn a10_reduced_climate_probe() {
     // Baseline re-evaluated with the steering-wind orographic gates for parity.
     let baseline_steering = wrap(
         surface,
-        &domain,
+        domain,
         &baseline_end_forcing,
         &baseline_published,
         *baseline_end.budget_report(),
@@ -808,28 +819,79 @@ fn a10_reduced_climate_probe() {
             baseline_terrain,
             substrate.relative_permeability(),
             &climate_spec,
-            &domain,
+            domain,
             &cancellation,
         )
         .expect("endpoint forcing rebuild");
         forcing_times.push(t.elapsed().as_secs_f64());
     }
     let endpoint_forcing_seconds = median(&mut forcing_times);
+    // T3: the production minimal forcing, timed on both terrains and checked against
+    // the four quantities the C2 forcing derived the same way.
+    let time_reduced = |elevation: &[f32], water: &SurfaceWaterGeometry| {
+        let mut seconds = Vec::new();
+        let mut forcing = None;
+        for _ in 0..5 {
+            let t = Instant::now();
+            forcing = Some(reduced_forcing(
+                &domain_artifact,
+                elevation,
+                water,
+                substrate.relative_permeability(),
+                &climate_spec,
+            ));
+            seconds.push(t.elapsed().as_secs_f64());
+        }
+        (median(&mut seconds), forcing.expect("five builds"))
+    };
+    let (reduced_start_forcing_seconds, _) =
+        time_reduced(relief.elevation_m(), relief.surface_water_geometry());
+    let (reduced_endpoint_forcing_seconds, reduced_endpoint) = time_reduced(
+        baseline_terrain.current_elevation_m(),
+        baseline_terrain.surface_water_geometry(),
+    );
+    let widened = |values: &[f32]| values.iter().map(|&v| f64::from(v)).collect::<Vec<_>>();
+    assert_eq!(
+        reduced_endpoint.land_fraction,
+        widened(baseline_end_forcing.planet_forcing().land_fraction())
+    );
+    assert_eq!(
+        reduced_endpoint.land_evapotranspiration_fraction,
+        widened(baseline_end_forcing.land_evapotranspiration_fraction())
+    );
+    assert!(reduced_endpoint
+        .monthly_insolation_fraction
+        .iter()
+        .zip(baseline_end_forcing.monthly_insolation_fraction())
+        .all(|(exact, rounded)| exact.map(|v| v as f32) == *rounded));
+    assert!(reduced_endpoint
+        .cell_publishes_land
+        .iter()
+        .zip(baseline_end_forcing.source_publishes_land())
+        .all(|(&land, &published)| land == (published == 1.0)));
+    log(format!(
+        "T3 minimal forcing median: start {:.3} ms, endpoint {:.3} ms (C2 endpoint forcing {:.3} ms)",
+        reduced_start_forcing_seconds * 1.0e3,
+        reduced_endpoint_forcing_seconds * 1.0e3,
+        endpoint_forcing_seconds * 1.0e3
+    ));
     let _ = started;
     let mut timing = serde_json::Map::new();
     let evaluate = |parallel: bool| {
         let t0 = Instant::now();
-        let (cell_heights, work_heights) = reference_heights(
-            &domain,
+        let reduced_forcing_b = reduced_forcing(
+            &domain_artifact,
             baseline_terrain.current_elevation_m(),
             baseline_terrain.surface_water_geometry(),
+            substrate.relative_permeability(),
+            &climate_spec,
         );
+        let cell_heights = reduced_forcing_b.cell_reference_height_m.clone();
         let t1 = Instant::now();
         let inputs = ReducedInputs::from_forcing(
             &reduced_grid,
-            &baseline_end_forcing,
+            &reduced_forcing_b,
             &climate_spec,
-            work_heights,
             longwave,
             ice,
         )
@@ -837,25 +899,19 @@ fn a10_reduced_climate_probe() {
         let t2 = Instant::now();
         let work = solve_reduced_climate(&reduced_grid, &inputs, parallel);
         let t3 = Instant::now();
-        let p5_only = project_for_p5(
-            surface,
-            &domain,
-            &baseline_end_forcing,
-            &work,
-            &cancellation,
-        );
+        let p5_only = project_for_p5(surface, domain, &reduced_forcing_b, &work, &cancellation);
         let t4 = Instant::now();
         let published = project_all(
             surface,
-            &domain,
-            &baseline_end_forcing,
+            domain,
+            &reduced_forcing_b,
             &work,
             &cell_heights,
             &cancellation,
         );
         let t5 = Instant::now();
-        let budget = budget_report(&reduced_grid, &baseline_end_forcing, &work);
-        let snapshot = wrap(surface, &domain, &baseline_end_forcing, &published, budget);
+        let budget = budget_report(&reduced_grid, &reduced_forcing_b, &work);
+        let snapshot = wrap(surface, domain, &baseline_end_forcing, &published, budget);
         let t6 = Instant::now();
         drop(p5_only);
         let seconds = [
@@ -910,6 +966,14 @@ fn a10_reduced_climate_probe() {
     );
     timing.insert("start_forcing_build_s".into(), json!(start_forcing_seconds));
     timing.insert("reduced_grid_precompute_s".into(), json!(grid_seconds));
+    timing.insert(
+        "reduced_start_forcing_build_median_s".into(),
+        json!(reduced_start_forcing_seconds),
+    );
+    timing.insert(
+        "reduced_endpoint_forcing_build_median_s".into(),
+        json!(reduced_endpoint_forcing_seconds),
+    );
     timing.insert("baseline_start_p4_s".into(), json!(baseline_start_seconds));
     timing.insert(
         "baseline_p5_plus_endpoint_p4_s".into(),
@@ -927,16 +991,18 @@ fn a10_reduced_climate_probe() {
     let climate_only = compare_published(surface, &land_mask, &published_b, &baseline_published);
     // The reference configuration (preserving ice, `SEKAI_A10_REF_FIX`) on the
     // same forcing, for the three-way comparison of each design revision.
-    let (reference_cells, reference_work_heights) = reference_heights(
-        &domain,
+    let reference_reduced_forcing = reduced_forcing(
+        &domain_artifact,
         baseline_terrain.current_elevation_m(),
         baseline_terrain.surface_water_geometry(),
+        substrate.relative_permeability(),
+        &climate_spec,
     );
+    let reference_cells = reference_reduced_forcing.cell_reference_height_m.clone();
     let reference_inputs = ReducedInputs::from_forcing(
         &reduced_grid,
-        &baseline_end_forcing,
+        &reference_reduced_forcing,
         &climate_spec,
-        reference_work_heights,
         OutgoingLongwaveClosure::BudykoTransEbm,
         IceAlbedoFeedback::PlanetaryAlbedoPreserving,
     )
@@ -944,8 +1010,8 @@ fn a10_reduced_climate_probe() {
     let reference_work = solve_reduced_climate(&reduced_grid, &reference_inputs, true);
     let reference_published = project_all(
         surface,
-        &domain,
-        &baseline_end_forcing,
+        domain,
+        &reference_reduced_forcing,
         &reference_work,
         &reference_cells,
         &cancellation,
@@ -986,16 +1052,18 @@ fn a10_reduced_climate_probe() {
 
     // (b) Reduced chain: start -> P5 advance -> endpoint.
     let chain = Instant::now();
-    let (start_cells, start_work_heights) = reference_heights(
-        &domain,
+    let start_reduced_forcing = reduced_forcing(
+        &domain_artifact,
         relief.elevation_m(),
         relief.surface_water_geometry(),
+        substrate.relative_permeability(),
+        &climate_spec,
     );
+    let start_cells = start_reduced_forcing.cell_reference_height_m.clone();
     let start_inputs = ReducedInputs::from_forcing(
         &reduced_grid,
-        &start_forcing,
+        &start_reduced_forcing,
         &climate_spec,
-        start_work_heights,
         longwave,
         ice,
     )
@@ -1003,18 +1071,18 @@ fn a10_reduced_climate_probe() {
     let start_work = solve_reduced_climate(&reduced_grid, &start_inputs, false);
     let start_published = project_all(
         surface,
-        &domain,
-        &start_forcing,
+        domain,
+        &start_reduced_forcing,
         &start_work,
         &start_cells,
         &cancellation,
     );
     let start_snapshot = wrap(
         surface,
-        &domain,
+        domain,
         &start_forcing,
         &start_published,
-        budget_report(&reduced_grid, &start_forcing, &start_work),
+        budget_report(&reduced_grid, &start_reduced_forcing, &start_work),
     );
     let start_quality = quality::evaluate_global_circulation_quality(
         surface,
@@ -1055,20 +1123,22 @@ fn a10_reduced_climate_probe() {
         &reduced_terrain,
         substrate.relative_permeability(),
         &climate_spec,
-        &domain,
+        domain,
         &cancellation,
     )
     .expect("reduced endpoint forcing");
-    let (end_cells, end_work_heights) = reference_heights(
-        &domain,
+    let end_reduced_forcing = reduced_forcing(
+        &domain_artifact,
         reduced_terrain.current_elevation_m(),
         reduced_terrain.surface_water_geometry(),
+        substrate.relative_permeability(),
+        &climate_spec,
     );
+    let end_cells = end_reduced_forcing.cell_reference_height_m.clone();
     let end_inputs = ReducedInputs::from_forcing(
         &reduced_grid,
-        &end_forcing,
+        &end_reduced_forcing,
         &climate_spec,
-        end_work_heights,
         longwave,
         ice,
     )
@@ -1076,18 +1146,18 @@ fn a10_reduced_climate_probe() {
     let end_work = solve_reduced_climate(&reduced_grid, &end_inputs, false);
     let end_published = project_all(
         surface,
-        &domain,
-        &end_forcing,
+        domain,
+        &end_reduced_forcing,
         &end_work,
         &end_cells,
         &cancellation,
     );
     let end_snapshot = wrap(
         surface,
-        &domain,
+        domain,
         &end_forcing,
         &end_published,
-        budget_report(&reduced_grid, &end_forcing, &end_work),
+        budget_report(&reduced_grid, &end_reduced_forcing, &end_work),
     );
     let chain_seconds = chain.elapsed().as_secs_f64();
     let end_quality = quality::evaluate_global_circulation_quality_for_formation_cancellable(

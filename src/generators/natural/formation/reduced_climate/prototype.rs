@@ -60,7 +60,7 @@ use crate::world::natural::{
     WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
-use super::super::global_circulation::GlobalClimateForcing;
+use super::forcing::ReducedClimateForcing;
 
 /// Outgoing-longwave closure of the MEBM (probe sensitivity axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -283,7 +283,7 @@ const MEBM_PICARD_TOLERANCE_K: f64 = REDUCED_CLIMATE_ENERGY_FIXED_POINT_TOLERANC
 const WATER_ACTIVE_SET_MAX_ITERATIONS: usize =
     REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS as usize;
 
-/// Seed-dependent per-cell inputs derived from the production forcing.
+/// Seed-dependent per-cell inputs derived from the production minimal forcing.
 #[derive(Debug, Clone)]
 pub(crate) struct ReducedInputs {
     pub(crate) land_fraction: Vec<f64>,
@@ -310,25 +310,20 @@ pub(crate) struct ReducedInputs {
 }
 
 impl ReducedInputs {
-    /// Rebuilds albedo and ASR with the scheme-C reference height, reusing
-    /// the production insolation, albedo, and ASR functions.
+    /// Builds albedo and ASR on the production minimal forcing with its scheme-C reference
+    /// height, reusing the production albedo and ASR functions.
     pub(crate) fn from_forcing(
         grid: &ReducedClimateGeometry,
-        forcing: &GlobalClimateForcing,
+        forcing: &ReducedClimateForcing,
         spec: &ClimateSpec,
-        reference_height_m: Vec<f64>,
         longwave: OutgoingLongwaveClosure,
         ice: IceAlbedoFeedback,
     ) -> Self {
-        let planet = forcing.planet_forcing();
-        let land_fraction: Vec<f64> = planet
-            .land_fraction()
-            .iter()
-            .map(|&v| f64::from(v))
-            .collect();
+        let land_fraction = forcing.land_fraction.clone();
+        let reference_height_m = forcing.reference_height_m.clone();
         let mut surface_albedo = Vec::with_capacity(grid.cell_count());
         let mut monthly_absorbed_shortwave_w_m2 = Vec::with_capacity(grid.cell_count());
-        for (index, insolation) in forcing.monthly_insolation_fraction().iter().enumerate() {
+        for (index, insolation) in forcing.monthly_insolation_fraction.iter().enumerate() {
             let land = land_fraction[index];
             let snow_prior = ((reference_height_m[index] - P4_HIGHLAND_ALBEDO_RAMP_ONSET_M)
                 / P4_HIGHLAND_ALBEDO_RAMP_SPAN_M)
@@ -339,23 +334,9 @@ impl ReducedInputs {
             // The production forcing rounds albedo through f32 before ASR.
             let albedo = f64::from(albedo as f32);
             surface_albedo.push(albedo);
-            monthly_absorbed_shortwave_w_m2.push(
-                insolation.map(|fraction| absorbed_shortwave_w_m2(f64::from(fraction), albedo)),
-            );
+            monthly_absorbed_shortwave_w_m2
+                .push(insolation.map(|fraction| absorbed_shortwave_w_m2(fraction, albedo)));
         }
-        let operators = grid.operators();
-        let height_f32: Vec<f32> = reference_height_m.iter().map(|&v| v as f32).collect();
-        let reference_height_gradient = operators
-            .gradient(&height_f32)
-            .expect("finite reference height")
-            .into_iter()
-            .map(|g| g.map(f64::from))
-            .collect();
-        let monthly_insolation_fraction = forcing
-            .monthly_insolation_fraction()
-            .iter()
-            .map(|m| m.map(f64::from))
-            .collect();
         let full_snow_land_albedo = P4_OPEN_OCEAN_SURFACE_ALBEDO
             + P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT
             + P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT;
@@ -366,20 +347,16 @@ impl ReducedInputs {
         Self {
             land_fraction,
             reference_height_m,
-            reference_height_gradient,
+            reference_height_gradient: forcing.reference_height_gradient.clone(),
             surface_albedo,
             monthly_absorbed_shortwave_w_m2,
-            monthly_insolation_fraction,
+            monthly_insolation_fraction: forcing.monthly_insolation_fraction.clone(),
             ice_covered_albedo,
             ice,
             physics: ReducedPhysics::default(),
             latitude_albedo_increment: vec![0.0; grid.cell_count()],
             sea_ice: vec![0.0; grid.cell_count()],
-            land_evapotranspiration_fraction: forcing
-                .land_evapotranspiration_fraction()
-                .iter()
-                .map(|&v| f64::from(v))
-                .collect(),
+            land_evapotranspiration_fraction: forcing.land_evapotranspiration_fraction.clone(),
             temperature_offset_c: f64::from(spec.temperature_offset_c()),
             moisture_scale: f64::from(spec.moisture_scale()),
             longwave,

@@ -9,21 +9,20 @@ use crate::generators::natural::ClimateWorkDomainArtifact;
 use crate::generators::spatial::{remap_intensive_f32_cancellable, ConservativeRemapError};
 use crate::world::natural::{
     absorbed_shortwave_w_m2, formation_runoff_fraction, gray_equilibrium_surface_temperature_c,
-    gray_longwave_slope_w_m2_k, p4_seasonal_storage_heat_capacities_j_m2_k,
-    saturation_specific_humidity_kg_kg, seasonal_storage_equilibrium_temperature_c, ClimateSpec,
-    ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, ForcingError,
-    FormationTerrainFields, LandOceanKind, PlanetForcing, PrimaryReliefSnapshot,
-    PrimaryReliefValidationError, SurfaceWaterGeometry, CLIMATE_MONTH_COUNT,
-    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_AIR_TARGET_RANGE_C, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
-    P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
-    P4_OPEN_OCEAN_SURFACE_ALBEDO, P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT,
-    P4_SURFACE_TARGET_RANGE_C, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
+    gray_longwave_slope_w_m2_k, monthly_daily_mean_insolation_fraction,
+    p4_seasonal_storage_heat_capacities_j_m2_k, saturation_specific_humidity_kg_kg,
+    seasonal_storage_equilibrium_temperature_c, ClimateSpec, ClimateWorkDomainSnapshot,
+    ClimateWorkDomainValidationError, ForcingError, FormationTerrainFields, LandOceanKind,
+    PlanetForcing, PrimaryReliefSnapshot, PrimaryReliefValidationError, SurfaceWaterGeometry,
+    CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, P4_AIR_TARGET_RANGE_C,
+    P4_HIGHLAND_ALBEDO_RAMP_ONSET_M, P4_HIGHLAND_ALBEDO_RAMP_SPAN_M,
+    P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT, P4_OPEN_OCEAN_SURFACE_ALBEDO,
+    P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, P4_SURFACE_TARGET_RANGE_C,
+    REFERENCE_SURFACE_RELATIVE_HUMIDITY,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
 use super::state::LIQUID_MIXED_LAYER_MIN_C;
-
-const MONTH_PHASE_OFFSET: f64 = 0.5;
 
 /// Exact P3-derived boundary and equilibrium forcing on the climate work grid.
 #[derive(Debug, Clone, PartialEq)]
@@ -632,15 +631,12 @@ impl GlobalClimateForcingBuilder {
             // cell is at sea level; for the same reason it absorbs with the
             // open-ocean albedo, not the cell mean that carries the land
             // part's highland snow.
+            let daily_insolation = monthly_daily_mean_insolation_fraction(latitude, axial_tilt_rad);
             let mut ice_free_annual_absorbed = 0.0_f64;
-            for month in 0..CLIMATE_MONTH_COUNT {
-                let phase = std::f64::consts::TAU * (month as f64 + MONTH_PHASE_OFFSET)
-                    / CLIMATE_MONTH_COUNT as f64;
-                let declination = axial_tilt_rad * (-phase.cos());
-                ice_free_annual_absorbed += absorbed_shortwave_w_m2(
-                    daily_mean_insolation(latitude, declination),
-                    P4_OPEN_OCEAN_SURFACE_ALBEDO,
-                ) / CLIMATE_MONTH_COUNT as f64;
+            for fraction in daily_insolation {
+                ice_free_annual_absorbed +=
+                    absorbed_shortwave_w_m2(fraction, P4_OPEN_OCEAN_SURFACE_ALBEDO)
+                        / CLIMATE_MONTH_COUNT as f64;
             }
             let ice_free_annual_c =
                 gray_equilibrium_surface_temperature_c(ice_free_annual_absorbed)
@@ -673,10 +669,7 @@ impl GlobalClimateForcingBuilder {
             let mut absorbed_shortwave_months = [0.0_f32; CLIMATE_MONTH_COUNT];
             let mut absorbed_shortwave_exact = [0.0_f64; CLIMATE_MONTH_COUNT];
             for month in 0..CLIMATE_MONTH_COUNT {
-                let phase = std::f64::consts::TAU * (month as f64 + MONTH_PHASE_OFFSET)
-                    / CLIMATE_MONTH_COUNT as f64;
-                let declination = axial_tilt_rad * (-phase.cos());
-                insolation[month] = daily_mean_insolation(latitude, declination) as f32;
+                insolation[month] = daily_insolation[month] as f32;
                 let absorbed_shortwave = absorbed_shortwave_w_m2(
                     f64::from(insolation[month]),
                     f64::from(surface_albedo[index]),
@@ -813,15 +806,6 @@ fn validate_formation_terrain_against_surface(
     }
 
     check_cancelled(cancellation)
-}
-
-fn daily_mean_insolation(latitude: f64, declination: f64) -> f64 {
-    let argument = (-latitude.tan() * declination.tan()).clamp(-1.0, 1.0);
-    let sunset_hour_angle = argument.acos();
-    ((sunset_hour_angle * latitude.sin() * declination.sin()
-        + latitude.cos() * declination.cos() * sunset_hour_angle.sin())
-        / std::f64::consts::PI)
-        .max(0.0)
 }
 
 fn relief_fingerprint_cancellable(

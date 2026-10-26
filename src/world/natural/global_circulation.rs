@@ -851,6 +851,34 @@ pub fn climatological_annual_total_mm(monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT
         / MEAN_SOLAR_DAY_SECONDS
 }
 
+/// Daily-mean top-of-atmosphere insolation of every climatological month, as a fraction of
+/// the total solar irradiance, at one latitude.
+///
+/// Circular orbit with the months centred half a month after the solstice phase origin, so
+/// the solar declination of month `m` is `-tilt cos(2 pi (m + 1/2) / 12)`; the daily mean is
+/// `(h0 sin(lat) sin(decl) + cos(lat) cos(decl) sin(h0)) / pi` with the sunset hour angle
+/// `cos h0 = -tan(lat) tan(decl)` (Hartmann 1994, Global Physical Climatology, section 2.5).
+///
+/// # Arguments
+///
+/// * `latitude_rad` - latitude in radians
+/// * `axial_tilt_rad` - planetary obliquity in radians
+pub fn monthly_daily_mean_insolation_fraction(
+    latitude_rad: f64,
+    axial_tilt_rad: f64,
+) -> [f64; CLIMATE_MONTH_COUNT] {
+    std::array::from_fn(|month| {
+        let phase = std::f64::consts::TAU * (month as f64 + 0.5) / CLIMATE_MONTH_COUNT as f64;
+        let declination = axial_tilt_rad * (-phase.cos());
+        let argument = (-latitude_rad.tan() * declination.tan()).clamp(-1.0, 1.0);
+        let sunset_hour_angle = argument.acos();
+        ((sunset_hour_angle * latitude_rad.sin() * declination.sin()
+            + latitude_rad.cos() * declination.cos() * sunset_hour_angle.sin())
+            / std::f64::consts::PI)
+            .max(0.0)
+    })
+}
+
 /// Returns top-of-atmosphere absorbed shortwave power for one daily-mean solar
 /// geometry fraction and resolved surface albedo.
 pub fn absorbed_shortwave_w_m2(daily_mean_insolation_fraction: f64, surface_albedo: f64) -> f64 {
