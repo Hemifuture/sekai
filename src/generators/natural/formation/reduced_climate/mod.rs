@@ -117,17 +117,17 @@ const SPEEDY_SUBGRID_GUST_WIND_M_S: f64 = 5.0;
 /// equator (0-5, 5-10, ..., 85-90 degrees), hemispherically symmetrized.
 /// Measured for design revision R3 from NCEP/NCAR Reanalysis 1 6-hourly
 /// 10 m winds 2016-2020 (Kalnay et al. 1996; NOAA PSL
-/// `ncep.reanalysis/surface_gauss/{u,v}wnd.10m.gauss.YYYY.nc`, MD5 sums in
-/// the design): per grid point and calendar month
-/// `sigma^2 = (var u + var v) / 2`, ocean points of the R1 `icec` mask,
-/// cos-latitude weights, northern and southern band means averaged. 6-hourly
-/// is the finest R1 sampling; the bulk formula applies to instantaneous wind.
-/// With these values the Rice expectation reproduces the observed monthly
-/// scalar mean speed to -1.4 % (mean) and 3.0 % (RMS) over the ocean, while
-/// the vector-mean speed is 37 % low.
+/// `ncep.reanalysis/surface_gauss/{u,v}wnd.10m.gauss.YYYY.nc` with the
+/// `land.sfc.gauss.nc` mask, MD5 sums in the design): per ocean grid point
+/// and calendar month `sigma^2 = (var u + var v) / 2`, cos-latitude weights,
+/// northern and southern band means averaged (85-90 degrees has ocean only in
+/// the north). 6-hourly is the finest R1 sampling; the bulk formula applies
+/// to instantaneous wind. With these values the Rice expectation reproduces
+/// the observed monthly scalar mean ocean speed (7.0 m/s) to -1.9 % (mean)
+/// and 3.1 % (RMS), while the vector-mean speed is 34 % low.
 const SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S: [f64; 18] = [
-    1.53, 1.67, 1.87, 2.18, 2.70, 3.36, 4.00, 4.54, 4.76, 4.78, 4.69, 4.64, 4.11, 3.58, 3.44, 3.15,
-    2.82, 2.95,
+    1.78, 1.92, 2.09, 2.40, 3.03, 3.86, 4.61, 5.13, 5.49, 5.70, 5.74, 5.55, 5.17, 4.41, 3.96, 3.43,
+    2.88, 3.40,
 ];
 
 /// Physics added in design revision R2 (probe comparison axes).
@@ -2023,9 +2023,9 @@ mod tests {
 
     #[test]
     fn submonthly_sigma_interpolates_band_centres() {
-        assert!((submonthly_wind_sigma_m_s(0.0) - 1.53).abs() < 1.0e-12);
+        assert!((submonthly_wind_sigma_m_s(0.0) - 1.78).abs() < 1.0e-12);
         let mid = submonthly_wind_sigma_m_s(5.0_f64.to_radians());
-        assert!((mid - 0.5 * (1.53 + 1.67)).abs() < 1.0e-12);
-        assert!((submonthly_wind_sigma_m_s(-90.0_f64.to_radians()) - 2.95).abs() < 1.0e-12);
+        assert!((mid - 0.5 * (1.78 + 1.92)).abs() < 1.0e-12);
+        assert!((submonthly_wind_sigma_m_s(-90.0_f64.to_radians()) - 3.40).abs() < 1.0e-12);
     }
 }
