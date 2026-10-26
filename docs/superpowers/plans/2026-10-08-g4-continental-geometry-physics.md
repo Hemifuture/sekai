@@ -48,8 +48,8 @@
 
 ### Task 0.1 —— 测试侧形状助手 `tests/support/continent_shape.rs`（规格 §7.1）
 
-- 新建 `tests/support/continent_shape.rs`，在已有的 `tests/support/mod.rs` 登记
-  `pub mod continent_shape;`，由消费它的集成测试以 `mod support;` 引入。不新增生产 API、
+- 新建 `tests/support/continent_shape.rs`，消费者以 `#[path = "support/continent_shape.rs"]`
+  单独引入（不把其余 support 模块编进每个测试）。不新增生产 API、
   schema 或算法分支。
 - 输入：权威面 `SphericalSurfaceSnapshot`、`NaturalTopologyIndex`（或同等的权威拓扑
   邻接）与逐格布尔掩膜。连通性一律用权威拓扑。
@@ -105,6 +105,10 @@
 - §7.3 的界按 R2 推迟推导；R3 只给出“若按临时值与地球值套中点规则”的参考数，明确不作定值。
 
 ## 阶段 1a：裂谷调度按物理率评估（规格 §4.0、§8 1a 行、§9）
+
+进度（2026-10-27，规格 R4）：1a.1、1a.2 完成（另加 bb77b2a 率求值一次扫描）；门禁中
+`spherical_morphology_quality` 三项与 §10 第 1 条（P2 时延）未过，已归因、停下待裁定；
+1a.3 UI 字段未做。合并时 causal 抬升改为 6 → 7（P2 边界噪声修复先占 5 → 6）。
 
 ### Task 1a.1 —— `SEKAI_V5_TRACE` 裂谷调度计数（只加诊断，不改产物）
 
