@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 
 use super::{
     dot, norm, solve_reduced_climate, vapour_column_mass_kg_m2, IceAlbedoFeedback,
-    OutgoingLongwaveClosure, ReducedGrid, ReducedInputs, ReducedWorkClimate,
+    OutgoingLongwaveClosure, R2Physics, ReducedGrid, ReducedInputs, ReducedWorkClimate,
 };
 use crate::engine::{derive_stage_seed, BuildCancellation, StageIdentity, StageRng};
 use crate::generators::natural::formation::global_circulation::{
@@ -57,6 +57,8 @@ use crate::world::{Meters, RootSeed};
 
 const MONTHS: usize = CLIMATE_MONTH_COUNT;
 const TIMING_REPETITIONS: usize = 5;
+/// Latitude band width of the zonal-profile evidence.
+const ZONAL_BAND_DEGREES: f64 = 5.0;
 
 type Monthly = Vec<[f32; MONTHS]>;
 type MonthlyVector = Vec<[[f32; 3]; MONTHS]>;
@@ -621,7 +623,25 @@ fn a10_reduced_climate_probe() {
         Ok("preserve") => IceAlbedoFeedback::PlanetaryAlbedoPreserving,
         _ => IceAlbedoFeedback::None,
     };
-    let log = |line: String| eprintln!("[a10 {profile:?} {longwave:?} {ice:?}] {line}");
+    // Comma list of R2 physics: lat, seaice, gust (or none).
+    let fix_flags = std::env::var("SEKAI_A10_FIX").unwrap_or_default();
+    let has_flag = |flag: &str| fix_flags.split(',').any(|f| f == flag);
+    let physics = R2Physics {
+        latitude_albedo: has_flag("lat"),
+        sea_ice_surface_type: has_flag("seaice"),
+        evaporation_gustiness: has_flag("gust"),
+    };
+    let seed: u64 = std::env::var("SEKAI_A10_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(42);
+    let repetitions: usize = std::env::var("SEKAI_A10_REPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(TIMING_REPETITIONS);
+    let log = |line: String| {
+        eprintln!("[a10 {profile:?} seed {seed} {longwave:?} {ice:?} {physics:?}] {line}")
+    };
     let cancellation = BuildCancellation::new();
     let total = Instant::now();
 
@@ -666,7 +686,7 @@ fn a10_reduced_climate_probe() {
     let climate_spec = ClimateSpec::default();
     let surface_spec = HydroErosionSpec::default();
     let mut rng = StageRng::from_seed(derive_stage_seed(
-        RootSeed::new(42),
+        RootSeed::new(seed),
         StageIdentity::new("natural.causal-formation", 5, "sekai.core"),
     ));
     let streams = LabeledSubstreams::capture(&mut rng);
@@ -816,7 +836,8 @@ fn a10_reduced_climate_probe() {
             work_heights,
             longwave,
             ice,
-        );
+        )
+        .with_physics(&reduced_grid, physics);
         let t2 = Instant::now();
         let work = solve_reduced_climate(&reduced_grid, &inputs, parallel);
         let t3 = Instant::now();
@@ -862,7 +883,7 @@ fn a10_reduced_climate_probe() {
     let mut serial = vec![Vec::new(); labels.len()];
     let mut parallel = vec![Vec::new(); labels.len()];
     let mut last = None;
-    for repetition in 0..TIMING_REPETITIONS {
+    for repetition in 0..repetitions {
         for &is_parallel in &[false, true] {
             let (seconds, inputs, work, published, snapshot) = evaluate(is_parallel);
             let target = if is_parallel {
@@ -873,7 +894,7 @@ fn a10_reduced_climate_probe() {
             for (bucket, s) in target.iter_mut().zip(seconds) {
                 bucket.push(s);
             }
-            if repetition == TIMING_REPETITIONS - 1 && !is_parallel {
+            if repetition == repetitions - 1 && !is_parallel {
                 last = Some((inputs, work, published, snapshot));
             }
         }
@@ -908,6 +929,30 @@ fn a10_reduced_climate_probe() {
     )
     .expect("reduced quality on baseline forcing");
     let climate_only = compare_published(surface, &land_mask, &published_b, &baseline_published);
+    // The R1 configuration (preserving ice, no R2 surface-type physics) on the
+    // same forcing, for the three-way comparison of design revision R2.
+    let (r1_cells, r1_work_heights) = reference_heights(
+        &domain,
+        baseline_terrain.current_elevation_m(),
+        baseline_terrain.surface_water_geometry(),
+    );
+    let r1_inputs = ReducedInputs::from_forcing(
+        &reduced_grid,
+        &baseline_end_forcing,
+        &climate_spec,
+        r1_work_heights,
+        OutgoingLongwaveClosure::BudykoTransEbm,
+        IceAlbedoFeedback::PlanetaryAlbedoPreserving,
+    );
+    let r1_work = solve_reduced_climate(&reduced_grid, &r1_inputs, true);
+    let r1_published = project_all(
+        surface,
+        &domain,
+        &baseline_end_forcing,
+        &r1_work,
+        &r1_cells,
+        &cancellation,
+    );
     log(format!(
         "reduced on baseline forcing: {:?}",
         work_b.diagnostics
@@ -956,7 +1001,8 @@ fn a10_reduced_climate_probe() {
         start_work_heights,
         longwave,
         ice,
-    );
+    )
+    .with_physics(&reduced_grid, physics);
     let start_work = solve_reduced_climate(&reduced_grid, &start_inputs, false);
     let start_published = project_all(
         surface,
@@ -1025,7 +1071,8 @@ fn a10_reduced_climate_probe() {
         end_work_heights,
         longwave,
         ice,
-    );
+    )
+    .with_physics(&reduced_grid, physics);
     let end_work = solve_reduced_climate(&reduced_grid, &end_inputs, false);
     let end_published = project_all(
         surface,
@@ -1088,9 +1135,20 @@ fn a10_reduced_climate_probe() {
             "reduced_on_baseline_forcing": temperature_summary(surface, &published_b),
             "baseline_endpoint": temperature_summary(surface, &baseline_published),
             "reduced_chain_end": temperature_summary(surface, &end_published),
+            "r1_on_baseline_forcing": temperature_summary(surface, &r1_published),
         },
+        "zonal_profiles": {
+            "band_degrees": ZONAL_BAND_DEGREES,
+            "reduced_on_baseline_forcing": zonal_profiles(surface, &published_b),
+            "baseline_endpoint": zonal_profiles(surface, &baseline_published),
+            "r1_on_baseline_forcing": zonal_profiles(surface, &r1_published),
+        },
+        "r1_on_baseline_forcing": {
+            "diagnostics": r1_work.diagnostics,
+        },
+        "r2_physics": physics,
         "work_grid_annual": work_grid_dump(&reduced_grid, &inputs_b, &work_b),
-        "seed": 42,
+        "seed": seed,
         "authoritative_cells": surface.cells().len(),
         "work_cells": reduced_grid.cell_count(),
         "vapour_column_mass_kg_m2": vapour_column_mass_kg_m2(),
@@ -1123,14 +1181,38 @@ fn a10_reduced_climate_probe() {
         },
         "total_probe_seconds": total.elapsed().as_secs_f64(),
     });
+    let fix = if fix_flags.is_empty() {
+        "none".to_owned()
+    } else {
+        fix_flags.replace(',', "+")
+    };
     let path = out_dir.join(format!(
-        "probe-{}-{}-ice{}.json",
+        "probe-{}-{}-ice{}-fix{fix}-seed{seed}.json",
         format!("{profile:?}").to_lowercase(),
         format!("{longwave:?}").to_lowercase(),
         format!("{ice:?}").to_lowercase()
     ));
     std::fs::write(&path, serde_json::to_string_pretty(&summary).expect("json"))
         .expect("write summary");
+    if std::env::var("SEKAI_A10_DUMP_CELLS").is_ok() {
+        let terrain_sea = baseline_terrain.surface_water_geometry().sea_level_m();
+        let cells = json!({
+            "note": "authoritative cells; baseline endpoint terrain; annual means",
+            "lat_deg": surface.cells().iter().map(|c| c.centroid.components()[2].asin().to_degrees()).collect::<Vec<_>>(),
+            "lon_deg": surface.cells().iter().map(|c| { let v = c.centroid.components(); v[1].atan2(v[0]).to_degrees() }).collect::<Vec<_>>(),
+            "elevation_above_sea_m": baseline_terrain.current_elevation_m().iter().map(|&z| f64::from(z - terrain_sea)).collect::<Vec<_>>(),
+            "ocean_fraction": baseline_terrain.surface_water_geometry().ocean_area_fraction(),
+            "old_p4": cell_dump(surface, &baseline_published),
+            "r1": cell_dump(surface, &r1_published),
+            "r2": cell_dump(surface, &published_b),
+        });
+        let cell_path = out_dir.join(format!(
+            "cells-{}-seed{seed}-fix{fix}.json",
+            format!("{profile:?}").to_lowercase()
+        ));
+        std::fs::write(&cell_path, serde_json::to_string(&cells).expect("json"))
+            .expect("write cells");
+    }
     log(format!("wrote {}", path.display()));
 }
 
@@ -1197,12 +1279,16 @@ fn work_grid_dump(grid: &ReducedGrid, inputs: &ReducedInputs, work: &ReducedWork
                 dot(current, north),
                 mean(&work.sea_surface_height_m[c]),
                 work.ice_fraction[c],
+                mean(&work.monthly_absorbed_shortwave_w_m2[c]),
+                mean(&work.outgoing_longwave_w_m2[c]),
+                inputs.sea_ice[c],
             ])
         })
         .collect();
     json!({
         "columns": ["lat", "lon", "land", "ref_height_m", "air_c", "air_jul_minus_jan_c",
-            "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m", "ice_fraction"],
+            "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m", "ice_fraction",
+            "asr_w_m2", "olr_w_m2", "sea_ice"],
         "rows": rows,
     })
 }
@@ -1236,5 +1322,65 @@ fn temperature_summary(surface: &SphericalSurfaceSnapshot, published: &Published
         "south_cap_60_90_c": mean(1),
         "north_cap_60_90_c": mean(2),
         "tropics_10s_10n_c": mean(3),
+    })
+}
+
+/// Area-weighted zonal bands of annual air temperature, July minus January
+/// air temperature, precipitation and evaporation on the authoritative cells.
+fn zonal_profiles(surface: &SphericalSurfaceSnapshot, published: &Published) -> Value {
+    let bands = (180.0 / ZONAL_BAND_DEGREES) as usize;
+    let mut sums = vec![[0.0_f64; 4]; bands];
+    let mut weights = vec![0.0_f64; bands];
+    for (index, cell) in surface.cells().iter().enumerate() {
+        let latitude = cell.centroid.components()[2].asin().to_degrees();
+        let band = (((latitude + 90.0) / ZONAL_BAND_DEGREES) as usize).min(bands - 1);
+        let area = cell.area.get();
+        let values = [
+            annual(&published.air[index]),
+            f64::from(published.air[index][6] - published.air[index][0]),
+            annual(&published.precipitation[index]),
+            annual(&published.evaporation[index]),
+        ];
+        for (sum, value) in sums[band].iter_mut().zip(values) {
+            *sum += area * value;
+        }
+        weights[band] += area;
+    }
+    let column = |slot: usize| -> Vec<f64> {
+        sums.iter()
+            .zip(&weights)
+            .map(|(s, w)| s[slot] / w.max(f64::MIN_POSITIVE))
+            .collect()
+    };
+    let centres: Vec<f64> = (0..bands)
+        .map(|b| -90.0 + (b as f64 + 0.5) * ZONAL_BAND_DEGREES)
+        .collect();
+    json!({
+        "latitude_centre_deg": centres,
+        "air_c": column(0),
+        "air_jul_minus_jan_c": column(1),
+        "precipitation_mm_day": column(2),
+        "evaporation_mm_day": column(3),
+    })
+}
+
+/// Annual air temperature, precipitation and east/north mean wind per cell.
+fn cell_dump(surface: &SphericalSurfaceSnapshot, published: &Published) -> Value {
+    let round = |v: f64| (v * 1000.0).round() / 1000.0;
+    let mut east_wind = Vec::with_capacity(published.wind.len());
+    let mut north_wind = Vec::with_capacity(published.wind.len());
+    for (cell, wind) in surface.cells().iter().zip(&published.wind) {
+        let mean = annual_vector(wind);
+        let (east, north) = canonical_east_north_basis(cell.centroid);
+        east_wind.push(round(dot(east, mean)));
+        north_wind.push(round(dot(north, mean)));
+    }
+    json!({
+        "air_c": published.air.iter().map(|m| round(annual(m))).collect::<Vec<_>>(),
+        "air_jan_c": published.air.iter().map(|m| round(f64::from(m[0]))).collect::<Vec<_>>(),
+        "air_jul_c": published.air.iter().map(|m| round(f64::from(m[6]))).collect::<Vec<_>>(),
+        "precipitation_mm_day": published.precipitation.iter().map(|m| round(annual(m))).collect::<Vec<_>>(),
+        "wind_east_m_s": east_wind,
+        "wind_north_m_s": north_wind,
     })
 }

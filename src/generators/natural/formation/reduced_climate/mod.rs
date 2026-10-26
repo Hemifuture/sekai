@@ -90,7 +90,42 @@ pub(crate) enum OutgoingLongwaveClosure {
 /// annual-mean surface temperature is -10 C; North (1975), JAS 32, 2033,
 /// adopts the same edge temperature for the step albedo of his EBM.
 const BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C: f64 = -10.0;
-const ICE_ALBEDO_MAX_ITERATIONS: usize = 40;
+const ICE_ALBEDO_MAX_ITERATIONS: usize = 80;
+
+/// TransEBM v1.0 (Ziegler & Rehfeld 2021, Table 1): latitude dependence of the
+/// ice-free planetary albedo, `a + a_lat P2(sin lat)`, for ocean and land. The
+/// A + B T closure above was tuned together with this albedo structure; the
+/// P2 term carries the zenith-angle and cloud brightening of high latitudes
+/// that a latitude-independent atmospheric reflectance cannot represent.
+const TRANSEBM_OCEAN_LATITUDE_ALBEDO: f64 = 0.08;
+const TRANSEBM_LAND_LATITUDE_ALBEDO: f64 = 0.05;
+/// TransEBM v1.0 (Ziegler & Rehfeld 2021, Table 1, after Zhuang et al. 2017):
+/// heat capacity of the sea-ice surface type, which replaces the mixed-layer
+/// capacity where the ocean is ice covered (the ice insulates the ocean from
+/// the atmosphere; Wagner & Eisenman 2015).
+const TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K: f64 = 4.83e6;
+/// SPEEDY (Molteni 2003, Clim. Dyn. 20, 175; Kucharski et al. 2013, BAMS 94,
+/// 25; reference code speedy.f90 `surface_fluxes.f90`, `vgust = 5.0`): wind
+/// speed of sub-grid-scale gusts added in quadrature to the resolved wind in
+/// the bulk surface-flux formulae. The bulk flux is nonlinear in the wind, so
+/// a mean wind without its variability underestimates the mean flux
+/// (Esbensen & Reynolds 1981, JPO 11, 457).
+const SPEEDY_SUBGRID_GUST_WIND_M_S: f64 = 5.0;
+
+/// Physics added in design revision R2 (probe comparison axes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub(crate) struct R2Physics {
+    /// TransEBM Legendre latitude term on the ice-free planetary albedo.
+    pub(crate) latitude_albedo: bool,
+    /// Ocean parts whose annual mixed-layer temperature is below the
+    /// seawater freezing point become the sea-ice surface type: sea-ice
+    /// albedo, sea-ice heat capacity, no open-water evaporation.
+    pub(crate) sea_ice_surface_type: bool,
+    /// Bulk evaporation uses the mean wind speed including unresolved
+    /// sub-monthly gusts, `sqrt(|V|^2 + V_gust^2)`, instead of the speed of
+    /// the diagnostic monthly-mean wind.
+    pub(crate) evaporation_gustiness: bool,
+}
 
 /// Temperature-dependent ice/snow albedo feedback (probe comparison axis).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -243,6 +278,12 @@ pub(crate) struct ReducedInputs {
     /// production sea-ice albedo, weighted by land fraction.
     pub(crate) ice_covered_albedo: Vec<f64>,
     pub(crate) ice: IceAlbedoFeedback,
+    pub(crate) physics: R2Physics,
+    /// Ice-free planetary-albedo latitude increment per cell (zero unless
+    /// `physics.latitude_albedo`).
+    pub(crate) latitude_albedo_increment: Vec<f64>,
+    /// Ice-covered share of the ocean part of each cell (sea-ice surface type).
+    pub(crate) sea_ice: Vec<f64>,
     pub(crate) land_evapotranspiration_fraction: Vec<f64>,
     pub(crate) temperature_offset_c: f64,
     pub(crate) moisture_scale: f64,
@@ -312,6 +353,9 @@ impl ReducedInputs {
             monthly_insolation_fraction,
             ice_covered_albedo,
             ice,
+            physics: R2Physics::default(),
+            latitude_albedo_increment: vec![0.0; grid.cell_count()],
+            sea_ice: vec![0.0; grid.cell_count()],
             land_evapotranspiration_fraction: forcing
                 .land_evapotranspiration_fraction()
                 .iter()
@@ -321,6 +365,30 @@ impl ReducedInputs {
             moisture_scale: f64::from(spec.moisture_scale()),
             longwave,
         }
+    }
+
+    /// Enables the R2 physics.
+    pub(crate) fn with_physics(mut self, grid: &ReducedGrid, physics: R2Physics) -> Self {
+        self.physics = physics;
+        self.latitude_albedo_increment = (0..grid.cell_count())
+            .map(|cell| {
+                if !physics.latitude_albedo {
+                    return 0.0;
+                }
+                let x = grid.center[cell][2];
+                let legendre = 0.5 * (3.0 * x * x - 1.0);
+                let land = self.land_fraction[cell];
+                (TRANSEBM_OCEAN_LATITUDE_ALBEDO * (1.0 - land)
+                    + TRANSEBM_LAND_LATITUDE_ALBEDO * land)
+                    * legendre
+            })
+            .collect();
+        self
+    }
+
+    /// Open-water share of a cell (ocean part not covered by sea ice).
+    fn open_water_fraction(&self, cell: usize) -> f64 {
+        (1.0 - self.land_fraction[cell]) * (1.0 - self.sea_ice[cell])
     }
 }
 
@@ -353,8 +421,12 @@ pub(crate) struct ReducedDiagnostics {
     pub(crate) ice_iterations: usize,
     pub(crate) ice_mask_converged: bool,
     pub(crate) ice_area_fraction: f64,
+    pub(crate) sea_ice_ocean_area_fraction: f64,
     pub(crate) atmospheric_shortwave_reflectance: f64,
     pub(crate) mebm_picard_iterations: usize,
+    pub(crate) mebm_last_picard_change_k: f64,
+    pub(crate) energy_solve_seconds: f64,
+    pub(crate) monthly_solve_seconds: f64,
     pub(crate) mebm_linear_iterations: usize,
     pub(crate) mebm_max_relative_residual: f64,
     pub(crate) toa_net_global_mean_w_m2: f64,
@@ -387,8 +459,11 @@ pub(crate) fn solve_reduced_climate(
         ..ReducedDiagnostics::default()
     };
     let mut effective = inputs.clone();
+    let energy_started = std::time::Instant::now();
     let (energy, ice_fraction) =
         solve_energy_with_ice_feedback(grid, &mut effective, parallel, &mut diagnostics);
+    diagnostics.energy_solve_seconds = energy_started.elapsed().as_secs_f64();
+    let months_started = std::time::Instant::now();
     let inputs = &effective;
     let months: Vec<usize> = (0..CLIMATE_MONTH_COUNT).collect();
     let column_mass = P4_LOWER_LAYER_REFERENCE_PRESSURE_PA / STANDARD_GRAVITY_M_S2;
@@ -436,6 +511,7 @@ pub(crate) fn solve_reduced_climate(
         months.iter().map(|&m| month_work(m)).collect()
     };
 
+    diagnostics.monthly_solve_seconds = months_started.elapsed().as_secs_f64();
     let n = grid.cell_count();
     let mut out = ReducedWorkClimate {
         surface_albedo: inputs.surface_albedo.clone(),
@@ -581,8 +657,9 @@ fn radiative_equilibrium(inputs: &ReducedInputs, annual_asr: &[f64]) -> (Vec<f64
 
 /// Iterates the MEBM with the Budyko ice/snow edge until the ice mask is
 /// stable. A cell's land part is ice/snow covered when its annual air
-/// temperature at the reference height is below the edge temperature, its
-/// water part when the annual sea-level temperature is.
+/// temperature at the reference height is below the edge temperature. Its
+/// water part uses the same edge on the annual sea-level temperature, or,
+/// with the R2 sea-ice surface type, the seawater freezing point.
 fn solve_energy_with_ice_feedback(
     grid: &ReducedGrid,
     inputs: &mut ReducedInputs,
@@ -605,45 +682,72 @@ fn solve_energy_with_ice_feedback(
     let insolation_area: Vec<f64> = (0..n)
         .map(|c| grid.area_m2[c] * inputs.monthly_insolation_fraction[c].iter().sum::<f64>())
         .collect();
-    let ice_free_absorbed: f64 = (0..n)
-        .map(|c| insolation_area[c] * (1.0 - ice_free_albedo[c].clamp(0.0, 1.0)))
-        .sum();
+    let ice_free_absorbed: f64 = (1.0 - EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE)
+        * (0..n)
+            .map(|c| insolation_area[c] * (1.0 - ice_free_albedo[c].clamp(0.0, 1.0)))
+            .sum::<f64>();
     diagnostics.ice_feedback = Some(inputs.ice);
     diagnostics.atmospheric_shortwave_reflectance = EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE;
+    let without_ice = inputs.ice == IceAlbedoFeedback::None;
+    if without_ice && !inputs.physics.latitude_albedo {
+        diagnostics.ice_mask_converged = true;
+        let energy = solve_moist_energy_balance(
+            grid,
+            inputs,
+            parallel,
+            None,
+            EnergySolve::Seasonal,
+            diagnostics,
+        );
+        return (energy, vec![0.0; n]);
+    }
     let mut ice_fraction = vec![0.0_f64; n];
+    let mut sea_ice = vec![0.0_f64; n];
     // The ice mask reads only the annual mean, so the mask iteration solves
     // the k = 0 problem alone (warm-started) and the seasonal harmonics run
-    // once with the converged albedo.
-    let without_ice = inputs.ice == IceAlbedoFeedback::None;
-    let mut energy =
-        solve_moist_energy_balance(grid, inputs, parallel, None, !without_ice, diagnostics);
-    diagnostics.ice_mask_converged = true;
-    if without_ice {
-        return (energy, ice_fraction);
-    }
+    // once with the converged albedo and heat capacity.
+    let mut annual: Option<Vec<f64>> = None;
     diagnostics.ice_mask_converged = false;
     for iteration in 0..ICE_ALBEDO_MAX_ITERATIONS {
-        let next: Vec<f64> = (0..n)
-            .map(|cell| {
-                let theta = energy[cell].iter().sum::<f64>() / CLIMATE_MONTH_COUNT as f64;
+        if let (false, Some(theta_annual)) = (without_ice, annual.as_ref()) {
+            let mut next_ice = vec![0.0_f64; n];
+            let mut next_sea = vec![0.0_f64; n];
+            for cell in 0..n {
+                let theta = theta_annual[cell];
                 let air =
                     theta - CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M * inputs.reference_height_m[cell];
                 let land = inputs.land_fraction[cell];
-                let frozen = |t: f64| f64::from(u8::from(t < BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C));
-                land * frozen(air) + (1.0 - land) * frozen(theta)
-            })
-            .collect();
-        diagnostics.ice_iterations = iteration + 1;
-        if iteration > 0 && next == ice_fraction {
-            diagnostics.ice_mask_converged = true;
-            break;
+                let below = |t: f64, edge: f64| f64::from(u8::from(t < edge));
+                let sea = if inputs.physics.sea_ice_surface_type {
+                    below(theta, LIQUID_MIXED_LAYER_MIN_C)
+                } else {
+                    below(theta, BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C)
+                };
+                next_ice[cell] =
+                    land * below(air, BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C) + (1.0 - land) * sea;
+                next_sea[cell] = sea;
+            }
+            if next_ice == ice_fraction
+                && next_sea == sea_ice
+                && diagnostics.mebm_last_picard_change_k < MEBM_PICARD_TOLERANCE_K
+            {
+                diagnostics.ice_mask_converged = true;
+                break;
+            }
+            ice_fraction = next_ice;
+            sea_ice = next_sea;
         }
-        ice_fraction = next;
+        diagnostics.ice_iterations = iteration + 1;
         let albedo: Vec<f64> = (0..n)
             .map(|c| {
                 ice_free_albedo[c]
                     + ice_fraction[c] * (inputs.ice_covered_albedo[c] - ice_free_albedo[c])
             })
+            .collect();
+        // Ice-free planetary-albedo latitude increment (TransEBM P2 term);
+        // ice and snow keep their own albedo without a latitude term.
+        let latitude: Vec<f64> = (0..n)
+            .map(|c| inputs.latitude_albedo_increment[c] * (1.0 - ice_fraction[c]))
             .collect();
         let reflectance = match inputs.ice {
             IceAlbedoFeedback::RecalibratedReflectance => {
@@ -654,37 +758,78 @@ fn solve_energy_with_ice_feedback(
                 (EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN - surface) / (1.0 - surface)
             }
             IceAlbedoFeedback::PlanetaryAlbedoPreserving => {
-                // (1 - r') sum(I (1 - a_ice)) = (1 - r) sum(I (1 - a_free)).
+                // (1 - r') sum(I (1 - a)) - sum(I d) = (1 - r) sum(I (1 - a_free)).
                 let absorbed: f64 = (0..n)
                     .map(|c| insolation_area[c] * (1.0 - albedo[c].clamp(0.0, 1.0)))
                     .sum();
-                1.0 - (1.0 - EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE) * ice_free_absorbed / absorbed
+                let brightening: f64 = (0..n).map(|c| insolation_area[c] * latitude[c]).sum();
+                1.0 - (ice_free_absorbed + brightening) / absorbed
             }
             IceAlbedoFeedback::None | IceAlbedoFeedback::ProductionReflectance => {
                 EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE
             }
         };
         diagnostics.atmospheric_shortwave_reflectance = reflectance;
-        for ((absorbed, insolation), cell_albedo) in inputs
+        for (cell, (absorbed, insolation)) in inputs
             .monthly_absorbed_shortwave_w_m2
             .iter_mut()
             .zip(&inputs.monthly_insolation_fraction)
-            .zip(&albedo)
+            .enumerate()
         {
-            let planetary = reflectance + (1.0 - reflectance) * cell_albedo.clamp(0.0, 1.0);
+            let planetary =
+                (reflectance + (1.0 - reflectance) * albedo[cell].clamp(0.0, 1.0) + latitude[cell])
+                    .clamp(0.0, 1.0);
             *absorbed = insolation.map(|f| {
                 EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2 * f.max(0.0) * (1.0 - planetary)
             });
         }
         inputs.surface_albedo = albedo;
-        let annual: Vec<f64> = energy.iter().map(|m| m[0]).collect();
-        energy =
-            solve_moist_energy_balance(grid, inputs, parallel, Some(&annual), true, diagnostics);
+        if inputs.physics.sea_ice_surface_type {
+            inputs.sea_ice.clone_from(&sea_ice);
+        }
+        // One Picard step per mask update: the conductance and the ice mask
+        // converge together instead of nesting a full Picard solve per mask.
+        let energy = solve_moist_energy_balance(
+            grid,
+            inputs,
+            parallel,
+            annual.as_deref(),
+            EnergySolve::AnnualSteps(1),
+            diagnostics,
+        );
+        annual = Some(energy.iter().map(|m| m[0]).collect());
+        if without_ice && diagnostics.mebm_last_picard_change_k < MEBM_PICARD_TOLERANCE_K {
+            diagnostics.ice_mask_converged = true;
+            break;
+        }
     }
-    let annual: Vec<f64> = energy.iter().map(|m| m[0]).collect();
-    energy = solve_moist_energy_balance(grid, inputs, parallel, Some(&annual), false, diagnostics);
+    let energy = solve_moist_energy_balance(
+        grid,
+        inputs,
+        parallel,
+        annual.as_deref(),
+        EnergySolve::Seasonal,
+        diagnostics,
+    );
     diagnostics.ice_area_fraction = area_mean(&ice_fraction);
+    diagnostics.sea_ice_ocean_area_fraction = (0..n)
+        .map(|c| grid.area_m2[c] * (1.0 - inputs.land_fraction[c]) * sea_ice[c])
+        .sum::<f64>()
+        / (0..n)
+            .map(|c| grid.area_m2[c] * (1.0 - inputs.land_fraction[c]))
+            .sum::<f64>()
+            .max(f64::MIN_POSITIVE);
     (energy, ice_fraction)
+}
+
+/// Work requested from one MEBM evaluation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnergySolve {
+    /// At most this many Picard steps of the annual (k = 0) problem; the
+    /// result repeats the annual mean in every month.
+    AnnualSteps(usize),
+    /// Annual problem to the Picard tolerance, then the seasonal harmonics.
+    Seasonal,
 }
 
 /// E1: periodic seasonal MEBM month means of sea-level-reduced temperature.
@@ -693,7 +838,7 @@ fn solve_moist_energy_balance(
     inputs: &ReducedInputs,
     parallel: bool,
     initial_annual: Option<&[f64]>,
-    annual_only: bool,
+    work: EnergySolve,
     diagnostics: &mut ReducedDiagnostics,
 ) -> Vec<[f64; CLIMATE_MONTH_COUNT]> {
     let n = grid.cell_count();
@@ -707,10 +852,15 @@ fn solve_moist_energy_balance(
         .collect();
     let (theta_eq, slope) = radiative_equilibrium(inputs, &annual_asr);
     let (air_capacity, mixed_capacity) = p4_seasonal_storage_heat_capacities_j_m2_k();
-    let capacity: Vec<f64> = inputs
-        .land_fraction
-        .iter()
-        .map(|land| air_capacity + (1.0 - land) * mixed_capacity)
+    // Sea-ice surface type: the ice insulates the mixed layer, so the ocean
+    // part stores heat with the sea-ice capacity instead (TransEBM Table 1).
+    let capacity: Vec<f64> = (0..n)
+        .map(|c| {
+            let ice = inputs.sea_ice[c];
+            air_capacity
+                + (1.0 - inputs.land_fraction[c])
+                    * ((1.0 - ice) * mixed_capacity + ice * TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K)
+        })
         .collect();
     // Forcing G_m = ASR_m - ASR_ann + B theta_eq; its DFT gives the right sides.
     let forcing: Vec<[f64; CLIMATE_MONTH_COUNT]> = (0..n)
@@ -726,7 +876,11 @@ fn solve_moist_energy_balance(
     let mut annual = initial_annual.map_or_else(|| theta_eq.clone(), <[f64]>::to_vec);
     let mut conductance = vec![0.0_f64; grid.edges.len()];
     let mut iterations = 0;
-    for picard in 0..MEBM_PICARD_MAX_ITERATIONS {
+    let picard_limit = match work {
+        EnergySolve::AnnualSteps(steps) => steps,
+        EnergySolve::Seasonal => MEBM_PICARD_MAX_ITERATIONS,
+    };
+    for picard in 0..picard_limit {
         for (edge, k) in grid.edges.iter().zip(conductance.iter_mut()) {
             let [a, b] = edge.cells.map(|c| annual[c as usize]);
             let secant = if (a - b).abs() > 1.0e-6 {
@@ -760,12 +914,13 @@ fn solve_moist_energy_balance(
             .fold(0.0_f64, f64::max);
         annual = solve.values;
         iterations = picard + 1;
+        diagnostics.mebm_last_picard_change_k = change;
         if change < MEBM_PICARD_TOLERANCE_K {
             break;
         }
     }
     diagnostics.mebm_picard_iterations += iterations;
-    if annual_only {
+    if work != EnergySolve::Seasonal {
         return annual.iter().map(|&t| [t; CLIMATE_MONTH_COUNT]).collect();
     }
 
@@ -957,6 +1112,14 @@ fn solve_monthly_water(
     let n = grid.cell_count();
     let mq = month.vapour_column_mass;
     let speed: Vec<f64> = month.wind.iter().map(|w| norm(*w)).collect();
+    let evaporation_speed: Vec<f64> = if inputs.physics.evaporation_gustiness {
+        speed
+            .iter()
+            .map(|s| s.hypot(SPEEDY_SUBGRID_GUST_WIND_M_S))
+            .collect()
+    } else {
+        speed.clone()
+    };
     let sst: Vec<f64> = month
         .theta
         .iter()
@@ -966,7 +1129,12 @@ fn solve_monthly_water(
     // Linear bulk evaporation E = a - b W from the production formula.
     let a: Vec<f64> = (0..n)
         .map(|c| {
-            bulk_surface_evaporation_kg_m2_s(sst[c], 0.0, speed[c], 1.0 - inputs.land_fraction[c])
+            bulk_surface_evaporation_kg_m2_s(
+                sst[c],
+                0.0,
+                evaporation_speed[c],
+                inputs.open_water_fraction(c),
+            )
         })
         .collect();
     let sea_saturation: Vec<f64> = (0..n)
