@@ -50,8 +50,9 @@ pub const HIERARCHICAL_PATH_DEPTH_MAX: usize = 16;
 /// T1 v2 derivation before LOD-1; 2 adopts the D1 P1 vertex anchors; 3 the
 /// D2 inland average-interpolating centroids; 4 the D3 base-level beds and
 /// the D4 fine-dry river clipping; 5 the R2 lake bound and scale-recursive
-/// lake connectivity.
-const T1_DERIVATION_VERSION: u16 = 5;
+/// lake connectivity; 6 the R2 lake-bed flattening and lake-bound near-water
+/// partition.
+const T1_DERIVATION_VERSION: u16 = 6;
 /// Frozen hierarchical probe count (spec §6).
 pub const HIERARCHICAL_PROBE_COUNT: usize = 256;
 /// Frozen probe path depths (spec §6): one probe block per depth.
@@ -221,14 +222,20 @@ struct SectorConditions {
     root: Conditions,
     /// The two-cell mean across this sector's shared L0 boundary edge.
     boundary: Conditions,
+    /// The lake surface below which an interior or spoke edge carries no
+    /// increment (LOD-1 spec R2.3(c)); −∞ where no lake bed flattens.
+    root_bed_surface_m: f64,
+    /// The same for the shared boundary edge: lakes whose bound holds both
+    /// cells, so both sides derive the same anchors.
+    boundary_bed_surface_m: f64,
 }
 
 impl SectorConditions {
-    fn pick(&self, on_boundary_chain: bool) -> Conditions {
+    fn pick(&self, on_boundary_chain: bool) -> (Conditions, f64) {
         if on_boundary_chain {
-            self.boundary
+            (self.boundary, self.boundary_bed_surface_m)
         } else {
-            self.root
+            (self.root, self.root_bed_surface_m)
         }
     }
 }
@@ -712,10 +719,17 @@ impl HierarchicalEvaluator {
             "sector {sector} is outside the {len}-sector fan of cell {cell_index}"
         );
         let root = self.cell_conditions[cell_index as usize];
-        let neighbor = self.ring_neighbors[start + usize::from(sector)] as usize;
+        let neighbor = self.ring_neighbors[start + usize::from(sector)];
+        let cell = CellId::from_raw(cell_index);
+        let bed_surface = |surface: Option<f32>| surface.map_or(f64::NEG_INFINITY, f64::from);
         SectorConditions {
             root,
-            boundary: Conditions::mean(root, self.cell_conditions[neighbor]),
+            boundary: Conditions::mean(root, self.cell_conditions[neighbor as usize]),
+            root_bed_surface_m: bed_surface(self.shoreline.bed_surface_m(cell, cell)),
+            boundary_bed_surface_m: bed_surface(
+                self.shoreline
+                    .bed_surface_m(cell, CellId::from_raw(neighbor)),
+            ),
         }
     }
 
@@ -759,10 +773,12 @@ impl HierarchicalEvaluator {
         conditions: &SectorConditions,
     ) -> [Anchor; 3] {
         let edge = |a: usize, b: usize, index: usize| {
+            let (edge_conditions, bed_surface_m) = conditions.pick(frame.boundary_edge[index]);
             self.midpoint_anchor(
                 &frame.corners[a],
                 &frame.corners[b],
-                conditions.pick(frame.boundary_edge[index]),
+                edge_conditions,
+                bed_surface_m,
                 level,
             )
         };
@@ -771,20 +787,28 @@ impl HierarchicalEvaluator {
 
     /// Derives one midpoint anchor (spec §2.1): geometric midpoint,
     /// endpoint mean plus the conditioned increment, and the canonical
-    /// sorted-seed hash. Every part is commutative in (a, b), so both
-    /// sides of a shared edge derive bit-identical anchors.
+    /// sorted-seed hash. An edge lying wholly below `bed_surface_m` is lake
+    /// bed and takes no increment (LOD-1 spec R2.3(c)). Every part is
+    /// commutative in (a, b), so both sides of a shared edge derive
+    /// bit-identical anchors.
     fn midpoint_anchor(
         &self,
         a: &Anchor,
         b: &Anchor,
         conditions: Conditions,
+        bed_surface_m: f64,
         level: u32,
     ) -> Anchor {
         let seed = self.midpoint_seed(&a.seed, &b.seed);
+        let mean_m = 0.5 * (a.value_m + b.value_m);
+        let value_m = if a.value_m.max(b.value_m) < bed_surface_m {
+            mean_m
+        } else {
+            mean_m + conditions.amplitude_m(level) * signed_unit_noise(&seed)
+        };
         Anchor {
             position: geometric_midpoint(a.position, b.position),
-            value_m: 0.5 * (a.value_m + b.value_m)
-                + conditions.amplitude_m(level) * signed_unit_noise(&seed),
+            value_m,
             seed,
         }
     }
@@ -1797,6 +1821,7 @@ pub(super) mod tests {
                         for (index, (a, b)) in [(0, 1), (1, 2), (2, 0)].into_iter().enumerate() {
                             let bound = conditions
                                 .pick(frame.boundary_edge[index])
+                                .0
                                 .amplitude_m(level);
                             let offset = midpoints[index].value_m
                                 - 0.5 * (frame.corners[a].value_m + frame.corners[b].value_m);

@@ -586,4 +586,45 @@ mod tests {
             kinds.contains(&SurfaceWaterKind::Lake) && kinds.contains(&SurfaceWaterKind::DryLand)
         );
     }
+
+    /// LOD-1 spec R2.6 I12: a split edge lying wholly below the lake bed
+    /// surface that applies to it takes no increment (its midpoint is
+    /// exactly the endpoint mean); edges reaching the surface, and edges
+    /// of ocean-seeing cells, keep their increments.
+    #[test]
+    fn lake_bed_edges_below_the_surface_carry_no_increment() {
+        let (evaluator, _, lake) = lake_evaluator();
+        let mut walk = LakeWalk::new(&evaluator);
+        let (mut flat, mut rough) = (0, 0);
+        for sector in 0..evaluator.sector_count(lake) as u8 {
+            let conditions = evaluator.sector_conditions(lake.raw(), sector);
+            for depth in 0..4 {
+                let mut parents = Vec::new();
+                enumerate(
+                    PrimitiveKey::new(lake.raw(), sector, &[]),
+                    depth,
+                    &mut parents,
+                );
+                for parent in parents {
+                    let frame = walk.frame(parent);
+                    let [a, b, c] = frame.corners;
+                    let first = walk.frame(parent.child(0)).corners;
+                    let second = walk.frame(parent.child(1)).corners;
+                    // Children 0 = (A, AB, CA) and 1 = (AB, B, BC).
+                    let edges = [(a, b, first[1]), (b, c, second[2]), (c, a, first[2])];
+                    for (index, (p, q, mid)) in edges.into_iter().enumerate() {
+                        let (_, bed_surface_m) = conditions.pick(frame.boundary_edge[index]);
+                        let mean = 0.5 * (p.value_m + q.value_m);
+                        if p.value_m.max(q.value_m) < bed_surface_m {
+                            assert_eq!(mid.value_m.to_bits(), mean.to_bits());
+                            flat += 1;
+                        } else if mid.value_m != mean {
+                            rough += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(flat > 0 && rough > 0, "{flat} flat, {rough} rough");
+    }
 }

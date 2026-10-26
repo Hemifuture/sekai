@@ -52,8 +52,9 @@ pub struct FineShoreline {
     own_lake: Vec<Option<u32>>,
     /// Per lake slot: the published surface.
     lake_surface_m: Vec<f32>,
-    /// Per cell: whether the cell or an edge neighbour is a P5 water cell
-    /// — the LOD-1 spec §3.2 D2 near-water partition.
+    /// Per cell: whether the cell or an edge neighbour is a P5 water cell,
+    /// or the cell is on a lake bound — the LOD-1 spec §3.2 D2 near-water
+    /// partition as extended by R2.3(d).
     near_water: Vec<bool>,
 }
 
@@ -182,6 +183,7 @@ impl FineShoreline {
             own_surface_m.push(own.map(|(_, candidate)| candidate.surface_m));
             near_water.push(
                 kind(cell) != SurfaceWaterKind::DryLand
+                    || !bound_lakes[cell].is_empty()
                     || neighbours[cell]
                         .iter()
                         .any(|&next| kind(next) != SurfaceWaterKind::DryLand),
@@ -308,6 +310,28 @@ impl FineShoreline {
             .get(cell.raw() as usize)
             .copied()
             .unwrap_or(false)
+    }
+
+    /// The lake surface below which the lake bed shared by `a` and `b`
+    /// (pass the same cell twice for one cell's interior) is flattened
+    /// (LOD-1 spec R2.3(c)): the highest surface among the lakes whose
+    /// bound holds both cells, or `None` when either cell sees the ocean
+    /// or no lake holds both. Symmetric in `a` and `b`.
+    pub(super) fn bed_surface_m(&self, a: CellId, b: CellId) -> Option<f32> {
+        let sees_ocean = |cell: CellId| {
+            self.row(cell)
+                .iter()
+                .any(|candidate| candidate.lake.is_none())
+        };
+        if sees_ocean(a) || sees_ocean(b) {
+            return None;
+        }
+        self.row(a)
+            .iter()
+            .filter_map(|candidate| candidate.lake)
+            .filter(|&lake| self.on_lake_bound(b, lake))
+            .map(|lake| self.lake_surface_m(lake))
+            .max_by(f32::total_cmp)
     }
 
     /// Whether no leaf of `cell` can ever be water: it has no candidate.
@@ -466,8 +490,8 @@ mod tests {
         );
     }
 
-    /// The D2 near-water partition keeps the §3.2 definition: own or edge
-    /// neighbour water; a cell with no candidate can never be wet.
+    /// The D2 near-water partition is own or edge-neighbour water or a lake
+    /// bound (R2.3(d)); a cell with no candidate can never be wet.
     #[test]
     fn near_water_and_candidates_follow_the_published_water() {
         let layout = layout();
@@ -477,5 +501,15 @@ mod tests {
         assert!(shoreline.never_wet(id(layout.sill)));
         assert!(!shoreline.never_wet(id(layout.fringe_rim)));
         assert!(shoreline.is_inland(id(layout.far)) && shoreline.never_wet(id(layout.far)));
+        // R2.3(d): a bound cell away from any water body is near water too.
+        assert!(!shoreline.is_inland(id(layout.fringe_rim)));
+        // R2.3(c): the bed flattens on the bound only, symmetrically.
+        let (lake, rim) = (id(layout.lake), id(layout.rim));
+        assert_eq!(shoreline.bed_surface_m(lake, lake), Some(50.0));
+        assert_eq!(
+            shoreline.bed_surface_m(lake, rim),
+            shoreline.bed_surface_m(rim, lake)
+        );
+        assert_eq!(shoreline.bed_surface_m(lake, id(layout.sill)), None);
     }
 }

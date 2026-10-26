@@ -25,12 +25,13 @@ use support::causal_formation::{
 };
 
 /// Draft seed-42 probe fingerprint (spec A4 formula with the LOD-1 §3.6
-/// version prefix) at `T1_DERIVATION_VERSION` 5: P1 vertex anchors (T1 v2
+/// version prefix) at `T1_DERIVATION_VERSION` 6: P1 vertex anchors (T1 v2
 /// spec amendment A16), inland average-interpolating centroids (A17),
-/// base-level beds with fine-dry river clipping (A18), and the LOD-1 R2
-/// lake bound with scale-recursive lake connectivity (A19).
+/// base-level beds with fine-dry river clipping (A18), the LOD-1 R2 lake
+/// bound with scale-recursive lake connectivity (A19), and the R2 lake-bed
+/// flattening with the lake-bound near-water partition (A20).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "01ff6b2f73e302ade8dcb7038f7cc1ef34ddfcfac7d74e9979f6730e3da4c09e";
+    "6b97e30623bead1c927a92313409b96ee3732faea87c6a336ad0c63465c710f3";
 
 fn evaluator() -> HierarchicalEvaluator {
     evaluator_for(causal_formation_fixture())
@@ -911,7 +912,9 @@ fn lake_shore(fixture: &CausalFormationFixture, top_level: u8) -> LakeShore {
             }
         }
         // Water pieces, and dry pieces that never reach the outer ring
-        // (islands enclosed by lake water).
+        // (islands enclosed by lake water). A water piece counts for every
+        // lake whose cells it covers, or for the nearest lake when it
+        // covers none (a detached piece); an island for its nearest lake.
         let mut seen = vec![false; leaves.len()];
         for start in 0..leaves.len() {
             if seen[start] {
@@ -919,11 +922,16 @@ fn lake_shore(fixture: &CausalFormationFixture, top_level: u8) -> LakeShore {
             }
             let wet = leaves[start].lake;
             let (mut piece_area, mut open_piece) = (0.0, false);
+            let mut covered = Vec::new();
             let mut stack = vec![start];
             seen[start] = true;
             while let Some(index) = stack.pop() {
-                piece_area += leaves[index].area;
-                open_piece |= ring[leaves[index].cell] == 2;
+                let leaf = &leaves[index];
+                piece_area += leaf.area;
+                open_piece |= ring[leaf.cell] == 2;
+                if ring[leaf.cell] == 0 && !covered.contains(&owner[leaf.cell]) {
+                    covered.push(owner[leaf.cell]);
+                }
                 for &next in &adjacency[index] {
                     if next == usize::MAX {
                         open_piece = true;
@@ -933,11 +941,15 @@ fn lake_shore(fixture: &CausalFormationFixture, top_level: u8) -> LakeShore {
                     }
                 }
             }
-            let slot = owner[leaves[start].cell];
             if wet {
-                stats.pieces[slot] += 1;
+                if covered.is_empty() {
+                    covered.push(owner[leaves[start].cell]);
+                }
+                for slot in covered {
+                    stats.pieces[slot] += 1;
+                }
             } else if !open_piece {
-                stats.island_area[slot] += piece_area;
+                stats.island_area[owner[leaves[start].cell]] += piece_area;
             }
         }
         for (index, leaf) in leaves.iter().enumerate() {
@@ -1034,12 +1046,38 @@ fn summarize_lake_shore(tier: &str, top_level: u8, stats: &LakeShore) -> LakeSho
     summary
 }
 
-/// LOD-1 spec R2 observation probe: the R2.7 gate quantities, printed
-/// without asserting.
+/// LOD-1 spec R2.7 gates G1–G4 on the Draft seed-42 product at level 6
+/// (thresholds ruled by the user 2026-10-26 from the R2.4 measurements).
+/// The per-lake median of G1 is printed, not asserted: it measured 2
+/// against the ruled 1 and awaits a user ruling (R3).
 #[test]
-#[ignore = "release-only offline lake shoreline probe (LOD-1 spec R2.7)"]
-fn lake_shoreline_probe() {
-    summarize_lake_shore("draft", 6, &lake_shore(causal_formation_fixture(), 6));
+fn lake_shoreline_gates() {
+    let summary = summarize_lake_shore("draft", 6, &lake_shore(causal_formation_fixture(), 6));
+    assert!(
+        summary.pieces_total <= 100,
+        "G1: {} lake-water pieces",
+        summary.pieces_total
+    );
+    assert!(
+        summary.island_share_mean <= 0.015,
+        "G2: enclosed islands {:.4} of the water",
+        summary.island_share_mean
+    );
+    assert!(
+        summary.shore_on_cell_edge <= 0.05 && summary.hard_cut <= 0.035,
+        "G3: shoreline on cell edges {:.4}, hard cuts {:.4}",
+        summary.shore_on_cell_edge,
+        summary.hard_cut
+    );
+    let mut ratios = summary.adjacent_ratios.clone();
+    ratios.sort_by(f64::total_cmp);
+    let at = |q: f64| ratios[((ratios.len() - 1) as f64 * q).round() as usize];
+    assert!(
+        at(0.05) >= 0.9 && at(0.95) <= 1.35,
+        "G4: adjacent-level area ratio p05 {:.3}, p95 {:.3}",
+        at(0.05),
+        at(0.95)
+    );
 }
 
 #[test]
