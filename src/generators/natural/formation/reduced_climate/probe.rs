@@ -1203,6 +1203,11 @@ fn a10_reduced_climate_probe() {
             "lon_deg": surface.cells().iter().map(|c| { let v = c.centroid.components(); v[1].atan2(v[0]).to_degrees() }).collect::<Vec<_>>(),
             "elevation_above_sea_m": baseline_terrain.current_elevation_m().iter().map(|&z| f64::from(z - terrain_sea)).collect::<Vec<_>>(),
             "ocean_fraction": baseline_terrain.surface_water_geometry().ocean_area_fraction(),
+            "edges": surface
+                .edges()
+                .iter()
+                .map(|edge| [edge.cells[0].raw(), edge.cells[1].raw()])
+                .collect::<Vec<_>>(),
             "old_p4": cell_dump(surface, &baseline_published),
             "reference": cell_dump(surface, &reference_published),
             "r2": cell_dump(surface, &published_b),
@@ -1302,6 +1307,13 @@ fn work_grid_dump(grid: &ReducedGrid, inputs: &ReducedInputs, work: &ReducedWork
             "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m", "ice_fraction",
             "asr_w_m2", "olr_w_m2", "sea_ice", "beta", "conv_eddy", "conv_hadley", "conv_zonal", "rh_sea_level"],
         "rows": rows,
+        // Work-grid adjacency for grid-scale (2-delta-x) diagnostics:
+        // [cell 0, cell 1, east component of the unit normal].
+        "edges": grid
+            .edges
+            .iter()
+            .map(|e| json!([e.cells[0], e.cells[1], dot(super::east_unit(e.midpoint), e.normal)]))
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -1409,5 +1421,6 @@ fn physics_from_flags(flags: &str) -> ReducedPhysics {
         land_potential_evaporation_cap: has("landcap"),
         hadley_meridional_only: has("hmer"),
         band_mean_zonal_vapour_advection: has("zband"),
+        nondivergent_zonal_vapour_advection: has("zpsi"),
     }
 }
