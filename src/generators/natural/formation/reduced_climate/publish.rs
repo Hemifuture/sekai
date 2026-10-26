@@ -3,9 +3,10 @@
 //! reduced fields in the C2-shaped snapshot the current consumers read, with
 //! placeholder vertical fields and the existing identities; see the A10
 //! design, revisions R1 and R2, for what this preview does and does not
-//! provide. It runs the R3 physics: R2 latitude albedo and sea-ice surface
-//! type, R3 observed wind variability in evaporation, column-consistent eddy
-//! vapour diffusion and band-mean zonal vapour advection.
+//! provide. It runs the R4 physics: R2 latitude albedo and sea-ice surface
+//! type, R3 observed wind variability in evaporation and column-consistent
+//! eddy vapour diffusion, and the R4 streamfunction (non-divergent) zonal
+//! vapour advection.
 
 use super::{
     solve_reduced_climate, IceAlbedoFeedback, OutgoingLongwaveClosure, ReducedGrid, ReducedInputs,
@@ -66,7 +67,8 @@ pub(in crate::generators::natural) fn generate_reduced_snapshot(
             column_consistent_eddy_moisture: true,
             land_potential_evaporation_cap: false,
             hadley_meridional_only: false,
-            band_mean_zonal_vapour_advection: true,
+            band_mean_zonal_vapour_advection: false,
+            nondivergent_zonal_vapour_advection: true,
         },
     );
     let work = solve_reduced_climate(&grid, &inputs, true);
