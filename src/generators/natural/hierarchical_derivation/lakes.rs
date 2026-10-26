@@ -17,8 +17,10 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use rustc_hash::FxHashMap;
+
 use super::{
-    child_frame, HierarchicalEvaluator, SectorConditions, TriangleFrame,
+    child_frame, Anchor, DerivedReading, HierarchicalEvaluator, SectorConditions, TriangleFrame,
     HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::world::natural::{Lake, SurfaceWaterKind};
@@ -88,6 +90,27 @@ impl PrimitiveKey {
             steps: self.steps | u32::from(child) << (2 * u32::from(self.len)),
             ..self
         }
+    }
+
+    /// The descendant `depth` levels below, along the packed relative path
+    /// `rel` (first step in the lowest bits).
+    fn descendant(self, rel: u32, depth: u8) -> Self {
+        Self {
+            len: self.len + depth,
+            steps: self.steps | rel << (2 * u32::from(self.len)),
+            ..self
+        }
+    }
+
+    /// The packed relative path of `self` below `root`, if it descends from
+    /// it.
+    fn relative_to(self, root: Self) -> Option<u32> {
+        let mask = ((1_u64 << (2 * u32::from(root.len))) - 1) as u32;
+        (self.cell == root.cell
+            && self.sector == root.sector
+            && self.len >= root.len
+            && self.steps & mask == root.steps)
+            .then(|| (u64::from(self.steps) >> (2 * u32::from(root.len))) as u32)
     }
 
     /// Whether the primitive keeps the sector's first corner — the cell
@@ -256,20 +279,20 @@ impl HierarchicalEvaluator {
 /// of the primitive identity.
 pub(super) struct LakeWalk<'a> {
     engine: &'a HierarchicalEvaluator,
-    frames: HashMap<PrimitiveKey, TriangleFrame>,
-    conditions: HashMap<(u32, u8), SectorConditions>,
-    water: HashMap<(u32, PrimitiveKey), bool>,
-    core: HashMap<(u32, PrimitiveKey), bool>,
+    frames: FxHashMap<PrimitiveKey, TriangleFrame>,
+    conditions: FxHashMap<(u32, u8), SectorConditions>,
+    water: FxHashMap<(u32, PrimitiveKey), bool>,
+    core: FxHashMap<(u32, PrimitiveKey), bool>,
 }
 
 impl<'a> LakeWalk<'a> {
     pub(super) fn new(engine: &'a HierarchicalEvaluator) -> Self {
         Self {
             engine,
-            frames: HashMap::new(),
-            conditions: HashMap::new(),
-            water: HashMap::new(),
-            core: HashMap::new(),
+            frames: FxHashMap::default(),
+            conditions: FxHashMap::default(),
+            water: FxHashMap::default(),
+            core: FxHashMap::default(),
         }
     }
 
@@ -286,10 +309,7 @@ impl<'a> LakeWalk<'a> {
         }
         let parent_key = key.parent();
         let parent = self.frame(parent_key);
-        let conditions = *self
-            .conditions
-            .entry((key.cell, key.sector))
-            .or_insert_with(|| engine.sector_conditions(key.cell, key.sector));
+        let conditions = self.sector_conditions(key.cell, key.sector);
         // The split producing `key` is its path's last step, at level len.
         let midpoints = engine.split_midpoints(&parent, u32::from(key.len), &conditions);
         for child in 0..4 {
@@ -301,11 +321,19 @@ impl<'a> LakeWalk<'a> {
         self.frames[&key]
     }
 
+    /// The split conditions of one fan sector, derived once per walk.
+    fn sector_conditions(&mut self, cell: u32, sector: u8) -> SectorConditions {
+        let engine = self.engine;
+        *self
+            .conditions
+            .entry((cell, sector))
+            .or_insert_with(|| engine.sector_conditions(cell, sector))
+    }
+
     /// The uncarved face value of `key` as published (f32), the value the
     /// connectivity rule compares against lake surfaces.
     fn uncarved_m(&mut self, key: PrimitiveKey) -> f32 {
-        let [a, b, c] = self.frame(key).corners;
-        ((a.value_m + b.value_m + c.value_m) / 3.0) as f32
+        frame_uncarved_m(&self.frame(key))
     }
 
     /// Whether `key` is water of lake `lake` (R2.3(b)).
@@ -356,6 +384,157 @@ impl<'a> LakeWalk<'a> {
         self.core.insert((lake, key), core);
         core
     }
+}
+
+/// Margin of the subtree value bound over the f32 publication rounding
+/// and the f64 rounding of the anchors (the river cursor's margin).
+const SUBTREE_BOUND_MARGIN_M: f64 = 0.01;
+
+impl HierarchicalEvaluator {
+    /// Streams the readings of every leaf `extra` levels below `root`, a
+    /// primitive whose cell has lake candidates, in depth-first order.
+    ///
+    /// The subtree is classified level by level: each level's frames come
+    /// from the previous level's splits (the same arithmetic as the value
+    /// walk), its lake cores from the parents' water, and its water from
+    /// the cores of edge neighbours — looked up in the level's arrays when
+    /// inside the subtree, through the memo walk across its border. A
+    /// subtree whose value bound stays above every lake surface skips the
+    /// connectivity work: none of its leaves can be lake water.
+    pub(super) fn for_each_lake_subtree_reading(
+        &self,
+        root: PrimitiveKey,
+        extra: u8,
+        sink: &mut dyn FnMut(DerivedReading),
+    ) {
+        let cell = CellId::from_raw(root.cell);
+        let row = self.shoreline.row(cell);
+        let mut walk = LakeWalk::new(self);
+        let mut frames = vec![walk.frame(root)];
+        let conditions = walk.sector_conditions(root.cell, root.sector);
+        let remaining_m: f64 = (1..=u32::from(extra))
+            .map(|step| {
+                let level = u32::from(root.len) + step;
+                conditions
+                    .root
+                    .amplitude_m(level)
+                    .max(conditions.boundary.amplitude_m(level))
+            })
+            .sum();
+        let lowest_m = frames[0]
+            .corners
+            .iter()
+            .map(|anchor| anchor.value_m)
+            .fold(f64::INFINITY, f64::min);
+        let floor_m = lowest_m - remaining_m * (1.0 + 1.0e-9) - SUBTREE_BOUND_MARGIN_M;
+        let lakes: Vec<(u32, f32)> = row
+            .iter()
+            .filter_map(|candidate| candidate.lake.map(|lake| (lake, candidate.surface_m)))
+            .filter(|&(_, surface_m)| floor_m < f64::from(surface_m))
+            .collect();
+        // water[k][rel]: lake water of lake k at the current level, indexed
+        // by the path below the root packed like PrimitiveKey (first step
+        // in the lowest bits).
+        let mut water: Vec<Vec<bool>> = lakes
+            .iter()
+            .map(|&(lake, _)| vec![walk.is_lake_water(lake, root)])
+            .collect();
+        for depth in 1..=extra {
+            let parents = frames.len();
+            let midpoints: Vec<[Anchor; 3]> = frames
+                .iter()
+                .map(|frame| self.split_midpoints(frame, u32::from(root.len + depth), &conditions))
+                .collect();
+            let mut children = Vec::with_capacity(parents * 4);
+            for child in 0..4_u8 {
+                children.extend(
+                    frames
+                        .iter()
+                        .zip(&midpoints)
+                        .map(|(frame, midpoints)| child_frame(*frame, *midpoints, child)),
+                );
+            }
+            frames = children;
+            if lakes.is_empty() {
+                continue;
+            }
+            let below: Vec<Vec<bool>> = lakes
+                .iter()
+                .map(|&(_, surface_m)| {
+                    frames
+                        .iter()
+                        .map(|frame| frame_uncarved_m(frame) < surface_m)
+                        .collect()
+                })
+                .collect();
+            for (index, &(lake, _)) in lakes.iter().enumerate() {
+                let seeds_centroid =
+                    root.touches_centroid() && self.shoreline.own_lake(cell) == Some(lake);
+                let core: Vec<bool> = (0..frames.len())
+                    .map(|rel| {
+                        below[index][rel]
+                            && (water[index][rel % parents] || (seeds_centroid && rel == 0))
+                    })
+                    .collect();
+                let next: Vec<bool> = (0..frames.len())
+                    .map(|rel| {
+                        if !below[index][rel] {
+                            return false;
+                        }
+                        if core[rel] {
+                            return true;
+                        }
+                        let key = root.descendant(rel as u32, depth);
+                        (0..3).any(|edge| {
+                            let (next, _) = self.edge_neighbour(key, edge);
+                            match next.relative_to(root) {
+                                Some(inside) => core[inside as usize],
+                                None => walk.is_core(lake, next),
+                            }
+                        })
+                    })
+                    .collect();
+                water[index] = next;
+            }
+        }
+        let leaf_level = root.level() + extra;
+        let mut emit = |rel: usize| {
+            let value = self.face_value(root.cell_index(), &frames[rel], leaf_level);
+            let mut kind = SurfaceWaterKind::DryLand;
+            for candidate in row {
+                let wet = match candidate.lake {
+                    None => value.elevation_m < candidate.surface_m,
+                    Some(lake) => lakes
+                        .iter()
+                        .position(|&(slot, _)| slot == lake)
+                        .is_some_and(|index| water[index][rel]),
+                };
+                if wet {
+                    kind = candidate.kind;
+                    break;
+                }
+            }
+            sink(DerivedReading {
+                cell,
+                value,
+                water: kind,
+            });
+        };
+        // Depth-first order: the first step below the root varies slowest.
+        for order in 0..frames.len() {
+            let rel = (0..u32::from(extra)).fold(0_usize, |rel, step| {
+                let digit = order >> (2 * (u32::from(extra) - 1 - step)) & 3;
+                rel | digit << (2 * step)
+            });
+            emit(rel);
+        }
+    }
+}
+
+/// The uncarved face value of a frame as published (f32).
+fn frame_uncarved_m(frame: &TriangleFrame) -> f32 {
+    let [a, b, c] = &frame.corners;
+    ((a.value_m + b.value_m + c.value_m) / 3.0) as f32
 }
 
 #[cfg(test)]

@@ -1021,51 +1021,27 @@ impl HierarchicalEvaluator {
         sink: &mut dyn FnMut(DerivedReading),
     ) {
         let root = PrimitiveKey::new(cell.raw(), sector, prefix);
-        let mut walk = LakeWalk::new(self);
-        if !self
+        if self
             .shoreline
             .row(cell)
             .iter()
             .any(|candidate| candidate.lake.is_some())
         {
-            // No lake reaches this cell: only the per-value ocean test runs,
-            // and the walk is never consulted.
-            self.for_each_leaf_value(cell, sector, prefix, extra_levels, &mut |value| {
-                sink(DerivedReading {
-                    cell,
-                    value,
-                    water: self.leaf_water(&mut walk, root, value.elevation_m),
-                });
-            });
+            // A lake candidate classifies by primitive identity: the
+            // subtree is classified level by level (R2.3(b)).
+            self.for_each_lake_subtree_reading(root, extra_levels, sink);
             return;
         }
-        // A lake candidate classifies by primitive identity, so the leaves
-        // come from the walk's frame memo, which also serves the
-        // connectivity queries of their parents and neighbours.
-        self.emit_leaf_readings(&mut walk, root, extra_levels, sink);
-    }
-
-    fn emit_leaf_readings(
-        &self,
-        walk: &mut LakeWalk<'_>,
-        key: PrimitiveKey,
-        remaining: u8,
-        sink: &mut dyn FnMut(DerivedReading),
-    ) {
-        if remaining == 0 {
-            let frame = walk.frame(key);
-            let value = self.face_value(key.cell_index(), &frame, key.level());
-            let water = self.leaf_water(walk, key, value.elevation_m);
+        // No lake reaches this cell: only the per-value ocean test runs, and
+        // the walk is never consulted.
+        let mut walk = LakeWalk::new(self);
+        self.for_each_leaf_value(cell, sector, prefix, extra_levels, &mut |value| {
             sink(DerivedReading {
-                cell: CellId::from_raw(key.cell_index() as u32),
+                cell,
                 value,
-                water,
+                water: self.leaf_water(&mut walk, root, value.elevation_m),
             });
-            return;
-        }
-        for child in 0..4_u8 {
-            self.emit_leaf_readings(walk, key.child(child), remaining - 1, sink);
-        }
+        });
     }
 
     fn emit_leaf_values(
