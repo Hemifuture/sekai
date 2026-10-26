@@ -1777,12 +1777,22 @@ impl TemplateApp {
             painter.line_segment([to_screen(start), to_screen(end)], stroke);
         }
         if let Some(requested) = requested {
+            // Dash whole connected runs: dashing each short projected segment
+            // restarts the pattern per segment and draws a small box solid.
+            let mut runs: Vec<Vec<egui::Pos2>> = Vec::new();
             for [start, end] in self
                 .spherical_canvas_state
                 .project_polyline_to_screen(requested, canvas_size)
             {
+                let (start, end) = (to_screen(start), to_screen(end));
+                match runs.last_mut() {
+                    Some(run) if run.last() == Some(&start) => run.push(end),
+                    _ => runs.push(vec![start, end]),
+                }
+            }
+            for run in runs {
                 painter.extend(egui::Shape::dashed_line(
-                    &[to_screen(start), to_screen(end)],
+                    &run,
                     egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
                     4.0,
                     3.0,

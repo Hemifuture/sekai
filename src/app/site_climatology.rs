@@ -326,9 +326,11 @@ fn write_export(_ctx: &egui::Context, bytes: &[u8], fingerprint_hex: &str) -> St
     let path = std::path::Path::new(EXPORT_DIRECTORY)
         .join(format!("site-climatology-{}.json", &fingerprint_hex[..16]));
     match std::fs::create_dir_all(EXPORT_DIRECTORY).and_then(|()| std::fs::write(&path, bytes)) {
+        // `std::path::absolute`, not `canonicalize`: on Windows the latter
+        // returns a verbatim `\\?\` path that the panel would show verbatim.
         Ok(()) => format!(
             "已写入 {}",
-            std::fs::canonicalize(&path).unwrap_or(path).display()
+            std::path::absolute(&path).unwrap_or(path).display()
         ),
         Err(error) => format!("写入失败：{error}"),
     }
