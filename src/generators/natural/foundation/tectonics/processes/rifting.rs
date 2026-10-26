@@ -8,7 +8,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
-use super::{ProcessActions, ProcessError, ProcessStats};
+use super::{ProcessError, ProcessStats};
 use crate::generators::natural::foundation::tectonics::model::{
     ActivePlate, EvolutionLineageLedger, FormationTectonicRecipe, LineageId, TectonicState,
 };
@@ -140,50 +140,64 @@ pub(super) fn rift_rate_q32(
     rift_rate_q32_with_scratch(surface, state, lineage, recipe, &mut represented)
 }
 
+/// Evaluates every live plate's Cortial rift draw once per step on the
+/// committed state (G4 §4.0).
+///
+/// Runs after the step's process actions are committed, like mechanical
+/// fragmentation, so no plate's draw is lost to pending subduction, collision
+/// or spreading actions. All rates come from the same committed state before
+/// any split, so the order of rifts within one step cannot change another
+/// plate's rate; the draw keys `[step, lineage]` are unchanged.
+///
+/// # Arguments
+///
+/// * `represented` - per-cell scratch of at least `surface.cells().len()` bytes
+///
+/// # Errors
+///
+/// Returns a [`ProcessError`] for an invalid sample anchor, an exhausted
+/// lineage space, an invalid child rotation, or a split that changed material.
 pub(in crate::generators::natural::foundation::tectonics) fn maybe_rift_plates(
     step: u16,
     delta_myr: u16,
     surface: &SphericalSurfaceSnapshot,
-    current: &TectonicState,
-    next: &mut TectonicState,
-    actions: &mut ProcessActions,
+    state: &mut TectonicState,
     recipe: FormationTectonicRecipe,
     streams: &LabeledSubstreams,
+    represented: &mut [u8],
 ) -> Result<ProcessStats, ProcessError> {
-    if current.samples.len() != next.samples.len() {
-        return Err(ProcessError::StateCardinalityMismatch {
-            current: current.samples.len(),
-            next: next.samples.len(),
-        });
-    }
-    actions.validate_for(next.samples.len())?;
-    if next.plates.len() >= MAXIMUM_RIFTED_LINEAGES {
-        return Ok(ProcessStats::default());
-    }
-
     let mut stats = ProcessStats::default();
-    let parents = current.plates.clone();
-    for parent in parents {
-        if next.plates.len() >= MAXIMUM_RIFTED_LINEAGES {
-            break;
-        }
-        if actions.lineage_has_pending_changes(&current.samples, parent.lineage) {
-            stats.rift_pending_skips += 1;
-            continue;
-        }
+    if state.plates.len() >= MAXIMUM_RIFTED_LINEAGES {
+        return Ok(stats);
+    }
+    let mut drawn = Vec::new();
+    let tracing = std::env::var_os("SEKAI_V5_TRACE").is_some();
+    let mut expected_events = 0.0_f64;
+    for parent in &state.plates {
+        let rate = rift_rate_q32_with_scratch(surface, state, parent.lineage, recipe, represented)?;
         stats.rift_evaluations += 1;
-        let rate = {
-            let represented = actions.rift_scratch(surface.cells().len());
-            rift_rate_q32_with_scratch(surface, current, parent.lineage, recipe, represented)?
-        };
+        if tracing {
+            expected_events += poisson_threshold_q64(rate, delta_myr) as f64 / 2.0_f64.powi(64);
+        }
         let draw = streams.counter_u64(
             RIFT_EVENTS_V3_LABEL,
             &[u64::from(step), u64::from(parent.lineage.raw())],
         );
-        if !poisson_event(draw, rate, delta_myr) {
-            continue;
+        if poisson_event(draw, rate, delta_myr) {
+            drawn.push(*parent);
         }
-        let sample_indices = current
+    }
+    if tracing {
+        eprintln!(
+            "[v5-trace] step {step} rift-expectation: {expected_events:.6} drawn={}",
+            drawn.len()
+        );
+    }
+    for parent in drawn {
+        if state.plates.len() >= MAXIMUM_RIFTED_LINEAGES {
+            break;
+        }
+        let sample_indices = state
             .samples
             .iter()
             .enumerate()
@@ -198,7 +212,7 @@ pub(in crate::generators::natural::foundation::tectonics) fn maybe_rift_plates(
                 RIFT_EVENTS_V3_LABEL,
                 &[u64::from(step), u64::from(parent.lineage.raw()), 1],
             ) % 3) as usize;
-        let capacity_children = MAXIMUM_RIFTED_LINEAGES - next.plates.len() + 1;
+        let capacity_children = MAXIMUM_RIFTED_LINEAGES - state.plates.len() + 1;
         let child_count = desired_children
             .min(sample_indices.len() / MINIMUM_SAMPLES_PER_RIFT_CHILD)
             .min(capacity_children);
@@ -208,9 +222,7 @@ pub(in crate::generators::natural::foundation::tectonics) fn maybe_rift_plates(
         let Some(continental_children) = split_plate(
             step,
             surface,
-            current,
-            next,
-            actions,
+            state,
             recipe,
             streams,
             parent,
@@ -487,9 +499,7 @@ fn assign_fragment_domains(
 fn split_plate(
     step: u16,
     surface: &SphericalSurfaceSnapshot,
-    current: &TectonicState,
-    next: &mut TectonicState,
-    actions: &mut ProcessActions,
+    state: &mut TectonicState,
     recipe: FormationTectonicRecipe,
     streams: &LabeledSubstreams,
     parent: ActivePlate,
@@ -497,7 +507,7 @@ fn split_plate(
     child_count: usize,
 ) -> Result<Option<usize>, ProcessError> {
     let seed_indices = farthest_sample_seeds(
-        current,
+        state,
         sample_indices,
         child_count,
         streams.counter_u64(
@@ -526,14 +536,14 @@ fn split_plate(
     let mut assignments = Vec::with_capacity(sample_indices.len());
     let mut child_sizes = vec![0_usize; child_count];
     for &sample_index in sample_indices {
-        let position = current.samples[sample_index].position;
+        let position = state.samples[sample_index].position;
         let forced_child = seed_indices.iter().position(|&seed| seed == sample_index);
         let child = forced_child.unwrap_or_else(|| {
             seed_indices
                 .iter()
                 .enumerate()
                 .map(|(child, &seed)| {
-                    let center = current.samples[seed].position;
+                    let center = state.samples[seed].position;
                     let score = position.dot(center)
                         + RIFT_WARP_AMPLITUDE * noise[child].fbm(position, profile);
                     (child, score)
@@ -558,36 +568,42 @@ fn split_plate(
     }
     let mut continental = vec![false; child_count];
     for (&sample_index, &child) in sample_indices.iter().zip(&assignments) {
-        if current.samples[sample_index].kind == CrustKind::Continental {
+        if state.samples[sample_index].kind == CrustKind::Continental {
             continental[child] = true;
         }
     }
 
+    let material_before = state.material_totals()?;
     let mut lineages = Vec::with_capacity(child_count);
     for _ in 0..child_count {
         lineages.push(
-            next.allocate_lineage()
+            state
+                .allocate_lineage()
                 .ok_or(ProcessError::LineageExhausted)?,
         );
     }
     for (&sample_index, child) in sample_indices.iter().zip(assignments) {
-        actions.mark_transfer(sample_index, lineages[child])?;
+        state.samples[sample_index].owner = lineages[child];
     }
 
-    next.plates.retain(|plate| plate.lineage != parent.lineage);
+    state.plates.retain(|plate| plate.lineage != parent.lineage);
     // A rift is one fracture event, so every sibling must be expressed in the
     // same local frame.  Using each child's (often opposite) seed tangent here
     // can cancel the opposite centered angles and create co-moving siblings.
-    let fracture_axis_seed = current.samples[seed_indices[0]].position;
+    let fracture_axis_seed = state.samples[seed_indices[0]].position;
     for (child, (&lineage, &seed_index)) in lineages.iter().zip(&seed_indices).enumerate() {
-        let seed = current.samples[seed_index];
+        let seed_anchor = state.samples[seed_index].anchor;
         let rotation = divergent_rotation(parent.rotation, fracture_axis_seed, child, child_count)?;
         rotation.validate_for_radius(surface.radius())?;
-        next.plates
-            .push(ActivePlate::new(lineage, seed.anchor, rotation));
+        state
+            .plates
+            .push(ActivePlate::new(lineage, seed_anchor, rotation));
     }
-    next.plates.sort_by_key(|plate| plate.lineage);
-    next.initiation.replace_lineage(parent.lineage, &lineages);
+    state.plates.sort_by_key(|plate| plate.lineage);
+    state.initiation.replace_lineage(parent.lineage, &lineages);
+    if state.material_totals()? != material_before {
+        return Err(ProcessError::FragmentationChangedMaterial);
+    }
     Ok(Some(continental.iter().filter(|&&cut| cut).count()))
 }
 
@@ -919,20 +935,16 @@ mod tests {
 
         let run = || {
             let mut next = copy_state(&current);
-            let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
-            actions.begin_step(next.samples.len());
             let stats = maybe_rift_plates(
                 step,
                 delta_myr,
                 &surface,
-                &current,
                 &mut next,
-                &mut actions,
                 recipe,
                 &streams,
+                &mut vec![0; surface.cells().len()],
             )
             .unwrap();
-            commit_process_actions(&mut next, &mut actions).unwrap();
             (next, stats)
         };
         let (first, first_stats) = run();
@@ -979,8 +991,6 @@ mod tests {
         let before_samples = next.samples.clone();
         let before_plates = next.plates.clone();
         let before_lineage = next.next_lineage_raw();
-        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
-        actions.begin_step(next.samples.len());
         let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Archipelago);
         let streams = streams();
         let rate = rift_rate_q32(&surface, &current, current.plates[0].lineage, recipe).unwrap();
@@ -1000,14 +1010,12 @@ mod tests {
             step,
             delta_myr,
             &surface,
-            &current,
             &mut next,
-            &mut actions,
             recipe,
             &streams,
+            &mut vec![0; surface.cells().len()],
         )
         .unwrap();
-        commit_process_actions(&mut next, &mut actions).unwrap();
         assert_eq!(stats.rift_events, 0);
         assert_eq!(next.samples, before_samples);
         assert_eq!(next.plates, before_plates);
@@ -1021,8 +1029,6 @@ mod tests {
         let surface = surface(162);
         let current = state(&surface, usize::from(MAX_PLATE_COUNT) / 2 + 1);
         let mut next = copy_state(&current);
-        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
-        actions.begin_step(next.samples.len());
         let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Archipelago);
         let streams = streams();
         let rate = rift_rate_q32(&surface, &current, current.plates[0].lineage, recipe).unwrap();
@@ -1040,14 +1046,12 @@ mod tests {
             step,
             delta_myr,
             &surface,
-            &current,
             &mut next,
-            &mut actions,
             recipe,
             &streams,
+            &mut vec![0; surface.cells().len()],
         )
         .unwrap();
-        commit_process_actions(&mut next, &mut actions).unwrap();
 
         assert_eq!(stats.rift_events, 1);
         assert!(next.plates.len() > current.plates.len());
@@ -1062,8 +1066,6 @@ mod tests {
         current.samples.truncate(7);
         let mut next = copy_state(&current);
         let before = next.samples.clone();
-        let mut actions = ProcessActions::with_sample_capacity(next.samples.len());
-        actions.begin_step(next.samples.len());
         let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
         let streams = streams();
         let rate = rift_rate_q32(&surface, &current, current.plates[0].lineage, recipe).unwrap();
@@ -1081,22 +1083,23 @@ mod tests {
             step,
             delta_myr,
             &surface,
-            &current,
             &mut next,
-            &mut actions,
             recipe,
             &streams,
+            &mut vec![0; surface.cells().len()],
         )
         .unwrap();
-        commit_process_actions(&mut next, &mut actions).unwrap();
 
         assert_eq!(stats.rift_events, 0);
         assert_eq!(next.samples, before);
         assert_eq!(next.plates.len(), 1);
     }
 
+    /// G4 §4.0 / §12: a plate whose lineage changed in the same batch
+    /// (incoming transfer and a spawned sample) still gets its rift draw,
+    /// now on the committed state, and the split closes material and lineages.
     #[test]
-    fn rifting_does_not_delete_a_lineage_with_pending_process_actions() {
+    fn rift_is_drawn_after_a_batch_that_changed_the_lineage() {
         let delta_myr = reference_step_duration_myr();
         let surface = surface(162);
         let current = state(&surface, 2);
@@ -1113,9 +1116,12 @@ mod tests {
         let mut spawned = next.samples[0];
         spawned.anchor = next.samples[incoming].anchor;
         actions.push_spawned(spawned);
+        commit_process_actions(&mut next, &mut actions).unwrap();
+        let ledger = EvolutionLineageLedger::capture_initial(&current).unwrap();
+        let material_before = next.material_totals().unwrap();
         let recipe = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents);
         let streams = streams();
-        let rate = rift_rate_q32(&surface, &current, parent, recipe).unwrap();
+        let rate = rift_rate_q32(&surface, &next, parent, recipe).unwrap();
         let step = (0..=u16::MAX)
             .find(|&step| {
                 poisson_event(
@@ -1133,20 +1139,25 @@ mod tests {
             step,
             delta_myr,
             &surface,
-            &current,
             &mut next,
-            &mut actions,
             recipe,
             &streams,
+            &mut vec![0; surface.cells().len()],
         )
         .unwrap();
-        commit_process_actions(&mut next, &mut actions).unwrap();
 
-        assert_eq!(stats.rift_events, 0);
-        assert!(next.plate(parent).is_some());
+        assert_eq!(stats.rift_evaluations, 2, "every live plate is drawn once");
+        assert_eq!(stats.rift_events, 1);
+        assert!(next.plate(parent).is_none());
         assert!(next
             .samples
             .iter()
             .all(|sample| next.plate(sample.owner).is_some()));
+        assert_eq!(next.material_totals().unwrap(), material_before);
+        let budget = ledger.budget(&next).unwrap();
+        assert_eq!(
+            budget.initial_lineages() + budget.allocated_lineages(),
+            budget.retired_lineages() + budget.final_live_lineages()
+        );
     }
 }

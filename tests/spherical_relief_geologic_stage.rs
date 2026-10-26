@@ -54,7 +54,7 @@ fn formation() -> ResolvedWorldFormation {
 
 fn rng(root_seed: RootSeed, stage_id: &'static str) -> StageRng {
     let version = match stage_id {
-        "natural.spherical-tectonics" => 9,
+        "natural.spherical-tectonics" => 10,
         "natural.spherical-relief" => 3,
         "natural.spherical-mantle" | "natural.spherical-geology" => 1,
         _ => panic!("unexpected spherical stage {stage_id}"),
@@ -172,8 +172,9 @@ fn stages_publish_exact_identities_and_dependencies() {
 #[test]
 fn stages_forward_science_diagnostics_and_strict_surface_bound_wires() {
     // This fixed seed intentionally exercises bounded-elevation reconciliation so the stage
-    // contract proves that non-empty scientific diagnostics are forwarded unchanged.
-    let root_seed = RootSeed::new(0);
+    // contract proves that non-empty scientific diagnostics are forwarded unchanged. Re-pick
+    // the seed when the tectonic stage identity changes (seed 1 since tectonics@10).
+    let root_seed = RootSeed::new(1);
     let surface = surface(6_371_000.0);
     let outcome = BuildEngine::new(graph())
         .build(root_seed, external(&surface), &mut MemoryStageCache::new())

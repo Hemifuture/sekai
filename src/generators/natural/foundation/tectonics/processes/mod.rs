@@ -360,6 +360,7 @@ impl ProcessActions {
         Ok(true)
     }
 
+    #[cfg(test)]
     pub(super) fn mark_transfer(
         &mut self,
         sample: usize,
@@ -390,21 +391,6 @@ impl ProcessActions {
     #[cfg(test)]
     pub(super) fn is_clear(&self) -> bool {
         self.dispositions.is_empty() && self.spawned.is_empty()
-    }
-
-    pub(super) fn lineage_has_pending_changes(
-        &self,
-        samples: &[CrustSample],
-        lineage: LineageId,
-    ) -> bool {
-        self.dispositions
-            .iter()
-            .zip(samples)
-            .any(|(disposition, sample)| {
-                (sample.owner == lineage && *disposition != SampleDisposition::Keep)
-                    || matches!(disposition, SampleDisposition::Transfer(owner) if *owner == lineage)
-            })
-            || self.spawned.iter().any(|sample| sample.owner == lineage)
     }
 
     fn validate_for(&self, sample_count: usize) -> Result<(), ProcessError> {
@@ -549,9 +535,6 @@ pub(super) struct ProcessStats {
     pub(super) rift_events: u32,
     /// Live plates whose Poisson rift draw was evaluated this step.
     pub(super) rift_evaluations: u32,
-    /// Live plates whose rift draw was skipped because the lineage had
-    /// pending process actions in the same batch (G4 §1.3 H2 diagnostic).
-    pub(super) rift_pending_skips: u32,
     /// Rift events that left continental samples in at least two children.
     pub(super) rift_continental_cuts: u32,
     pub(super) spawned_lineages: u32,

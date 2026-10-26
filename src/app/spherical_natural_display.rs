@@ -559,7 +559,7 @@ mod tests {
     // freeze is keyed by target OS (the same policy as the GPU goldens keyed
     // to the audited adapter). The Linux value is the CI runner's.
     const EXPECTED_FIELD_HASH: &str = if cfg!(target_os = "windows") {
-        "d1fa0c3f8a4f456ecb0388c7a5724cff8d798af387b1fc418ce6d8b50e1bc7ac"
+        "2ae050d2fd7752866243865a496a8ef0296a07ac2a548e162a04a2148d75ebb8"
     } else {
         "631f9801e5972a836f476224d5d9c1605f9eed85160613f5aceec7a5cf6b59fb"
     };

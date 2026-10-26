@@ -20,7 +20,7 @@ use support::causal_formation::causal_formation_fixture;
 /// changed the evolved crust and therefore the terrain. It supersedes A13's
 /// `0eb17f04…`; L0 identity held (T1 v2 spec amendment A14).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "f40c7903640653083a9ac537c6d6b29e68502b1763652d7deefb6d14408e6c82";
+    "27b273a02690b7ac3ca8450fc30a5910ded4c1b845585e19ce2d0b96dfac4758";
 
 fn evaluator() -> HierarchicalEvaluator {
     let fixture = causal_formation_fixture();

@@ -87,16 +87,6 @@ pub(super) fn evolve_current_state(
             recipe,
             RiftFill::LegacyImmediateOcean,
         )?;
-        maybe_rift_plates(
-            step,
-            rift_delta_myr,
-            surface,
-            current,
-            next,
-            actions,
-            recipe,
-            streams,
-        )?;
         advance_solid_crust_ages(next, process_delta_myr)?;
         relax_legacy_compatibility_elevation(
             surface,
@@ -114,6 +104,14 @@ pub(super) fn evolve_current_state(
         )?;
         commit_process_actions(next, actions)?;
         workspace.swap_current_next();
+        rift_committed_plates(
+            step,
+            rift_delta_myr,
+            surface,
+            &mut workspace,
+            recipe,
+            streams,
+        )?;
         if resample_due(&workspace) {
             resample_current_state(surface, topology, &mut workspace)?;
         }
@@ -214,26 +212,6 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
                 rebin.rebinned_samples, rebin.split_fills, fill.spawned_samples
             );
         }
-        let live_plates = current.plates.len();
-        let rift = maybe_rift_plates(
-            step,
-            rift_delta_myr,
-            surface,
-            current,
-            next,
-            actions,
-            recipe,
-            streams,
-        )?;
-        if std::env::var_os("SEKAI_V5_TRACE").is_some() {
-            eprintln!(
-                "[v5-trace] step {step} rift: live={live_plates} evaluated={} pending_skips={}                  events={} continental_cuts={}",
-                rift.rift_evaluations,
-                rift.rift_pending_skips,
-                rift.rift_events,
-                rift.rift_continental_cuts
-            );
-        }
         advance_solid_crust_ages(next, process_delta_myr)?;
         actions.preserve_minimum_live_lineages(
             &next.samples,
@@ -243,6 +221,14 @@ pub(super) fn evolve_control_state_v5_with_resample_observer(
         )?;
         commit_process_actions_v5(next, actions, &mut material_ledger)?;
         workspace.swap_current_next();
+        rift_committed_plates(
+            step,
+            rift_delta_myr,
+            surface,
+            &mut workspace,
+            recipe,
+            streams,
+        )?;
         if std::env::var_os("SEKAI_V5_TRACE").is_some() {
             let totals = workspace.current.material_totals()?;
             let processes = material_ledger.processes()?;
@@ -403,6 +389,35 @@ fn rift_step_duration_myr(timeline: ResolvedFormationTimeline) -> Result<u16, Ru
     }
     u16::try_from(step_duration_kyr / 1_000)
         .map_err(|_| RunnerError::RiftStepDurationOverflow { step_duration_kyr })
+}
+
+/// Draws every live plate's rift on the step's committed state (G4 §4.0) and
+/// traces the evaluation count under `SEKAI_V5_TRACE`.
+fn rift_committed_plates(
+    step: u16,
+    rift_delta_myr: u16,
+    surface: &SphericalSurfaceSnapshot,
+    workspace: &mut TectonicWorkspace,
+    recipe: FormationTectonicRecipe,
+    streams: &LabeledSubstreams,
+) -> Result<(), RunnerError> {
+    let live_plates = workspace.current.plates.len();
+    let rift = maybe_rift_plates(
+        step,
+        rift_delta_myr,
+        surface,
+        &mut workspace.current,
+        recipe,
+        streams,
+        workspace.actions.rift_scratch(surface.cells().len()),
+    )?;
+    if std::env::var_os("SEKAI_V5_TRACE").is_some() {
+        eprintln!(
+            "[v5-trace] step {step} rift: live={live_plates} evaluated={} events={}              continental_cuts={}",
+            rift.rift_evaluations, rift.rift_events, rift.rift_continental_cuts
+        );
+    }
+    Ok(())
 }
 
 /// Prints the area-weighted continental thickness inventory of one state when
