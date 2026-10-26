@@ -25,13 +25,16 @@ const BOLTON_LCL_LOG_COEFFICIENT_K: f64 = 800.0;
 mod reduced_climate;
 
 pub use reduced_climate::{
-    reduced_climate_model_fingerprint, ReducedClimateBudget, ReducedClimateBudgetReport,
-    ReducedClimateFieldValues, ReducedClimateFields, ReducedClimateModelProfile,
-    ReducedClimateSolveReport, BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C, GLOBAL_CIRCULATION_SCHEMA_V3,
-    REDUCED_CLIMATE_ENERGY_FIXED_POINT_MAX_ITERATIONS,
+    budyko_evaporative_fraction, reduced_climate_model_fingerprint, ReducedClimateBudget,
+    ReducedClimateBudgetReport, ReducedClimateFieldValues, ReducedClimateFields,
+    ReducedClimateModelProfile, ReducedClimateSolveReport, BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C,
+    GLOBAL_CIRCULATION_SCHEMA_V3, REDUCED_CLIMATE_ENERGY_FIXED_POINT_MAX_ITERATIONS,
     REDUCED_CLIMATE_ENERGY_FIXED_POINT_TOLERANCE_K,
     REDUCED_CLIMATE_HADLEY_LOWER_BRANCH_TOP_PRESSURE_PA, REDUCED_CLIMATE_HADLEY_UPPER_MSE_RATIO,
-    REDUCED_CLIMATE_HADLEY_WEIGHT_WIDTH_SIN_LATITUDE, REDUCED_CLIMATE_LINEAR_MAX_ITERATIONS,
+    REDUCED_CLIMATE_HADLEY_WEIGHT_WIDTH_SIN_LATITUDE,
+    REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_ANDERSON_DEPTH,
+    REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_MAX_ITERATIONS,
+    REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_TOLERANCE, REDUCED_CLIMATE_LINEAR_MAX_ITERATIONS,
     REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE, REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S,
     REDUCED_CLIMATE_MEBM_PICARD_MAX_ITERATIONS, REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS,
     STOMMEL_BOUNDARY_LAYER_WIDTH_GRID_SPACINGS, SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S,
@@ -868,15 +871,37 @@ pub fn monthly_daily_mean_insolation_fraction(
     axial_tilt_rad: f64,
 ) -> [f64; CLIMATE_MONTH_COUNT] {
     std::array::from_fn(|month| {
-        let phase = std::f64::consts::TAU * (month as f64 + 0.5) / CLIMATE_MONTH_COUNT as f64;
-        let declination = axial_tilt_rad * (-phase.cos());
-        let argument = (-latitude_rad.tan() * declination.tan()).clamp(-1.0, 1.0);
-        let sunset_hour_angle = argument.acos();
+        let (declination, sunset_hour_angle) =
+            month_solar_geometry(month, latitude_rad, axial_tilt_rad);
         ((sunset_hour_angle * latitude_rad.sin() * declination.sin()
             + latitude_rad.cos() * declination.cos() * sunset_hour_angle.sin())
             / std::f64::consts::PI)
             .max(0.0)
     })
+}
+
+/// Mean day length of every climatological month at one latitude, hours: `24 h0 / pi` with the
+/// sunset hour angle `h0` of [`monthly_daily_mean_insolation_fraction`].
+///
+/// # Arguments
+///
+/// * `latitude_rad` - latitude in radians
+/// * `axial_tilt_rad` - planetary obliquity in radians
+pub fn monthly_day_length_hours(
+    latitude_rad: f64,
+    axial_tilt_rad: f64,
+) -> [f64; CLIMATE_MONTH_COUNT] {
+    std::array::from_fn(|month| {
+        24.0 * month_solar_geometry(month, latitude_rad, axial_tilt_rad).1 / std::f64::consts::PI
+    })
+}
+
+/// Solar declination and sunset hour angle of one climatological month.
+fn month_solar_geometry(month: usize, latitude_rad: f64, axial_tilt_rad: f64) -> (f64, f64) {
+    let phase = std::f64::consts::TAU * (month as f64 + 0.5) / CLIMATE_MONTH_COUNT as f64;
+    let declination = axial_tilt_rad * (-phase.cos());
+    let argument = (-latitude_rad.tan() * declination.tan()).clamp(-1.0, 1.0);
+    (declination, argument.acos())
 }
 
 /// Returns top-of-atmosphere absorbed shortwave power for one daily-mean solar

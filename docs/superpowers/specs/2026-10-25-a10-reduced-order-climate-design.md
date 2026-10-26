@@ -1,7 +1,7 @@
 # A10 设计：降阶诊断式季节水热气候（替换 P4 预后积分）
 
 日期：2026-10-25。
-状态：**已冻结（2026-10-26，R5 见 §18）**。冻结裁定与实施范围以 §18 为准。
+状态：**已冻结（2026-10-26，R5 见 §18）**。冻结裁定与实施范围以 §18 为准；实施期记录见 §19（R6）。
 以下为冻结前的历史状态说明：草案（R4），部分已裁定。R0 中标“推荐，待用户裁定”的选择均附备选；
 用户 2026-10-25 的四项裁定及本轮证据见 §14（修订 R1），与 R0 冲突处以 §14 为准；
 2026-10-26 北极偏暖、整体偏干的修正见 §15（修订 R2），与前文冲突处以 §15 为准；
@@ -1228,3 +1228,136 @@ R3 没有可测的额外成本（水汽线性迭代 1156 → 1425 次，并行�
 合入 `lod1-geometry-spec`（含 a9 细岸线、LOD-1 与湖修复 R2）、`a9-scale-optimization`
 文档尾提交、本分支（原型与规格）及 `lod2-climate-spec`（LOD-2 冻结规格）。集成分支在
 用户对 a9 / LOD-1 / 湖修复完成 UI 验收并合入 main 之前不合入 main。
+
+## 19. 修订 R6：实施记录 T1–T3b（2026-10-26）
+
+本节记录 §18.4 集成与 §10 / §18.3 前四项实施的实现决定、偏离与实测；不改写 §1–§18，冲突处以
+本节为准。集成分支 `a10-impl`；T1–T3b 均未接入因果链，产物逐位不变（身份探针见 19.1）。
+
+### 19.1 集成（§18.4）
+
+- 起点 `a10-prewarm-reuse` @ `260b5ef`，依次 `merge --no-ff`：`lod1-geometry-spec` @ `5fd1429`、
+  `a9-scale-optimization` @ `c697ddd`、`a10-climate-reduced` @ `b5703a0`、`lod2-climate-spec` @
+  `0d14fca`。
+- 冲突只有一处：`surface_water_geometry.rs`。prewarm 把 Shepard 权重抽成随表面缓存的
+  `SurfaceWaterStencil`，lod1 把 `reconstruct_vertex_elevations` 放宽给 L1 边界锚点复用；保留模板版
+  实现并按 lod1 放宽，L1 派生处就地建模板。探针 `probe.rs` 另有两处语义冲突（`SurfaceRef` 构造、
+  P5 推进的模板参数），按 prewarm 接口适配。
+- AGENTS.md：各分支的修订互为前缀（prewarm/a10 为时延目标，a9 再加“启动预热澄清”），合并结果即
+  a9 版本，无规则丢失。
+- 验证：Release 全量 `--test-threads=1` 1349 项通过、65 项忽略；fmt、clippy、wasm 通过。身份探针
+  （`D:/hemifuture-probes/a10-impl/identity/`）Draft / Standard seed 42 的结果哈希、bundle 哈希、
+  bundle JSON 哈希、LOD 探针指纹与 `lod1-geometry-spec` 逐位相同，预热路径同值；T1、T2、T3、T3b 之后
+  各复测一次，均逐位相同。
+
+### 19.2 T1–T3 的实现决定
+
+1. **模型剖面独立成型。** §9 举例的 `ClimateModelProfile::R1ReducedV1` 改为独立枚举
+   `ReducedClimateModelProfile::R1ReducedV1`：向 C2 枚举加变体会迫使约 130 处 C2 用法增加分支，而
+   这些代码 T8 整体删除。T8 删除 C2 时由新枚举接替。
+2. **V3 快照外壳留到 T7/T8。** T1 交付常量、模型指纹、R1 字段形状（§9 的 12 个字段加 §18.1-2 的陆面
+   产流 `monthly_land_runoff_mm_day`）、新求解报告与预算报告、`GLOBAL_CIRCULATION_SCHEMA_V3`；快照
+   外壳（表面身份绑定、切向校验）在有构造者的 T7 投影 / T8 发布时建，避免无消费者的 API。
+3. **C2 私有常量上移。** `LAND_SEA_SURFACE_DRAG_RATIO`、`LIQUID_MIXED_LAYER_MIN_C`、海水密度移入
+   `src/world/`，C2 与原型引用同一事实源（数值不变）。§13 标“书目”的 9 个 DOI 经 Crossref 核对。
+4. **T2 日照不缓存。** 日照分数依赖用户可调的轴倾角，不是种子无关几何，留在 T3 按倾角计算；日均
+   日照公式提为 `world::natural::monthly_daily_mean_insolation_fraction` 唯一事实源（C2 改调用它）。
+   几何随 `ClimateWorkDomainArtifact` 构造（不序列化、不参与相等），因此随 prewarm 启动预热，实测
+   4.8 ms。
+5. **T3 实测成本**（Release、seed 42、5 次中位）：最小强迫 Draft 1.85 / 1.69 ms（起点 / 终点）、
+   Standard 3.82 / 3.98 ms；同进程 C2 强迫起点 208 / 716 ms（含工作域完整校验）、终点 15.1 /
+   28.6 ms。原型改读最小强迫后与 r4/final 定稿只差日照不再经 f32 截断（相对 1e-8 量级），冰掩膜
+   逐位相同。β 仍按 A3 在 T3 强迫里给出，作为 R4 路径与 Budyko 的对照。
+
+### 19.3 T3b 陆面蒸散与 P5 产流契约（§18.3）
+
+**曲线。** `E/P = [φ tanh(1/φ)(1 − e^{−φ})]^{1/2}`，φ = E_pot / P（Budyko 1974 的闭式，无自由参数；
+书目复核：Zhang, Dawes & Walker 2001, WRR 37, 701, DOI 10.1029/2000WR900325；Arora 2002, J. Hydrol.
+265, 164, DOI 10.1016/S0022-1694(02)00101-4，均经 Crossref 核对）。生产实现
+`world::natural::budyko_evaporative_fraction`，单测检验 `E ≤ P`、`E ≤ E_pot`、单调与两端极限。
+
+**E_pot。** 主配置取湿陆面块体潜在蒸发：生产块体输送律，陆面饱和比湿取参考高度气温，风速用
+§16.3 的 Rice 期望（Manabe 1969 水桶的 `E_pot`）；空气饱和时为 0。这是对 Budyko 原式辐射干燥度
+`R_n/(L P)` 的类比替代（本模型没有地表能量收支），列为开放问题 19.5-2。敏感性：Thornthwaite
+(1948, DOI 10.2307/210739) 温度指数加 Willmott, Rowe & Mintz (1985, DOI 10.1002/joc.3370050602) 高温
+二次式，原型轴 `thw`，未采用。
+
+**季节分配。** 曲线是年尺度关系：每格年 φ = ΣE_pot / ΣP 给出蒸散份额 ε，逐月 `E_land = f_land ε P`
+（与 A3 的逐月比例结构相同，月间土壤储水由年尺度曲线隐含）。这样每月水汽问题在 ε 固定时仍是线性
+M 矩阵，激活集不变。
+
+**收敛（§17.4 记录的 Picard 不收敛）。** 外层只迭代 ε：每轮以上一轮的 W 与激活集热启动 12 个月，
+再按 Budyko 更新 ε。实测普通 Picard（ω = 1）是单调慢收敛而不是发散：Draft seed 42 第 40 轮
+max|Δε| 仍为 2.4e−3，压缩比约 0.89。改用 Anderson 加速（Anderson 1965, J. ACM 12, 547；Walker &
+Ni 2011 的 II 型，历史深度 `REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_ANDERSON_DEPTH`，迭代值限于 [0, 1]）后 8–10 轮收敛到 `REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_TOLERANCE`
+（max|Δε| < 1e−4）。语料 17 seed × 两档、每次运行三次求值（基线终点强迫、自链起点、自链终点）
+共 102 次全部收敛，轮数中位 9、最多 10。典型序列（Draft seed 42）：0.5、0.64、0.21、0.057、0.011、
+4.1e−3、6.3e−4、1.3e−4、1.6e−5。
+
+**P5 产流契约。** 气候发布 `monthly_land_runoff_mm_day` = 单位陆地面积的 `P − E_land` =
+`(1 − ε) P`（T1 字段形状），按构造 `0 ≤ R ≤ P`，不需要下限截断；P5 读它经
+`world::natural::formation_monthly_land_runoff_mm` 换成逐月产流量：降水包络
+（`formation_monthly_precipitation_mm`）对产流按同一缩放因子作用，产流保持其降水份额。守恒记账：
+语料中位 P5 实际可路由的陆地年产流（权威格 `P (1 − ε)`，ε 强度投影）对工作域账本
+`ΣA f_land (1 − ε) P` 为 Draft 91.9k / 96.9k km³、Standard 84.9k / 87.8k km³，差 5 % / 3 %，来自海岸
+处工作域陆地分数与发布陆地掩膜不一致以及降水包络；T7 的产流投影须按陆地面积加权并在预算报告里
+记账，界值先测后钉。
+
+**未在本任务删除的路径（偏离 §18.3-2）。** 渗透率径流份额（`FORMATION_RUNOFF_MIN_FRACTION`、
+`FORMATION_RUNOFF_PERMEABILITY_RANGE`、`formation_runoff_fraction`）在 T8 之前仍有消费者：C2 强迫的
+陆面再循环、现行 P5 的 `local_runoff`、T3 强迫给 R4 对照的 β。T1–T3b 须保持产物逐位不变（协调者
+指令），P5 改读气候产流必然改变产物，所以契约函数与字段先落地，P5 切换与这些常量的删除随 T8 的升版
+一并完成。
+
+### 19.4 T3b 门的实测（§18.3-3）
+
+语料 17 seed × 两档，Release、同进程：主配置 R4 + Budyko（块体 E_pot），参照 R4（A3 渗透率份额），
+旧 P4 为基线终点。权威格降水按陆地掩膜（海洋面积分数 < 1/2）面积加权。原始输出与汇总：
+`D:/hemifuture-probes/a10-impl/t3b-corpus/`（`corpus-summary.txt`）。中位数（最小…最大）：
+
+| 量 | Draft R4+Budyko | Draft R4 | Standard R4+Budyko | Standard R4 | 参照 |
+| --- | --- | --- | --- | --- | --- |
+| 陆地 E/P（工作域） | **0.257**（0.210…0.306） | 0.306 | **0.296**（0.224…0.336） | 0.298 | Oki & Kanae 0.59 |
+| 陆地 E_pot（mm/d） | 1.92 | — | 1.96 | — | — |
+| 陆格降水（mm/d） | 2.96 | 3.17 | 2.66 | 2.70 | GPCP 2.16 |
+| 洋格降水（mm/d） | 2.47 | 2.49 | 2.53 | 2.52 | GPCP 2.90 |
+| 全球降水（mm/d） | 2.62（2.48…2.71） | 2.69 | 2.58（2.34…2.73） | 2.63 | 2.6–2.8 |
+| 全球降水落入 2.6–2.8 | 10/17 | 12/17 | 8/17 | 9/17 | — |
+| 季节半球相位 | 0.998（≥ 0.990） | — | 0.994（≥ 0.984） | — | ≥ 0.65 |
+| max TOA / E-P 相对不平衡 | 1.4e−9 W/m² / 8.2e−10 | — | 1.8e−9 / 7.1e−10 | — | 硬门 |
+
+耗时（seed 42，5 次中位，并行，ms）：Draft 两次求值“起点冷启动 + 终点以起点 ε 热启动”
+60.2 + 53.4 求解 + 16.4 / 41.0 投影 + 3.7 强迫 ≈ **175 ms**（≤ 200）；两次都冷启动约 203 ms；同会话
+R4 为 156 ms。Standard 62.7 + 55.6 + 63.4 / 156.9 + 8.0 ≈ 347 ms（≤ 600）。
+
+**门的判定：陆地 E/P 未进入地球参照区间，陆格降水只向 GPCP 移动约 0.2 / 0.04 mm/d，洋格不变。**
+其余门（TOA、E/P 闭合、季节相位、Draft 200 ms）保持；全球降水中位 Draft 2.62 仍在目标内，Standard
+2.58 低于 2.6。
+
+成因（实测，Draft seed 42）：
+1. 模型陆面降水本身高于陆面潜在蒸发：陆地年降水 3.0 mm/d、块体 E_pot 2.1 mm/d（Thornthwaite
+   2.0），干燥度中位 < 1，Budyko 曲线必然给出低于 0.5 的 E/P。Thornthwaite 敏感性 E/P 0.304，同样
+   远离 0.59。
+2. 强制 ε = 0.6（不走曲线）时陆地降水升到 4.76 mm/d、陆面净辐合 `P − E` 只由 2.2 降到 1.9 mm/d：
+   多出的蒸散几乎全部就地再降，海洋向陆地的输送基本不变；而且这时 E = 2.86 mm/d 超过 E_pot
+   2.0 mm/d，物理上不可行。§17.4 推断的“蒸散偏少 → 陆上偏干 → 涡动把海洋水汽送上陆地”在本模型里
+   不是主导：陆地偏湿的主因是输送本身（R3 涡动水汽一致化后陆面净辐合约 2.2 mm/d，地球约 0.8）。
+
+### 19.5 开放问题（交用户裁定）
+
+1. 陆地偏湿、海洋偏干的成因落在水汽输送而不是陆面蒸散；是否重审 §16.2-3 的涡动水汽质量因子或
+   陆面边界层上的输送，或接受当前陆海分配。
+2. E_pot 的定义：块体湿陆面（主配置）、Thornthwaite，或引入地表净辐射以采用 Budyko 原式的辐射
+   干燥度（需新的有出处的地表辐射闭合）。三者在本模型里都不足以把陆地 E/P 拉到 0.59。
+3. 是否保留 Budyko（陆地 E/P 0.26 / 0.30，全球降水略降）或在 T8 只切换 P5 产流契约而保留 A3 份额
+   作为气候侧蒸散；后者仍需要为 A3 份额找“一处记账”的形式。
+
+### 19.6 R6 新增出处
+
+| 技术 | 出处 | 核对 |
+| --- | --- | --- |
+| Budyko 曲线闭式 | Budyko (1974)；Zhang, Dawes & Walker (2001), DOI 10.1029/2000WR900325；Arora (2002), DOI 10.1016/S0022-1694(02)00101-4 | Crossref |
+| 湿陆面块体潜在蒸发 | Manabe (1969), *Mon. Wea. Rev.* 97, 739（§16.7 已列） | 书目 |
+| Anderson 加速（深度 `REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_ANDERSON_DEPTH`） | Anderson (1965), *J. ACM* 12, 547, DOI 10.1145/321296.321305；Walker & Ni (2011), *SIAM J. Numer. Anal.* 49, 1715, DOI 10.1137/10078356X | Crossref |
+| Thornthwaite PET（敏感性，未采用） | Thornthwaite (1948), DOI 10.2307/210739；Willmott, Rowe & Mintz (1985), DOI 10.1002/joc.3370050602 | Crossref |
+| 日均日照公式 | Hartmann (1994), *Global Physical Climatology* §2.5 | 书目 |

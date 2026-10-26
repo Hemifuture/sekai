@@ -137,6 +137,61 @@ pub const REDUCED_CLIMATE_MEBM_PICARD_MAX_ITERATIONS: u32 = 30;
 ///
 /// Numerical: the active sets converged in at most 7 rounds (design section 4 Q1).
 pub const REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS: u32 = 60;
+/// Largest change of any cell's land evaporative fraction `E_land / P` at which the annual
+/// Budyko fixed point is converged.
+///
+/// Numerical: the land runoff `(1 - E_land / P) P` then moves by less than 0.01 % of the
+/// precipitation between the last two rounds.
+pub const REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_TOLERANCE: f64 = 1.0e-4;
+/// Round limit of the annual Budyko land-evapotranspiration fixed point.
+pub const REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_MAX_ITERATIONS: u32 = 40;
+/// History depth of the Anderson acceleration of the Budyko fixed point.
+///
+/// Anderson (1965), J. ACM 12, 547, DOI 10.1145/321296.321305, in the type-II form of Walker &
+/// Ni (2011), SIAM J. Numer. Anal. 49, 1715, DOI 10.1137/10078356X. Numerical: plain Picard
+/// contracts by about 0.89 per round and is still at 2.4e-3 after 40 rounds; depth 5 converged
+/// all 102 corpus evaluations in 8-10 rounds (design section 19.3).
+pub const REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_ANDERSON_DEPTH: u32 = 5;
+
+/// Long-term land evaporative fraction `E / P` of the Budyko (1974) curve,
+/// `E / P = [phi tanh(1 / phi) (1 - exp(-phi))]^(1/2)`, for the aridity index
+/// `phi = E_pot / P`.
+///
+/// Budyko, M. I. (1974), Climate and Life, Academic Press; the closed form as tabulated by
+/// Zhang, Dawes & Walker (2001), Water Resour. Res. 37, 701, DOI 10.1029/2000WR900325, and
+/// Arora (2002), J. Hydrol. 265, 164, DOI 10.1016/S0022-1694(02)00101-4. The form has no free
+/// parameter. It obeys both limits of the water
+/// balance, `E <= P` and `E <= E_pot`, approaching the energy limit `E / P -> phi` as `phi -> 0`
+/// and the water limit `E / P -> 1` as `phi -> infinity`. A non-positive index (no potential
+/// evaporation) gives zero; an infinite one (no precipitation) gives one.
+///
+/// # Arguments
+///
+/// * `aridity_index` - annual potential evaporation over annual precipitation, both per unit
+///   land area
+///
+/// # Returns
+///
+/// The evaporated share of the land precipitation, in `[0, 1]`.
+///
+/// # Examples
+///
+/// ```
+/// use sekai::world::natural::budyko_evaporative_fraction;
+///
+/// let humid = budyko_evaporative_fraction(0.5);
+/// let arid = budyko_evaporative_fraction(4.0);
+/// assert!(humid < 0.5 && arid > 0.9 && arid < 1.0);
+/// ```
+pub fn budyko_evaporative_fraction(aridity_index: f64) -> f64 {
+    if aridity_index.is_nan() || aridity_index <= 0.0 {
+        return 0.0;
+    }
+    if aridity_index.is_infinite() {
+        return 1.0;
+    }
+    (aridity_index * aridity_index.recip().tanh() * -(-aridity_index).exp_m1()).sqrt()
+}
 
 /// Closed set of reduced climate models; replaces `ClimateModelProfile` when the causal chain
 /// switches to the reduced model (design section 10 T8).
@@ -178,6 +233,7 @@ pub fn reduced_climate_model_fingerprint(profile: ReducedClimateModelProfile) ->
         STOMMEL_BOUNDARY_LAYER_WIDTH_GRID_SPACINGS,
         REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE,
         REDUCED_CLIMATE_ENERGY_FIXED_POINT_TOLERANCE_K,
+        REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_TOLERANCE,
         super::LAND_SEA_SURFACE_DRAG_RATIO,
         super::LIQUID_MIXED_LAYER_MIN_C,
         super::SEAWATER_REFERENCE_DENSITY_KG_M3,
@@ -192,6 +248,8 @@ pub fn reduced_climate_model_fingerprint(profile: ReducedClimateModelProfile) ->
         REDUCED_CLIMATE_ENERGY_FIXED_POINT_MAX_ITERATIONS,
         REDUCED_CLIMATE_MEBM_PICARD_MAX_ITERATIONS,
         REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS,
+        REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_MAX_ITERATIONS,
+        REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_ANDERSON_DEPTH,
     ] {
         hasher.update(&limit.to_le_bytes());
     }
@@ -1229,6 +1287,25 @@ mod tests {
             ReducedClimateBudgetReport::new(open_toa),
             Err(ClimateReportError::RadiativeCycleNotClosed { .. })
         ));
+    }
+
+    /// Contract (design section 18.3-1): the Budyko curve respects both water-balance limits,
+    /// `E <= P` and `E <= E_pot`, rises monotonically with aridity, and meets its energy and
+    /// water limits; at aridity 1 the closed form is `sqrt(tanh 1 (1 - 1/e)) = 0.69385`.
+    #[test]
+    fn budyko_curve_obeys_its_limits() {
+        let mut previous = 0.0;
+        for step in 1..=400 {
+            let aridity = f64::from(step) * 0.025;
+            let fraction = budyko_evaporative_fraction(aridity);
+            assert!(fraction > previous && fraction < 1.0 && fraction <= aridity);
+            previous = fraction;
+        }
+        assert!((budyko_evaporative_fraction(1.0) - 0.69385).abs() < 1.0e-5);
+        assert!((budyko_evaporative_fraction(1.0e-3) / 1.0e-3 - 1.0).abs() < 1.0e-3);
+        assert!(1.0 - budyko_evaporative_fraction(50.0) < 1.0e-3);
+        assert_eq!(budyko_evaporative_fraction(0.0), 0.0);
+        assert_eq!(budyko_evaporative_fraction(f64::INFINITY), 1.0);
     }
 
     /// Contract: only converged evaluations produce a solve report.

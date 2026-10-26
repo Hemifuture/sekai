@@ -182,6 +182,38 @@ pub fn formation_monthly_precipitation_mm(
     monthly
 }
 
+/// Monthly P5 land runoff of one land cell, mm, read from the climate's land water account
+/// (A10 design section 18.1-2 and 18.3-2): the climate publishes precipitation and the land
+/// runoff `P - E_land` per unit land area, and P5 routes exactly that runoff.
+///
+/// The precipitation envelope of [`formation_monthly_precipitation_mm`] scales the runoff by
+/// the same factor as the precipitation, so the runoff keeps its share of the bounded
+/// precipitation and never exceeds it. A month without precipitation has no runoff. The
+/// climate guarantees `0 <= runoff <= precipitation`, so no lower bound is applied here.
+///
+/// # Arguments
+///
+/// * `monthly_precipitation_mm_day` - published monthly precipitation, mm/day
+/// * `monthly_land_runoff_mm_day` - published monthly land runoff, mm/day
+///
+/// # Returns
+///
+/// The runoff total of every month, mm.
+pub fn formation_monthly_land_runoff_mm(
+    monthly_precipitation_mm_day: &[f32; CLIMATE_MONTH_COUNT],
+    monthly_land_runoff_mm_day: &[f32; CLIMATE_MONTH_COUNT],
+) -> [f64; CLIMATE_MONTH_COUNT] {
+    let bounded = formation_monthly_precipitation_mm(monthly_precipitation_mm_day);
+    std::array::from_fn(|month| {
+        let precipitation = f64::from(monthly_precipitation_mm_day[month]);
+        if precipitation > 0.0 {
+            bounded[month] * (f64::from(monthly_land_runoff_mm_day[month]) / precipitation)
+        } else {
+            0.0
+        }
+    })
+}
+
 /// Returns the bounded annual formation precipitation of one cell.
 pub fn formation_annual_precipitation_mm(monthly_mm_day: &[f32; CLIMATE_MONTH_COUNT]) -> f32 {
     formation_monthly_precipitation_mm(monthly_mm_day)
@@ -2704,4 +2736,33 @@ where
     D: Deserializer<'de>,
 {
     deserialize_bounded_vec::<_, _, 8>(deserializer)
+}
+
+#[cfg(test)]
+mod land_runoff_tests {
+    use super::*;
+
+    /// Contract (A10 design section 18.3-2): P5 routes the climate's land runoff, scaled by
+    /// the precipitation envelope exactly as the precipitation is, and never more than the
+    /// bounded precipitation; a dry month has no runoff.
+    #[test]
+    fn land_runoff_follows_the_precipitation_envelope() {
+        let days =
+            CLIMATOLOGICAL_YEAR_SECONDS / CLIMATE_MONTH_COUNT as f64 / MEAN_SOLAR_DAY_SECONDS;
+        let mut precipitation = [2.0_f32; CLIMATE_MONTH_COUNT];
+        precipitation[3] = 0.0;
+        let runoff = [0.5_f32; CLIMATE_MONTH_COUNT];
+        let routed = formation_monthly_land_runoff_mm(&precipitation, &runoff);
+        assert_eq!(routed[3], 0.0);
+        assert!((routed[0] - 0.5 * days).abs() < 1.0e-9);
+
+        let wet = [100.0_f32; CLIMATE_MONTH_COUNT];
+        let wet_runoff = [60.0_f32; CLIMATE_MONTH_COUNT];
+        let bounded = formation_monthly_precipitation_mm(&wet);
+        let routed = formation_monthly_land_runoff_mm(&wet, &wet_runoff);
+        assert!(bounded[0] < 100.0 * days, "the envelope binds");
+        for month in 0..CLIMATE_MONTH_COUNT {
+            assert!((routed[month] - 0.6 * bounded[month]).abs() < 1.0e-9 * bounded[month]);
+        }
+    }
 }

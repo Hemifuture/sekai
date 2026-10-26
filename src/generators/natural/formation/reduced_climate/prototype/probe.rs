@@ -45,15 +45,16 @@ use crate::generators::natural::{
 };
 use crate::generators::spatial::ProfileSurfaceBuilder;
 use crate::world::natural::{
-    expected_global_circulation_dense_state_bytes, saturation_specific_humidity_kg_kg,
-    ClimateBudgetReport, ClimateCapabilitySet, ClimateCheckpoint, ClimateLayerLayout,
-    ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport, ClimateSolveReport,
-    ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec, GlobalCirculationFields,
-    GlobalCirculationSnapshot, HydroErosionSpec, MonthlyScalarField, MonthlyVector3Field,
-    NaturalQualityProfile, NaturalQualityReport, ReliefSpec, ResolvedWorldFormation,
-    ResolvedWorldFormationPreset, SphericalHydrologySnapshot, SurfaceWaterGeometry, TectonicSpec,
-    WorldFormationPreset, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
-    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
+    expected_global_circulation_dense_state_bytes, formation_monthly_land_runoff_mm,
+    formation_monthly_precipitation_mm, formation_runoff_fraction,
+    saturation_specific_humidity_kg_kg, ClimateBudgetReport, ClimateCapabilitySet,
+    ClimateCheckpoint, ClimateLayerLayout, ClimateModelProfile, ClimateQuantizationId,
+    ClimateRemapReport, ClimateSolveReport, ClimateSpec, ClimateWorkDomainSnapshot, GeologicSpec,
+    GlobalCirculationFields, GlobalCirculationSnapshot, HydroErosionSpec, MonthlyScalarField,
+    MonthlyVector3Field, NaturalQualityProfile, NaturalQualityReport, ReliefSpec,
+    ResolvedWorldFormation, ResolvedWorldFormationPreset, SphericalHydrologySnapshot,
+    SurfaceWaterGeometry, TectonicSpec, WorldFormationPreset, CLIMATE_MONTH_COUNT,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
     GLOBAL_CIRCULATION_MINIMUM_FAST_SUBSTEPS_PER_MACRO_STEP, GLOBAL_CIRCULATION_SCHEMA_V2,
     RESOLVED_WORLD_FORMATION_SCHEMA_V1, SURFACE_FORMATION_HORIZON_YEARS,
 };
@@ -642,6 +643,17 @@ fn a10_reduced_climate_probe() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(42);
+    // T3b: Anderson depth and mixing of the annual Budyko fixed point.
+    let budyko_depth: usize = std::env::var("SEKAI_A10_BUDYKO_DEPTH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(
+            crate::world::natural::REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_ANDERSON_DEPTH as usize,
+        );
+    let budyko_omega: f64 = std::env::var("SEKAI_A10_BUDYKO_OMEGA")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
     let repetitions: usize = std::env::var("SEKAI_A10_REPS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -895,7 +907,8 @@ fn a10_reduced_climate_probe() {
             longwave,
             ice,
         )
-        .with_physics(&reduced_grid, physics);
+        .with_physics(&reduced_grid, physics)
+        .with_budyko_iteration(budyko_depth, budyko_omega);
         let t2 = Instant::now();
         let work = solve_reduced_climate(&reduced_grid, &inputs, parallel);
         let t3 = Instant::now();
@@ -1006,7 +1019,8 @@ fn a10_reduced_climate_probe() {
         OutgoingLongwaveClosure::BudykoTransEbm,
         IceAlbedoFeedback::PlanetaryAlbedoPreserving,
     )
-    .with_physics(&reduced_grid, reference_physics);
+    .with_physics(&reduced_grid, reference_physics)
+    .with_budyko_iteration(budyko_depth, budyko_omega);
     let reference_work = solve_reduced_climate(&reduced_grid, &reference_inputs, true);
     let reference_published = project_all(
         surface,
@@ -1067,7 +1081,8 @@ fn a10_reduced_climate_probe() {
         longwave,
         ice,
     )
-    .with_physics(&reduced_grid, physics);
+    .with_physics(&reduced_grid, physics)
+    .with_budyko_iteration(budyko_depth, budyko_omega);
     let start_work = solve_reduced_climate(&reduced_grid, &start_inputs, false);
     let start_published = project_all(
         surface,
@@ -1142,8 +1157,38 @@ fn a10_reduced_climate_probe() {
         longwave,
         ice,
     )
-    .with_physics(&reduced_grid, physics);
+    .with_physics(&reduced_grid, physics)
+    .with_budyko_iteration(budyko_depth, budyko_omega);
     let end_work = solve_reduced_climate(&reduced_grid, &end_inputs, false);
+    // T3b: the production pair of evaluations, start cold and endpoint warm-started from
+    // the start's converged Budyko fractions, both parallel; five-run medians.
+    let warm_end_inputs = ReducedInputs {
+        initial_land_evaporative_fraction: Some(start_work.land_evaporative_fraction.clone()),
+        ..end_inputs.clone()
+    };
+    let pair_timer = Instant::now();
+    let mut pair_start = Vec::new();
+    let mut pair_end = Vec::new();
+    let mut pair_rounds = (0, 0);
+    for _ in 0..repetitions {
+        let t = Instant::now();
+        let cold = solve_reduced_climate(&reduced_grid, &start_inputs, true);
+        pair_start.push(t.elapsed().as_secs_f64());
+        let t = Instant::now();
+        let warm = solve_reduced_climate(&reduced_grid, &warm_end_inputs, true);
+        pair_end.push(t.elapsed().as_secs_f64());
+        pair_rounds = (
+            cold.diagnostics.land_evapotranspiration_iterations,
+            warm.diagnostics.land_evapotranspiration_iterations,
+        );
+    }
+    let pair_seconds = pair_timer.elapsed().as_secs_f64();
+    let production_pair = json!({
+        "start_cold_parallel_median_s": median(&mut pair_start),
+        "endpoint_warm_parallel_median_s": median(&mut pair_end),
+        "start_budyko_rounds": pair_rounds.0,
+        "endpoint_budyko_rounds": pair_rounds.1,
+    });
     let end_published = project_all(
         surface,
         domain,
@@ -1159,7 +1204,7 @@ fn a10_reduced_climate_probe() {
         &end_published,
         budget_report(&reduced_grid, &end_reduced_forcing, &end_work),
     );
-    let chain_seconds = chain.elapsed().as_secs_f64();
+    let chain_seconds = chain.elapsed().as_secs_f64() - pair_seconds;
     let end_quality = quality::evaluate_global_circulation_quality_for_formation_cancellable(
         surface,
         &reduced_terrain,
@@ -1225,6 +1270,12 @@ fn a10_reduced_climate_probe() {
         "vapour_column_mass_kg_m2": vapour_column_mass_kg_m2(),
         "timing": Value::Object(timing),
         "chain_seconds_including_p5_and_two_reduced_solves": chain_seconds,
+        "production_pair_solve": production_pair,
+        "t3b": {
+            "reduced": t3b_metrics(surface, domain, &land_mask, &published_b, Some((&reduced_grid, &inputs_b, &work_b)), substrate.relative_permeability()),
+            "reference": t3b_metrics(surface, domain, &land_mask, &reference_published, Some((&reduced_grid, &reference_inputs, &reference_work)), substrate.relative_permeability()),
+            "baseline_p4": t3b_metrics(surface, domain, &land_mask, &baseline_published, None, substrate.relative_permeability()),
+        },
         "reduced_on_baseline_forcing": {
             "diagnostics": work_b.diagnostics,
             "budget": snapshot_b.budget_report(),
@@ -1294,6 +1345,85 @@ fn a10_reduced_climate_probe() {
 
 /// Dry-land neighbour effective lapse rate (OLS dT/dz) and zero-dT share among
 /// |dz| >= 300 m pairs, as in the LOD-2 audit.
+/// T3b evidence (design section 18.3-3) on the authoritative surface: area-weighted annual
+/// precipitation of land and ocean cells, and the land runoff P5 would route, both from the
+/// published climate (`P (1 - eps)` with the work-grid evaporative fraction projected
+/// intensively, through the production P5 land-runoff contract) and from the work-grid
+/// ledger `sum A f_land (1 - eps) P`. The baseline row routes the A3 permeability share.
+fn t3b_metrics(
+    surface: &SphericalSurfaceSnapshot,
+    domain: &ClimateWorkDomainSnapshot,
+    land_mask: &[bool],
+    published: &Published,
+    climate: Option<(&ReducedClimateGeometry, &ReducedInputs, &ReducedWorkClimate)>,
+    relative_permeability: &[f32],
+) -> Value {
+    let annual_mm_day =
+        |m: &[f32; MONTHS]| m.iter().map(|&v| f64::from(v)).sum::<f64>() / MONTHS as f64;
+    let (mut land_p, mut land_a, mut ocean_p, mut ocean_a) = (0.0, 0.0, 0.0, 0.0);
+    for (cell, months) in published.precipitation.iter().enumerate() {
+        let area = surface.cells()[cell].area.get();
+        if land_mask[cell] {
+            land_p += area * annual_mm_day(months);
+            land_a += area;
+        } else {
+            ocean_p += area * annual_mm_day(months);
+            ocean_a += area;
+        }
+    }
+    let km3 = |mm_area: f64| mm_area * 1.0e-3 * 1.0e-9;
+    let fraction = climate.map(|(_, _, work)| {
+        let work_fraction: Vec<f32> = work
+            .land_evaporative_fraction
+            .iter()
+            .map(|&v| v as f32)
+            .collect();
+        project_intensive_scalar_cancellable(domain, &work_fraction, &BuildCancellation::new())
+            .expect("evaporative fraction projection")
+    });
+    let mut routed_mm_area = 0.0;
+    for (cell, months) in published.precipitation.iter().enumerate() {
+        if !land_mask[cell] {
+            continue;
+        }
+        let area = surface.cells()[cell].area.get();
+        let annual: f64 = match &fraction {
+            Some(fraction) => {
+                let runoff: [f32; MONTHS] =
+                    std::array::from_fn(|m| months[m] * (1.0 - fraction[cell]).clamp(0.0, 1.0));
+                formation_monthly_land_runoff_mm(months, &runoff)
+                    .iter()
+                    .sum()
+            }
+            None => {
+                formation_monthly_precipitation_mm(months)
+                    .iter()
+                    .sum::<f64>()
+                    * formation_runoff_fraction(relative_permeability[cell])
+            }
+        };
+        routed_mm_area += area * annual;
+    }
+    let ledger_km3 = climate.map(|(grid, inputs, work)| {
+        (0..grid.cell_count())
+            .map(|c| {
+                grid.area_m2[c]
+                    * inputs.land_fraction[c]
+                    * (1.0 - work.land_evaporative_fraction[c])
+                    * annual_mm_day(&work.precipitation_mm_day[c].map(|v| v as f32))
+                    * 365.2422
+            })
+            .sum::<f64>()
+            * 1.0e-12
+    });
+    json!({
+        "land_cell_precipitation_mm_day": land_p / land_a,
+        "ocean_cell_precipitation_mm_day": ocean_p / ocean_a,
+        "p5_routed_land_runoff_km3_per_year": km3(routed_mm_area),
+        "work_ledger_land_runoff_km3_per_year": ledger_km3,
+    })
+}
+
 fn neighbour_lapse(
     surface: &SphericalSurfaceSnapshot,
     elevation: &[f32],
@@ -1373,13 +1503,16 @@ fn work_grid_dump(
                     })
                     .sum::<f64>()
                     / MONTHS as f64,
+                work.land_evaporative_fraction[c],
+                work.land_potential_evaporation_mm_day[c],
             ])
         })
         .collect();
     json!({
         "columns": ["lat", "lon", "land", "ref_height_m", "air_c", "air_jul_minus_jan_c",
             "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m", "ice_fraction",
-            "asr_w_m2", "olr_w_m2", "sea_ice", "beta", "conv_eddy", "conv_hadley", "conv_zonal", "rh_sea_level"],
+            "asr_w_m2", "olr_w_m2", "sea_ice", "beta", "conv_eddy", "conv_hadley", "conv_zonal", "rh_sea_level",
+            "land_evaporative_fraction", "land_potential_mm_day"],
         "rows": rows,
         // Work-grid adjacency for grid-scale (2-delta-x) diagnostics:
         // [cell 0, cell 1, east component of the unit normal].
@@ -1493,6 +1626,8 @@ fn physics_from_flags(flags: &str) -> ReducedPhysics {
         evaporation_wind_variability: has("wvar"),
         column_consistent_eddy_moisture: has("qdiff"),
         land_potential_evaporation_cap: has("landcap"),
+        budyko_land_evapotranspiration: has("bdk"),
+        thornthwaite_potential_evaporation: has("thw"),
         hadley_meridional_only: has("hmer"),
         band_mean_zonal_vapour_advection: has("zband"),
         nondivergent_zonal_vapour_advection: has("zpsi"),

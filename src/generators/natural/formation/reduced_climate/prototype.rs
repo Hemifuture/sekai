@@ -33,15 +33,16 @@ use rayon::prelude::*;
 use super::vector::{add, cross, dot, east_unit, norm, scale, tangent};
 use super::ReducedClimateGeometry;
 use crate::world::natural::{
-    absorbed_shortwave_w_m2, bulk_surface_evaporation_kg_m2_s,
+    absorbed_shortwave_w_m2, budyko_evaporative_fraction, bulk_surface_evaporation_kg_m2_s,
     gray_equilibrium_surface_temperature_c, gray_longwave_slope_w_m2_k,
-    lcl_adjusted_orographic_condensation_kg_m2_s, p4_seasonal_storage_heat_capacities_j_m2_k,
-    saturation_specific_humidity_kg_kg, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
-    ClimateSpec, BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C, BULK_MOISTURE_TRANSFER_COEFFICIENT,
-    CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
-    EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE, EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN,
-    EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN, EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2,
-    EARTH_ROTATION_RATE_RAD_S, LAND_SEA_SURFACE_DRAG_RATIO, LIQUID_MIXED_LAYER_MIN_C,
+    lcl_adjusted_orographic_condensation_kg_m2_s, monthly_day_length_hours,
+    p4_seasonal_storage_heat_capacities_j_m2_k, saturation_specific_humidity_kg_kg,
+    ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile, ClimateSpec,
+    BUDYKO_ICE_EDGE_ANNUAL_TEMPERATURE_C, BULK_MOISTURE_TRANSFER_COEFFICIENT, CLIMATE_MONTH_COUNT,
+    CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M, EARTH_ATMOSPHERIC_SHORTWAVE_REFLECTANCE,
+    EARTH_CALIBRATION_SURFACE_ALBEDO_GLOBAL_MEAN, EARTH_CERES_PLANETARY_ALBEDO_GLOBAL_MEAN,
+    EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2, EARTH_ROTATION_RATE_RAD_S,
+    LAND_SEA_SURFACE_DRAG_RATIO, LIQUID_MIXED_LAYER_MIN_C,
     P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K, P4_HIGHLAND_ALBEDO_RAMP_ONSET_M,
     P4_HIGHLAND_ALBEDO_RAMP_SPAN_M, P4_HIGHLAND_SURFACE_ALBEDO_INCREMENT,
     P4_LARGE_SCALE_CONDENSATION_RELATIVE_HUMIDITY, P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS,
@@ -50,14 +51,16 @@ use crate::world::natural::{
     P4_SNOW_FREE_LAND_SURFACE_ALBEDO_INCREMENT, REDUCED_CLIMATE_ENERGY_FIXED_POINT_MAX_ITERATIONS,
     REDUCED_CLIMATE_ENERGY_FIXED_POINT_TOLERANCE_K,
     REDUCED_CLIMATE_HADLEY_LOWER_BRANCH_TOP_PRESSURE_PA, REDUCED_CLIMATE_HADLEY_UPPER_MSE_RATIO,
-    REDUCED_CLIMATE_LINEAR_MAX_ITERATIONS, REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE,
-    REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S, REDUCED_CLIMATE_MEBM_PICARD_MAX_ITERATIONS,
-    REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
-    SEAWATER_REFERENCE_DENSITY_KG_M3, SECONDS_PER_CLIMATOLOGICAL_MONTH, STANDARD_GRAVITY_M_S2,
-    SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S, SUBMONTHLY_WIND_SIGMA_BAND_WIDTH_DEGREES,
-    TRANSEBM_LAND_LATITUDE_ALBEDO, TRANSEBM_OCEAN_LATITUDE_ALBEDO, TRANSEBM_OLR_INTERCEPT_W_M2,
-    TRANSEBM_OLR_SLOPE_W_M2_K, TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K,
-    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_ANDERSON_DEPTH,
+    REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_MAX_ITERATIONS,
+    REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_TOLERANCE, REDUCED_CLIMATE_LINEAR_MAX_ITERATIONS,
+    REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE, REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S,
+    REDUCED_CLIMATE_MEBM_PICARD_MAX_ITERATIONS, REDUCED_CLIMATE_WATER_ACTIVE_SET_MAX_ITERATIONS,
+    REFERENCE_SURFACE_RELATIVE_HUMIDITY, SEAWATER_REFERENCE_DENSITY_KG_M3,
+    SECONDS_PER_CLIMATOLOGICAL_MONTH, STANDARD_GRAVITY_M_S2, SUBMONTHLY_WIND_COMPONENT_SIGMA_M_S,
+    SUBMONTHLY_WIND_SIGMA_BAND_WIDTH_DEGREES, TRANSEBM_LAND_LATITUDE_ALBEDO,
+    TRANSEBM_OCEAN_LATITUDE_ALBEDO, TRANSEBM_OLR_INTERCEPT_W_M2, TRANSEBM_OLR_SLOPE_W_M2_K,
+    TRANSEBM_SEA_ICE_HEAT_CAPACITY_J_M2_K, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
 use super::forcing::ReducedClimateForcing;
@@ -118,6 +121,13 @@ pub(crate) struct ReducedPhysics {
     /// streamfunction construction of Arakawa & Lamb 1977; Ringler et al.
     /// 2010). Takes precedence over `band_mean_zonal_vapour_advection`.
     pub(crate) nondivergent_zonal_vapour_advection: bool,
+    /// R5 (design section 18.3): land evapotranspiration follows the Budyko (1974) curve of
+    /// each cell's annual aridity index, `E_land = f_land F(E_pot / P) P` month by month,
+    /// with the wet-land bulk potential evaporation, instead of the A3 permeability share.
+    pub(crate) budyko_land_evapotranspiration: bool,
+    /// The Budyko aridity index uses the Thornthwaite (1948) temperature-based potential
+    /// evapotranspiration instead of the wet-land bulk potential evaporation.
+    pub(crate) thornthwaite_potential_evaporation: bool,
 }
 
 /// Streamfunction `psi(phi) = -a int_{-pi/2}^{phi} u dphi'` of a zonal flow
@@ -307,6 +317,15 @@ pub(crate) struct ReducedInputs {
     pub(crate) temperature_offset_c: f64,
     pub(crate) moisture_scale: f64,
     pub(crate) longwave: OutgoingLongwaveClosure,
+    /// Mixing parameter of the annual Budyko fixed point (1 = undamped).
+    pub(crate) land_evapotranspiration_relaxation: f64,
+    /// Anderson history depth of the Budyko fixed point (0 = plain Picard).
+    pub(crate) land_evapotranspiration_anderson_depth: usize,
+    /// First iterate of the Budyko fixed point, e.g. the start evaluation's converged
+    /// fractions for the endpoint evaluation of the same world.
+    pub(crate) initial_land_evaporative_fraction: Option<Vec<f64>>,
+    /// Mean day length of every month on each work cell, hours.
+    pub(crate) monthly_day_length_hours: Vec<[f64; CLIMATE_MONTH_COUNT]>,
 }
 
 impl ReducedInputs {
@@ -360,6 +379,20 @@ impl ReducedInputs {
             temperature_offset_c: f64::from(spec.temperature_offset_c()),
             moisture_scale: f64::from(spec.moisture_scale()),
             longwave,
+            land_evapotranspiration_relaxation: 1.0,
+            land_evapotranspiration_anderson_depth:
+                REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_ANDERSON_DEPTH as usize,
+            initial_land_evaporative_fraction: None,
+            monthly_day_length_hours: grid
+                .latitude_rad
+                .iter()
+                .map(|&latitude| {
+                    monthly_day_length_hours(
+                        latitude,
+                        f64::from(spec.axial_tilt_degrees()).to_radians(),
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -383,6 +416,24 @@ impl ReducedInputs {
                     * legendre
             })
             .collect();
+        self
+    }
+
+    /// Sets the Anderson depth and mixing of the annual Budyko fixed point.
+    pub(crate) fn with_budyko_iteration(mut self, depth: usize, relaxation: f64) -> Self {
+        self.land_evapotranspiration_anderson_depth = depth;
+        self.land_evapotranspiration_relaxation = relaxation;
+        if let Some(fraction) = std::env::var("SEKAI_A10_FIXED_EPS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+        {
+            // Sensitivity experiment only: a uniform land evaporative fraction.
+            self.land_evapotranspiration_fraction = self
+                .land_fraction
+                .iter()
+                .map(|land| land * fraction)
+                .collect();
+        }
         self
     }
 
@@ -414,6 +465,10 @@ pub(crate) struct ReducedWorkClimate {
     pub(crate) orographic_precipitation_mm_day: Vec<[f64; CLIMATE_MONTH_COUNT]>,
     /// Annual vapour convergence (eddy, Hadley, zonal), mm/day.
     pub(crate) vapour_convergence_mm_day: Vec<[f64; 3]>,
+    /// Evaporated share of the land precipitation, `E_land / (f_land P)`, per work cell.
+    pub(crate) land_evaporative_fraction: Vec<f64>,
+    /// Annual-mean land potential evaporation the Budyko index used, mm/day.
+    pub(crate) land_potential_evaporation_mm_day: Vec<f64>,
     pub(crate) diagnostics: ReducedDiagnostics,
 }
 
@@ -447,6 +502,17 @@ pub(crate) struct ReducedDiagnostics {
     pub(crate) ocean_max_relative_residual: f64,
     pub(crate) min_air_temperature_c: f64,
     pub(crate) max_air_temperature_c: f64,
+    /// Rounds of the annual Budyko fixed point (1 without it).
+    pub(crate) land_evapotranspiration_iterations: usize,
+    pub(crate) land_evapotranspiration_converged: bool,
+    /// Largest evaporative-fraction change of the last Budyko round, and of every round.
+    pub(crate) land_evapotranspiration_last_change: f64,
+    pub(crate) land_evapotranspiration_change_history: Vec<f64>,
+    /// Land-area means over the work grid, mm/day, and their ratio `E_land / P_land`.
+    pub(crate) land_precipitation_mean_mm_day: f64,
+    pub(crate) land_evapotranspiration_mean_mm_day: f64,
+    pub(crate) land_evaporation_ratio: f64,
+    pub(crate) land_potential_evaporation_mean_mm_day: f64,
 }
 
 /// Runs one complete reduced evaluation on the work grid.
@@ -473,7 +539,7 @@ pub(crate) fn solve_reduced_climate(
     let relative_humidity =
         (REFERENCE_SURFACE_RELATIVE_HUMIDITY * inputs.moisture_scale).clamp(0.0, 1.0);
 
-    let month_work = |month: usize| {
+    let atmosphere = |month: usize| {
         let theta: Vec<f64> = energy.iter().map(|m| m[month]).collect();
         let air: Vec<f64> = theta
             .iter()
@@ -497,29 +563,108 @@ pub(crate) fn solve_reduced_climate(
                 tangent(add(u, hadley.cell_velocity[cell]), grid.center[cell])
             })
             .collect();
-        let water = solve_monthly_water(
-            grid,
-            inputs,
-            &WaterMonth {
-                theta: &theta,
-                air: &air,
-                wind: &wind,
-                zonal: &zonal,
-                hadley_mass_flux: &hadley.edge_mass_flux_kg_s,
-                vapour_column_mass,
-            },
-        );
-        let ocean = solve_monthly_stommel(grid, inputs, &wind);
-        (theta, air, wind, water, ocean)
+        (theta, air, wind, zonal, hadley.edge_mass_flux_kg_s)
     };
-    let results: Vec<_> = if parallel {
-        months.par_iter().map(|&m| month_work(m)).collect()
+    let states: Vec<_> = if parallel {
+        months.par_iter().map(|&m| atmosphere(m)).collect()
     } else {
-        months.iter().map(|&m| month_work(m)).collect()
+        months.iter().map(|&m| atmosphere(m)).collect()
     };
+    let water_round = |land_share: &[f64], warm: Option<&[WaterSolution]>| {
+        let month_water = |month: usize| {
+            let (theta, air, wind, zonal, hadley) = &states[month];
+            solve_monthly_water(
+                grid,
+                inputs,
+                &WaterMonth {
+                    theta,
+                    air,
+                    wind,
+                    zonal,
+                    hadley_mass_flux: hadley,
+                    vapour_column_mass,
+                    land_share,
+                    warm: warm.map(|solutions| &solutions[month]),
+                },
+            )
+        };
+        if parallel {
+            months
+                .par_iter()
+                .map(|&m| month_water(m))
+                .collect::<Vec<_>>()
+        } else {
+            months.iter().map(|&m| month_water(m)).collect::<Vec<_>>()
+        }
+    };
+    let n = grid.cell_count();
+    let (waters, land_evaporative_fraction, land_potential_evaporation_mm_day) =
+        if inputs.physics.budyko_land_evapotranspiration {
+            let thornthwaite = inputs.physics.thornthwaite_potential_evaporation.then(|| {
+                (0..n)
+                    .map(|c| {
+                        let temperature: [f64; CLIMATE_MONTH_COUNT] =
+                            std::array::from_fn(|m| states[m].1[c]);
+                        thornthwaite_potential_evaporation_mm_day(
+                            &temperature,
+                            &inputs.monthly_day_length_hours[c],
+                        )
+                        .iter()
+                        .sum::<f64>()
+                            / 86_400.0
+                    })
+                    .collect::<Vec<f64>>()
+            });
+            solve_budyko_land_evapotranspiration(
+                inputs,
+                &water_round,
+                thornthwaite.as_deref(),
+                &mut diagnostics,
+            )
+        } else {
+            diagnostics.land_evapotranspiration_iterations = 1;
+            diagnostics.land_evapotranspiration_converged = true;
+            let fraction = (0..n)
+                .map(|c| {
+                    if inputs.land_fraction[c] > 0.0 {
+                        inputs.land_evapotranspiration_fraction[c] / inputs.land_fraction[c]
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let waters = water_round(&inputs.land_evapotranspiration_fraction, None);
+            let potential = (0..n)
+                .map(|c| {
+                    waters
+                        .iter()
+                        .map(|month| month.land_potential_evaporation[c])
+                        .sum::<f64>()
+                        * 86_400.0
+                        / CLIMATE_MONTH_COUNT as f64
+                })
+                .collect();
+            (waters, fraction, potential)
+        };
+    let oceans: Vec<_> = if parallel {
+        months
+            .par_iter()
+            .map(|&m| solve_monthly_stommel(grid, inputs, &states[m].2))
+            .collect()
+    } else {
+        months
+            .iter()
+            .map(|&m| solve_monthly_stommel(grid, inputs, &states[m].2))
+            .collect()
+    };
+    let results: Vec<_> = states
+        .into_iter()
+        .zip(waters)
+        .zip(oceans)
+        .map(|(((theta, air, wind, _, _), water), ocean)| (theta, air, wind, water, ocean))
+        .collect();
 
     diagnostics.monthly_solve_seconds = months_started.elapsed().as_secs_f64();
-    let n = grid.cell_count();
     let mut out = ReducedWorkClimate {
         surface_albedo: inputs.surface_albedo.clone(),
         monthly_absorbed_shortwave_w_m2: inputs.monthly_absorbed_shortwave_w_m2.clone(),
@@ -536,6 +681,8 @@ pub(crate) fn solve_reduced_climate(
         precipitation_mm_day: vec![[0.0; CLIMATE_MONTH_COUNT]; n],
         orographic_precipitation_mm_day: vec![[0.0; CLIMATE_MONTH_COUNT]; n],
         vapour_convergence_mm_day: vec![[0.0; 3]; n],
+        land_evaporative_fraction,
+        land_potential_evaporation_mm_day,
         diagnostics: ReducedDiagnostics::default(),
     };
     let annual_asr: Vec<f64> = inputs
@@ -548,6 +695,10 @@ pub(crate) fn solve_reduced_climate(
     let mut precipitation = 0.0;
     let mut water_mass = 0.0;
     let mut total_area = 0.0;
+    let mut land_precipitation = 0.0;
+    let mut land_evapotranspiration = 0.0;
+    let mut land_potential = 0.0;
+    let mut land_area = 0.0;
     for (month, (theta, air, wind, water, ocean)) in results.into_iter().enumerate() {
         diagnostics.water_active_set_iterations_max = diagnostics
             .water_active_set_iterations_max
@@ -587,6 +738,12 @@ pub(crate) fn solve_reduced_climate(
             }
             month_e += area * water.evaporation[cell];
             month_p += area * water.precipitation[cell];
+            let land_area_cell = area * inputs.land_fraction[cell];
+            land_precipitation += land_area_cell * water.precipitation[cell];
+            land_evapotranspiration +=
+                land_area_cell * out.land_evaporative_fraction[cell] * water.precipitation[cell];
+            land_potential += land_area_cell * water.land_potential_evaporation[cell];
+            land_area += land_area_cell;
             water_mass += area * water.column_water[cell];
             if month == 0 {
                 total_area += area;
@@ -606,6 +763,20 @@ pub(crate) fn solve_reduced_climate(
     diagnostics.water_relative_imbalance =
         (evaporation - precipitation).abs() / evaporation.max(precipitation).max(f64::MIN_POSITIVE);
     diagnostics.precipitable_water_global_mean_kg_m2 = water_mass / weight;
+    let land_area = land_area.max(f64::MIN_POSITIVE);
+    diagnostics.land_precipitation_mean_mm_day = land_precipitation / land_area * 86_400.0;
+    diagnostics.land_evapotranspiration_mean_mm_day =
+        land_evapotranspiration / land_area * 86_400.0;
+    let _ = land_potential;
+    diagnostics.land_potential_evaporation_mean_mm_day = CLIMATE_MONTH_COUNT as f64
+        * (0..n)
+            .map(|c| {
+                grid.area_m2[c] * inputs.land_fraction[c] * out.land_potential_evaporation_mm_day[c]
+            })
+            .sum::<f64>()
+        / land_area;
+    diagnostics.land_evaporation_ratio =
+        land_evapotranspiration / land_precipitation.max(f64::MIN_POSITIVE);
     diagnostics.residence_time_days = diagnostics.precipitable_water_global_mean_kg_m2
         / diagnostics
             .precipitation_global_mean_mm_day
@@ -1112,6 +1283,240 @@ fn solve_drag_speed(stress: f64, drag_ratio: f64) -> f64 {
     0.5 * (low + high)
 }
 
+// Probe-local sensitivity axis (design section 19.3): the Thornthwaite temperature index as
+// the Budyko potential evaporation. Not adopted; kept to reproduce the measurement.
+
+/// Thornthwaite (1948, Geogr. Rev. 38, 55, DOI 10.2307/210739) potential
+/// evapotranspiration of an unadjusted 30-day month of 12-hour days, mm: `16 (10 T / I)^a`.
+const THORNTHWAITE_MONTHLY_POTENTIAL_EVAPOTRANSPIRATION_MM: f64 = 16.0;
+/// Exponent of the Thornthwaite monthly heat index `i = (T / 5)^1.514`.
+const THORNTHWAITE_HEAT_INDEX_EXPONENT: f64 = 1.514;
+/// Thornthwaite's cubic `a(I) = 6.75e-7 I^3 - 7.71e-5 I^2 + 1.792e-2 I + 0.49239`.
+const THORNTHWAITE_EXPONENT_CUBIC: [f64; 4] = [6.75e-7, -7.71e-5, 1.792e-2, 0.49239];
+/// Willmott, Rowe & Mintz (1985, J. Climatol. 5, 589, DOI 10.1002/joc.3370050602): monthly
+/// temperature at and above which the warm-month quadratic replaces the power law, degC,
+/// and that quadratic `-415.85 + 32.24 T - 0.43 T^2` mm per unadjusted month.
+const THORNTHWAITE_HIGH_TEMPERATURE_THRESHOLD_C: f64 = 26.5;
+const THORNTHWAITE_HIGH_TEMPERATURE_QUADRATIC: [f64; 3] = [-415.85, 32.24, -0.43];
+
+/// Thornthwaite potential evapotranspiration of every month, mm/day, scaled to the real day
+/// length (`N / 12`) and expressed per day (`/ 30`); months at or below 0 C evaporate nothing.
+fn thornthwaite_potential_evaporation_mm_day(
+    monthly_temperature_c: &[f64; CLIMATE_MONTH_COUNT],
+    monthly_day_length_hours: &[f64; CLIMATE_MONTH_COUNT],
+) -> [f64; CLIMATE_MONTH_COUNT] {
+    let heat_index: f64 = monthly_temperature_c
+        .iter()
+        .filter(|&&temperature| temperature > 0.0)
+        .map(|&temperature| (temperature / 5.0).powf(THORNTHWAITE_HEAT_INDEX_EXPONENT))
+        .sum();
+    let [c3, c2, c1, c0] = THORNTHWAITE_EXPONENT_CUBIC;
+    let exponent = ((c3 * heat_index + c2) * heat_index + c1) * heat_index + c0;
+    std::array::from_fn(|month| {
+        let temperature = monthly_temperature_c[month];
+        if temperature <= 0.0 || heat_index <= 0.0 {
+            return 0.0;
+        }
+        let unadjusted = if temperature >= THORNTHWAITE_HIGH_TEMPERATURE_THRESHOLD_C {
+            let [q0, q1, q2] = THORNTHWAITE_HIGH_TEMPERATURE_QUADRATIC;
+            q0 + (q1 + q2 * temperature) * temperature
+        } else {
+            THORNTHWAITE_MONTHLY_POTENTIAL_EVAPOTRANSPIRATION_MM
+                * (10.0 * temperature / heat_index).powf(exponent)
+        };
+        unadjusted * (monthly_day_length_hours[month] / 12.0) / 30.0
+    })
+}
+
+/// Solves the twelve vapour months for one land share, optionally warm-started.
+type WaterRound<'a> = dyn Fn(&[f64], Option<&[WaterSolution]>) -> Vec<WaterSolution> + 'a;
+
+/// First iterate of every cell's evaporative fraction in the Budyko fixed point.
+const BUDYKO_INITIAL_EVAPORATIVE_FRACTION: f64 = 0.5;
+
+/// Annual Budyko fixed point of land evapotranspiration (design section 18.3-1).
+///
+/// The curve is annual, so the vapour months are solved with each cell's evaporative fraction
+/// held fixed, `E_land = f_land eps P` (linear in the column water, the M-matrix and the
+/// active sets are untouched), and only between rounds is `eps` replaced by the Budyko value
+/// of the annual aridity index `sum E_pot / sum P` of the round just solved, under-relaxed by
+/// `inputs.land_evapotranspiration_relaxation`. Each round starts every month from the
+/// previous round's water and active sets.
+fn solve_budyko_land_evapotranspiration(
+    inputs: &ReducedInputs,
+    water_round: &WaterRound<'_>,
+    annual_potential_override: Option<&[f64]>,
+    diagnostics: &mut ReducedDiagnostics,
+) -> (Vec<WaterSolution>, Vec<f64>, Vec<f64>) {
+    let n = inputs.land_fraction.len();
+    let mut used_potential = vec![0.0_f64; n];
+    let mut fraction = inputs
+        .initial_land_evaporative_fraction
+        .clone()
+        .unwrap_or_else(|| vec![BUDYKO_INITIAL_EVAPORATIVE_FRACTION; n]);
+    let mut previous: Option<Vec<WaterSolution>> = None;
+    let mut anderson = AndersonMixing::new(
+        inputs.land_evapotranspiration_anderson_depth,
+        inputs.land_evapotranspiration_relaxation,
+    );
+    diagnostics.land_evapotranspiration_converged = false;
+    for round in 0..REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_MAX_ITERATIONS as usize {
+        let share: Vec<f64> = (0..n)
+            .map(|c| inputs.land_fraction[c] * fraction[c])
+            .collect();
+        let solutions = water_round(&share, previous.as_deref());
+        let mut change = 0.0_f64;
+        let mut next = fraction.clone();
+        for c in 0..n {
+            if inputs.land_fraction[c] <= 0.0 {
+                continue;
+            }
+            let (bulk_potential, precipitation) =
+                solutions.iter().fold((0.0, 0.0), |(e, p), month| {
+                    (
+                        e + month.land_potential_evaporation[c],
+                        p + month.precipitation[c],
+                    )
+                });
+            let potential = annual_potential_override.map_or(bulk_potential, |values| values[c]);
+            used_potential[c] = potential * 86_400.0 / CLIMATE_MONTH_COUNT as f64;
+            let aridity = if precipitation > 0.0 {
+                potential / precipitation
+            } else {
+                f64::INFINITY
+            };
+            let target = budyko_evaporative_fraction(aridity);
+            change = change.max((target - fraction[c]).abs());
+            next[c] = target;
+        }
+        diagnostics.land_evapotranspiration_iterations = round + 1;
+        diagnostics.land_evapotranspiration_last_change = change;
+        diagnostics
+            .land_evapotranspiration_change_history
+            .push(change);
+        if change < REDUCED_CLIMATE_LAND_EVAPOTRANSPIRATION_TOLERANCE {
+            diagnostics.land_evapotranspiration_converged = true;
+            return (solutions, fraction, used_potential);
+        }
+        fraction = anderson.step(&fraction, &next);
+        previous = Some(solutions);
+    }
+    let share: Vec<f64> = (0..n)
+        .map(|c| inputs.land_fraction[c] * fraction[c])
+        .collect();
+    (
+        water_round(&share, previous.as_deref()),
+        fraction,
+        used_potential,
+    )
+}
+
+/// Anderson acceleration of a fixed point `x = g(x)` (Anderson 1965, J. ACM 12, 547; the
+/// type-II form of Walker & Ni 2011, SIAM J. Numer. Anal. 49, 1715): the next iterate mixes
+/// the last `depth` images so that the linearized residual is least-squares smallest, then
+/// relaxes by `beta`; depth 0 is the damped Picard step. Iterates are kept in `[0, 1]`.
+struct AndersonMixing {
+    depth: usize,
+    beta: f64,
+    last: Option<(Vec<f64>, Vec<f64>)>,
+    residual_differences: Vec<Vec<f64>>,
+    image_differences: Vec<Vec<f64>>,
+}
+
+impl AndersonMixing {
+    fn new(depth: usize, beta: f64) -> Self {
+        Self {
+            depth,
+            beta,
+            last: None,
+            residual_differences: Vec::new(),
+            image_differences: Vec::new(),
+        }
+    }
+
+    fn step(&mut self, x: &[f64], image: &[f64]) -> Vec<f64> {
+        let residual: Vec<f64> = image.iter().zip(x).map(|(g, x)| g - x).collect();
+        if let Some((last_residual, last_image)) = self.last.take() {
+            if self.depth > 0 {
+                self.residual_differences.push(
+                    residual
+                        .iter()
+                        .zip(&last_residual)
+                        .map(|(a, b)| a - b)
+                        .collect(),
+                );
+                self.image_differences
+                    .push(image.iter().zip(&last_image).map(|(a, b)| a - b).collect());
+                if self.residual_differences.len() > self.depth {
+                    self.residual_differences.remove(0);
+                    self.image_differences.remove(0);
+                }
+            }
+        }
+        let m = self.residual_differences.len();
+        let mut gamma = vec![0.0_f64; m];
+        if m > 0 {
+            // Normal equations of min |residual - dF gamma|, Tikhonov-regularized.
+            let differences = &self.residual_differences;
+            let mut a: Vec<Vec<f64>> = differences
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    let mut equation: Vec<f64> = differences
+                        .iter()
+                        .map(|column| dot_slices(row, column))
+                        .collect();
+                    equation[i] *= 1.0 + 1.0e-10;
+                    equation.push(dot_slices(row, &residual));
+                    equation
+                })
+                .collect();
+            for col in 0..m {
+                let pivot = (col..m)
+                    .max_by(|&p, &q| a[p][col].abs().total_cmp(&a[q][col].abs()))
+                    .expect("non-empty pivot range");
+                a.swap(col, pivot);
+                let pivot_row = a[col].clone();
+                if pivot_row[col].abs() < 1.0e-300 {
+                    continue;
+                }
+                for (row, equation) in a.iter_mut().enumerate() {
+                    if row != col {
+                        let factor = equation[col] / pivot_row[col];
+                        for (value, pivot_value) in equation.iter_mut().zip(&pivot_row).skip(col) {
+                            *value -= factor * pivot_value;
+                        }
+                    }
+                }
+            }
+            for (i, (value, equation)) in gamma.iter_mut().zip(&a).enumerate() {
+                *value = if equation[i].abs() < 1.0e-300 {
+                    0.0
+                } else {
+                    equation[m] / equation[i]
+                };
+            }
+        }
+        let next = (0..x.len())
+            .map(|c| {
+                let mut mixed_x = x[c];
+                let mut mixed_image = image[c];
+                for (k, g) in gamma.iter().enumerate() {
+                    mixed_x -= g * (self.image_differences[k][c] - self.residual_differences[k][c]);
+                    mixed_image -= g * self.image_differences[k][c];
+                }
+                ((1.0 - self.beta) * mixed_x + self.beta * mixed_image).clamp(0.0, 1.0)
+            })
+            .collect();
+        self.last = Some((residual, image.to_vec()));
+        next
+    }
+}
+
+fn dot_slices(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
 struct WaterMonth<'a> {
     theta: &'a [f64],
     air: &'a [f64],
@@ -1119,6 +1524,10 @@ struct WaterMonth<'a> {
     zonal: &'a [f64],
     hadley_mass_flux: &'a [f64],
     vapour_column_mass: f64,
+    /// Land evapotranspiration share of each cell's precipitation, `E_land / P`.
+    land_share: &'a [f64],
+    /// The previous round's solution of this month, to start the active set from.
+    warm: Option<&'a WaterSolution>,
 }
 
 struct WaterSolution {
@@ -1132,6 +1541,10 @@ struct WaterSolution {
     active_set_iterations: usize,
     linear_iterations: usize,
     relative_residual: f64,
+    /// Wet-land bulk potential evaporation per unit land area, kg m-2 s-1.
+    land_potential_evaporation: Vec<f64>,
+    large_scale_active: Vec<bool>,
+    evaporation_active: Vec<bool>,
 }
 
 /// Q1: monthly quasi-steady column-vapour budget.
@@ -1288,9 +1701,14 @@ fn solve_monthly_water(
         .map(|c| land_transfer[c] * saturation_specific_humidity_kg_kg(month.air[c]))
         .collect();
     let b_land: Vec<f64> = land_transfer.iter().map(|t| t / mq).collect();
-    let mut water: Vec<f64> = critical.clone();
-    let mut large_scale_active = vec![true; n];
-    let mut evaporation_active = vec![true; n];
+    let (mut water, mut large_scale_active, mut evaporation_active) = match month.warm {
+        Some(previous) => (
+            previous.column_water.clone(),
+            previous.large_scale_active.clone(),
+            previous.evaporation_active.clone(),
+        ),
+        None => (critical.clone(), vec![true; n], vec![true; n]),
+    };
     let mut land_regime = vec![LandEvaporation::Recycling; n];
     let mut orographic_rate = vec![0.0_f64; n];
     let mut iterations = 0;
@@ -1312,7 +1730,7 @@ fn solve_monthly_water(
         let mut rhs = vec![0.0_f64; n];
         for c in 0..n {
             let area = grid.area_m2[c];
-            let beta = inputs.land_evapotranspiration_fraction[c];
+            let beta = month.land_share[c];
             let ls = if large_scale_active[c] {
                 relaxation
             } else {
@@ -1356,7 +1774,7 @@ fn solve_monthly_water(
                     0.0
                 } + orographic_rate[c] * water[c];
                 let potential = a_land[c] - b_land[c] * water[c];
-                let recycled = inputs.land_evapotranspiration_fraction[c] * precipitation;
+                let recycled = month.land_share[c] * precipitation;
                 let regime = if potential <= 0.0 && land_transfer[c] > 0.0 {
                     LandEvaporation::Zero
                 } else if land_transfer[c] > 0.0 && recycled > potential {
@@ -1389,9 +1807,7 @@ fn solve_monthly_water(
             0.0
         };
         let land = match land_regime[c] {
-            LandEvaporation::Recycling => {
-                inputs.land_evapotranspiration_fraction[c] * precipitation[c]
-            }
+            LandEvaporation::Recycling => month.land_share[c] * precipitation[c],
             LandEvaporation::Potential => a_land[c] - b_land[c] * water[c],
             LandEvaporation::Zero => 0.0,
         };
@@ -1411,7 +1827,20 @@ fn solve_monthly_water(
             convergence[j][component] += flux;
         }
     }
+    // Potential evaporation of a wet land surface: the production bulk law with fresh-water
+    // saturation at the reference-height air temperature (Manabe 1969). Saturated or
+    // supersaturated air takes up no water, so the potential is never negative.
+    let land_potential_evaporation = (0..n)
+        .map(|c| {
+            evaporation_scale
+                * evaporation_speed[c]
+                * (saturation_specific_humidity_kg_kg(month.air[c]) - water[c] / mq).max(0.0)
+        })
+        .collect();
     WaterSolution {
+        land_potential_evaporation,
+        large_scale_active,
+        evaporation_active,
         convergence,
         column_water: water,
         evaporation,
