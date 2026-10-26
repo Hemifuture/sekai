@@ -32,8 +32,8 @@ use crate::generators::natural::formation::surface_formation::generation::{
     advance_surface_processes, SurfaceProcessInputs,
 };
 use crate::generators::natural::formation::surface_formation::FormationState;
-use crate::generators::natural::surface_water_geometry::SurfaceWaterStencil;
 use crate::generators::natural::random::LabeledSubstreams;
+use crate::generators::natural::surface_water_geometry::SurfaceWaterStencil;
 use crate::generators::natural::{
     quality, ClimateWorkDomainBuilder, EvolvedTectonicGenerator, FormationHydrologyGenerator,
     GeologicSubstrateGenerator, GlobalCirculationGenerator, GlobalClimateForcingBuilder,
