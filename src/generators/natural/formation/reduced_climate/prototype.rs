@@ -110,6 +110,9 @@ pub(crate) struct ReducedPhysics {
     /// R3 experiment: the Siler Hadley share acts on the meridional part of
     /// the MSE flux only (the zonal-mean theory has no zonal overturning).
     pub(crate) hadley_meridional_only: bool,
+    /// R7 sensitivity: Siler's zonal-mean MSE gradient drives the Hadley branch,
+    /// excluding local land-ocean anomalies from the overturning circulation.
+    pub(crate) zonal_mean_hadley: bool,
     /// R3: the vapour column is advected zonally by the latitude-band mean of
     /// the eddy-driven zonal wind (the zonal-mean flow of the W1 balance),
     /// not by the local near-surface wind whose land drag slows it at coasts.
@@ -555,6 +558,7 @@ pub(crate) fn solve_reduced_climate(
             &mse,
             column_mass,
             inputs.physics.hadley_meridional_only,
+            inputs.physics.zonal_mean_hadley,
         );
         let zonal = eddy_driven_zonal_wind(grid, inputs, column_mass);
         let wind: Vec<[f64; 3]> = (0..grid.cell_count())
@@ -1176,6 +1180,7 @@ fn hadley_lower_branch(
     mse: &[f64],
     column_mass: f64,
     meridional_only: bool,
+    zonal_mean: bool,
 ) -> HadleyBranch {
     let bands = grid.band_count;
     let mut band_sum = vec![0.0_f64; bands];
@@ -1192,6 +1197,23 @@ fn hadley_lower_branch(
         .collect();
     let upper_mse =
         REDUCED_CLIMATE_HADLEY_UPPER_MSE_RATIO * band_mean.iter().copied().fold(f64::MIN, f64::max);
+    // Siler's Eq. 2 and 4 are zonal-mean relations. Interpolate band-centre
+    // means before taking edge gradients so artificial jumps at band edges
+    // do not replace the original local land/ocean forcing of overturning.
+    // This sensitivity changes only W2; E1 retains its original MEBM closure.
+    let zonal_mse = zonal_mean.then(|| {
+        grid.latitude_rad
+            .iter()
+            .map(|&latitude| {
+                let position = ((latitude / std::f64::consts::PI + 0.5) * bands as f64 - 0.5)
+                    .clamp(0.0, (bands - 1) as f64);
+                let lower = position.floor() as usize;
+                let upper = (lower + 1).min(bands - 1);
+                band_mean[lower] + (position - lower as f64) * (band_mean[upper] - band_mean[lower])
+            })
+            .collect::<Vec<_>>()
+    });
+    let transport_mse = zonal_mse.as_deref().unwrap_or(mse);
     let lower_branch_mass = (P4_LOWER_LAYER_REFERENCE_PRESSURE_PA
         - REDUCED_CLIMATE_HADLEY_LOWER_BRANCH_TOP_PRESSURE_PA)
         / STANDARD_GRAVITY_M_S2;
@@ -1200,7 +1222,7 @@ fn hadley_lower_branch(
         .iter()
         .enumerate()
         .map(|(edge_id, edge)| {
-            let [a, b] = edge.cells.map(|c| mse[c as usize]);
+            let [a, b] = edge.cells.map(|c| transport_mse[c as usize]);
             // Total diffusive MSE flux from cell 0 to cell 1, in W.
             let flux = column_mass * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S * edge.length_m
                 / edge.center_distance_m
@@ -2287,6 +2309,67 @@ impl std::ops::Div for Complex {
 #[cfg(test)]
 mod tests {
     use super::{rice_mean_speed, submonthly_wind_sigma_m_s, ZonalStreamfunction};
+
+    /// The zonal-mean closure must ignore band-internal land/ocean MSE anomalies.
+    /// One production Draft geometry is enough: no climate solve or seed corpus is needed.
+    #[test]
+    fn zonal_mean_hadley_ignores_band_internal_anomalies() {
+        use crate::engine::BuildCancellation;
+        use crate::generators::natural::ClimateWorkDomainBuilder;
+        use crate::generators::spatial::ProfileSurfaceBuilder;
+        use crate::world::natural::{CirculationSpec, NaturalQualityProfile};
+        use crate::world::Meters;
+        let cancellation = BuildCancellation::new();
+        let bundle = ProfileSurfaceBuilder::build(
+            NaturalQualityProfile::Draft,
+            Meters::new(CirculationSpec::default().planet_radius_m).expect("fixture radius"),
+            &cancellation,
+        )
+        .expect("fixture surface");
+        let domain = ClimateWorkDomainBuilder::build(
+            bundle.authoritative_surface(),
+            NaturalQualityProfile::Draft,
+            &cancellation,
+        )
+        .expect("fixture work domain");
+        let grid = super::ReducedClimateGeometry::new(&domain, &|| false).expect("geometry");
+        let mse: Vec<f64> = grid
+            .latitude_rad
+            .iter()
+            .map(|lat| 330_000.0 - 20_000.0 * lat.sin().powi(2))
+            .collect();
+        let mut perturbed = mse.clone();
+        for band in 0..grid.band_count {
+            let mut cells = (0..grid.cell_count()).filter(|&c| grid.cell_band[c] == band);
+            if let (Some(a), Some(b)) = (cells.next(), cells.next()) {
+                perturbed[a] += 100.0;
+                perturbed[b] -= 100.0 * grid.area_m2[a] / grid.area_m2[b];
+            }
+        }
+        let branch = |h: &[f64]| super::hadley_lower_branch(&grid, h, 10_000.0, false, true);
+        let baseline = branch(&mse);
+        let changed = branch(&perturbed);
+        let largest = baseline
+            .edge_mass_flux_kg_s
+            .iter()
+            .map(|f| f.abs())
+            .fold(0.0, f64::max);
+        let difference = baseline
+            .edge_mass_flux_kg_s
+            .iter()
+            .zip(&changed.edge_mass_flux_kg_s)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max);
+        assert!(
+            difference / largest < super::REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE,
+            "band anomaly changed flux: {difference:e}/{largest:e}"
+        );
+        let constant = branch(&vec![330_000.0; grid.cell_count()]);
+        assert!(constant
+            .edge_mass_flux_kg_s
+            .iter()
+            .all(|f| f.abs() / largest < super::REDUCED_CLIMATE_LINEAR_RELATIVE_TOLERANCE));
+    }
 
     /// Rice mean limits: Rayleigh mean `sigma sqrt(pi/2)` at zero mean wind
     /// and `nu + sigma^2 / (2 nu)` for a strong mean wind.

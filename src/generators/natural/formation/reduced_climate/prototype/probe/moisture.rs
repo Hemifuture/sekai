@@ -4,16 +4,32 @@
 //! Fractional coastal cells share one atmosphere; weighting that atmosphere
 //! by land area does not isolate evaporation from its land surface.
 
-use super::*;
+use super::{
+    json, saturation_specific_humidity_kg_kg, ReducedClimateGeometry, ReducedInputs,
+    ReducedWorkClimate, Value, MONTHS,
+};
 use crate::world::natural::{
     REFERENCE_SURFACE_RELATIVE_HUMIDITY, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 
+/// Summarizes an A3 or Budyko solution with exact work-cell area weights.
+///
+/// `grid` supplies areas, `inputs` the land shares, and `work` the solved fields.
+/// Returns a JSON budget with signed annual contributions in mm/day.
+///
+/// The optional monthly evaporation-cap experiment has no retained land/sea
+/// source split, so it returns an explicit unsupported marker rather than
+/// mislabeling capped evaporation as `f_land eps P`.
 pub(super) fn budget(
     grid: &ReducedClimateGeometry,
     inputs: &ReducedInputs,
     work: &ReducedWorkClimate,
 ) -> Value {
+    if inputs.physics.land_potential_evaporation_cap {
+        return json!({
+            "unsupported": "The monthly evaporation cap needs its actual source split; this ledger supports A3 and Budyko."
+        });
+    }
     let mean = |values: &[f64; MONTHS]| values.iter().sum::<f64>() / MONTHS as f64;
     let mut regions = serde_json::Map::new();
     for name in ["global", "land_fraction", "ocean_fraction", "pure_land"] {

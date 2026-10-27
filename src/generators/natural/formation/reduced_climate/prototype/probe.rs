@@ -1244,6 +1244,42 @@ fn a10_reduced_climate_probe() {
         &published_from_snapshot(&baseline_start),
     );
 
+    // R7: only the requested audit pays for these same-forcing comparisons.
+    // qcolumn is an ablation, not a replacement justified by Siler's MEBM.
+    let mut moisture_experiments = serde_json::Map::new();
+    if std::env::var("SEKAI_A10_MOISTURE_AUDIT").is_ok() {
+        for name in ["hmean", "qcolumn"] {
+            let mut trial_inputs = inputs_b.clone();
+            match name {
+                "hmean" => trial_inputs.physics.zonal_mean_hadley = true,
+                "qcolumn" => trial_inputs.physics.column_consistent_eddy_moisture = false,
+                _ => unreachable!("audit axes are fixed"),
+            }
+            let trial_work = solve_reduced_climate(&reduced_grid, &trial_inputs, true);
+            assert_eq!(
+                trial_work.air_temperature_c, work_b.air_temperature_c,
+                "water-only audit changed E1 temperature"
+            );
+            let trial_published = project_all(
+                surface,
+                domain,
+                &reference_reduced_forcing,
+                &trial_work,
+                &reference_cells,
+                &cancellation,
+            );
+            moisture_experiments.insert(name.to_owned(), json!({
+                "budget": moisture::budget(&reduced_grid, &trial_inputs, &trial_work),
+                "diagnostics": trial_work.diagnostics,
+                "t3b": t3b_metrics(surface, domain, &land_mask, &trial_published,
+                    Some((&reduced_grid, &trial_inputs, &trial_work)), substrate.relative_permeability()),
+                "temperature": temperature_summary(surface, &trial_published),
+                "zonal": zonal_profiles(surface, &trial_published),
+                "work_grid_annual": (seed == 42).then(|| work_grid_dump(&reduced_grid, &trial_inputs, &trial_work)),
+            }));
+        }
+    }
+
     let summary = json!({
         "profile": format!("{profile:?}"),
         "longwave_closure": longwave,
@@ -1266,6 +1302,9 @@ fn a10_reduced_climate_probe() {
         "moisture_audit": {
             "selected": moisture::budget(&reduced_grid, &inputs_b, &work_b),
             "reference": moisture::budget(&reduced_grid, &reference_inputs, &reference_work),
+            "experiments": moisture_experiments,
+            "reference_work_grid_annual": (seed == 42)
+                .then(|| work_grid_dump(&reduced_grid, &reference_inputs, &reference_work)),
         },
         "physics": physics,
         "reference_physics": reference_physics,
@@ -1641,6 +1680,7 @@ fn physics_from_flags(flags: &str) -> ReducedPhysics {
         budyko_land_evapotranspiration: has("bdk"),
         thornthwaite_potential_evaporation: has("thw"),
         hadley_meridional_only: has("hmer"),
+        zonal_mean_hadley: has("hmean"),
         band_mean_zonal_vapour_advection: has("zband"),
         nondivergent_zonal_vapour_advection: has("zpsi"),
     }
