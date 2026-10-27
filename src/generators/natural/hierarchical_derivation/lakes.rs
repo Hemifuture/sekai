@@ -26,6 +26,10 @@ use super::{
 use crate::world::natural::{Lake, SurfaceWaterKind};
 use crate::world::CellId;
 
+#[cfg(test)]
+#[path = "lake_r5_probe.rs"]
+mod r5_probe;
+
 /// One primitive of the fan subdivision: root cell, fan sector, and the
 /// subdivision path packed two bits per step (step `i` in bits `2i..2i+2`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
