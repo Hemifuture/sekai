@@ -13,6 +13,8 @@
 //! model fingerprint and placeholder vertical fields; it never leaves the
 //! probe and is not a proposed schema.
 
+mod moisture;
+
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -1261,6 +1263,10 @@ fn a10_reduced_climate_probe() {
         "reference_on_baseline_forcing": {
             "diagnostics": reference_work.diagnostics,
         },
+        "moisture_audit": {
+            "selected": moisture::budget(&reduced_grid, &inputs_b, &work_b),
+            "reference": moisture::budget(&reduced_grid, &reference_inputs, &reference_work),
+        },
         "physics": physics,
         "reference_physics": reference_physics,
         "work_grid_annual": work_grid_dump(&reduced_grid, &inputs_b, &work_b),
@@ -1505,6 +1511,12 @@ fn work_grid_dump(
                     / MONTHS as f64,
                 work.land_evaporative_fraction[c],
                 work.land_potential_evaporation_mm_day[c],
+                grid.area_m2[c],
+                (0..MONTHS)
+                    .map(|m| work.specific_humidity[c][m]
+                        / saturation_specific_humidity_kg_kg(work.air_temperature_c[c][m]))
+                    .sum::<f64>()
+                    / MONTHS as f64,
             ])
         })
         .collect();
@@ -1512,7 +1524,7 @@ fn work_grid_dump(
         "columns": ["lat", "lon", "land", "ref_height_m", "air_c", "air_jul_minus_jan_c",
             "p_mm_day", "e_mm_day", "u_east", "v_north", "current_east", "current_north", "ssh_m", "ice_fraction",
             "asr_w_m2", "olr_w_m2", "sea_ice", "beta", "conv_eddy", "conv_hadley", "conv_zonal", "rh_sea_level",
-            "land_evaporative_fraction", "land_potential_mm_day"],
+            "land_evaporative_fraction", "land_potential_mm_day", "area_m2", "rh_reference_height"],
         "rows": rows,
         // Work-grid adjacency for grid-scale (2-delta-x) diagnostics:
         // [cell 0, cell 1, east component of the unit normal].
