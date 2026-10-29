@@ -489,6 +489,9 @@ pub(crate) struct ReducedDiagnostics {
     pub(crate) monthly_solve_seconds: f64,
     pub(crate) mebm_linear_iterations: usize,
     pub(crate) mebm_max_relative_residual: f64,
+    /// Final seasonal operator, retained only for the offline latent-flux audit.
+    #[serde(skip)]
+    mebm_edge_conductance_w_k: Vec<f64>,
     pub(crate) toa_net_global_mean_w_m2: f64,
     pub(crate) toa_relative_error: f64,
     pub(crate) negative_olr_cell_months: usize,
@@ -817,6 +820,11 @@ fn moist_static_energy_j_kg(temperature_c: f64, relative_humidity: f64) -> f64 {
             * saturation_specific_humidity_kg_kg(temperature_c)
 }
 
+/// MEBM edge mass-transfer factor multiplying a specific-energy difference.
+fn mse_edge_transport_kg_s(edge: &super::geometry::ReducedEdge, column_mass: f64) -> f64 {
+    column_mass * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S * edge.length_m / edge.center_distance_m
+}
+
 /// Sea-level equilibrium target and OLR slope so that every closure reads
 /// `OLR = ASR_ann + B (theta - theta_eq)`. The gray closure is the production
 /// pair of `forcing.rs`; the Budyko closure evaluates `A + B T` at the
@@ -1082,9 +1090,7 @@ fn solve_moist_energy_balance(
                     - moist_static_energy_j_kg(mid - 1.0e-3, relative_humidity))
                     / 2.0e-3
             };
-            *k = column_mass * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S * edge.length_m
-                / edge.center_distance_m
-                * secant;
+            *k = mse_edge_transport_kg_s(edge, column_mass) * secant;
         }
         let diag: Vec<f64> = (0..n).map(|c| grid.area_m2[c] * slope[c]).collect();
         let rhs: Vec<f64> = (0..n)
@@ -1148,6 +1154,7 @@ fn solve_moist_energy_balance(
             .mebm_max_relative_residual
             .max(solve.relative_residual);
     }
+    diagnostics.mebm_edge_conductance_w_k = conductance;
     (0..n)
         .map(|cell| {
             std::array::from_fn(|month| {
@@ -1224,9 +1231,7 @@ fn hadley_lower_branch(
         .map(|(edge_id, edge)| {
             let [a, b] = edge.cells.map(|c| transport_mse[c as usize]);
             // Total diffusive MSE flux from cell 0 to cell 1, in W.
-            let flux = column_mass * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S * edge.length_m
-                / edge.center_distance_m
-                * (a - b);
+            let flux = mse_edge_transport_kg_s(edge, column_mass) * (a - b);
             let gross_moist_stability = upper_mse - band_mean[grid.edge_band[edge_id]];
             let projection = if meridional_only {
                 let north = cross(edge.midpoint, east_unit(edge.midpoint));
@@ -1591,13 +1596,6 @@ fn solve_monthly_water(
             }
         })
         .collect();
-    // Eddy vapour diffusivity on the column water W = M_q q: the MEBM latent
-    // eddy flux (p_s/g) D grad q equals (p_s/g)/M_q D grad W.
-    let eddy_vapour_scale = if inputs.physics.column_consistent_eddy_moisture {
-        P4_LOWER_LAYER_REFERENCE_PRESSURE_PA / STANDARD_GRAVITY_M_S2 / mq
-    } else {
-        1.0
-    };
     let sst: Vec<f64> = month
         .theta
         .iter()
@@ -1641,25 +1639,8 @@ fn solve_monthly_water(
         .collect();
     let relaxation = 1.0 / P4_LARGE_SCALE_CONDENSATION_RELAXATION_SECONDS;
 
-    // Zonal advecting wind: local near-surface wind, or its band mean.
-    let band_zonal: Vec<f64> = {
-        let mut sum = vec![0.0_f64; grid.band_count];
-        let mut weight = vec![0.0_f64; grid.band_count];
-        for cell in 0..n {
-            sum[grid.cell_band[cell]] += grid.area_m2[cell] * month.zonal[cell];
-            weight[grid.cell_band[cell]] += grid.area_m2[cell];
-        }
-        sum.iter()
-            .zip(&weight)
-            .map(|(s, w)| s / w.max(f64::MIN_POSITIVE))
-            .collect()
-    };
-    let zonal_streamfunction = inputs
-        .physics
-        .nondivergent_zonal_vapour_advection
-        .then(|| ZonalStreamfunction::new(&band_zonal, grid.radius_m));
     // Per-edge transport coefficients, kept for the convergence diagnostic.
-    let mut edge_transport = Vec::with_capacity(grid.edges.len());
+    let edge_transport = water_edge_transport(grid, inputs, month);
     // Transport rows: off-diagonal (neighbour slot) and diagonal outflow.
     let mut transport_diag = vec![0.0_f64; n];
     let mut transport_off = vec![[0.0_f64; 4]; n];
@@ -1669,35 +1650,16 @@ fn solve_monthly_water(
             .position(|(e, _)| *e == edge_id)
             .expect("edge belongs to cell")
     };
-    for (edge_id, edge) in grid.edges.iter().enumerate() {
+    for (edge_id, (edge, &(diffusion, _, advective))) in
+        grid.edges.iter().zip(&edge_transport).enumerate()
+    {
         let [i, j] = edge.cells.map(|c| c as usize);
         let si = slot_of(i, edge_id as u32);
         let sj = slot_of(j, edge_id as u32);
-        // Eddy part of the Siler partition diffuses vapour: F = -(1-w) D grad W.
-        let diffusion = (1.0 - edge.hadley_weight)
-            * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S
-            * eddy_vapour_scale
-            * edge.length_m
-            / edge.center_distance_m;
         transport_diag[i] += diffusion;
         transport_diag[j] += diffusion;
         transport_off[i][si] -= diffusion;
         transport_off[j][sj] -= diffusion;
-        // Hadley lower branch carries near-surface q = W / M_q upwind.
-        let hadley = month.hadley_mass_flux[edge_id] / mq;
-        // Zonal-mean eddy-driven wind advects the column, first-order upwind.
-        let mid_east = east_unit(edge.midpoint);
-        let zonal_mid = if inputs.physics.band_mean_zonal_vapour_advection {
-            band_zonal[grid.edge_band[edge_id]]
-        } else {
-            0.5 * (month.zonal[i] + month.zonal[j])
-        };
-        let zonal_flux = match &zonal_streamfunction {
-            Some(psi) => psi.at(edge.vertex_latitude_rad[0]) - psi.at(edge.vertex_latitude_rad[1]),
-            None => zonal_mid * dot(mid_east, edge.normal) * edge.length_m,
-        };
-        let advective = zonal_flux + hadley;
-        edge_transport.push((diffusion, hadley, advective));
         if advective > 0.0 {
             transport_diag[i] += advective;
             transport_off[j][sj] -= advective;
@@ -1872,6 +1834,60 @@ fn solve_monthly_water(
         linear_iterations,
         relative_residual,
     }
+}
+
+/// Q1 edge coefficients on column water: diffusion, Hadley, and total advection.
+/// The offline audit calls the identical operator without resolving the water budget.
+fn water_edge_transport(
+    grid: &ReducedClimateGeometry,
+    inputs: &ReducedInputs,
+    month: &WaterMonth<'_>,
+) -> Vec<(f64, f64, f64)> {
+    let eddy_vapour_scale = if inputs.physics.column_consistent_eddy_moisture {
+        P4_LOWER_LAYER_REFERENCE_PRESSURE_PA / STANDARD_GRAVITY_M_S2 / month.vapour_column_mass
+    } else {
+        1.0
+    };
+    let mut sum = vec![0.0_f64; grid.band_count];
+    let mut weight = vec![0.0_f64; grid.band_count];
+    for cell in 0..grid.cell_count() {
+        sum[grid.cell_band[cell]] += grid.area_m2[cell] * month.zonal[cell];
+        weight[grid.cell_band[cell]] += grid.area_m2[cell];
+    }
+    let band_zonal: Vec<f64> = sum
+        .iter()
+        .zip(&weight)
+        .map(|(s, w)| s / w.max(f64::MIN_POSITIVE))
+        .collect();
+    let zonal_streamfunction = inputs
+        .physics
+        .nondivergent_zonal_vapour_advection
+        .then(|| ZonalStreamfunction::new(&band_zonal, grid.radius_m));
+    grid.edges
+        .iter()
+        .enumerate()
+        .map(|(edge_id, edge)| {
+            let [i, j] = edge.cells.map(|c| c as usize);
+            let diffusion = (1.0 - edge.hadley_weight)
+                * REDUCED_CLIMATE_MEBM_DIFFUSIVITY_M2_S
+                * eddy_vapour_scale
+                * edge.length_m
+                / edge.center_distance_m;
+            let hadley = month.hadley_mass_flux[edge_id] / month.vapour_column_mass;
+            let zonal_mid = if inputs.physics.band_mean_zonal_vapour_advection {
+                band_zonal[grid.edge_band[edge_id]]
+            } else {
+                0.5 * (month.zonal[i] + month.zonal[j])
+            };
+            let zonal_flux = match &zonal_streamfunction {
+                Some(psi) => {
+                    psi.at(edge.vertex_latitude_rad[0]) - psi.at(edge.vertex_latitude_rad[1])
+                }
+                None => zonal_mid * dot(east_unit(edge.midpoint), edge.normal) * edge.length_m,
+            };
+            (diffusion, hadley, zonal_flux + hadley)
+        })
+        .collect()
 }
 
 struct OceanSolution {

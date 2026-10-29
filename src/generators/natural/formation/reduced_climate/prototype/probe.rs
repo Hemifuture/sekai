@@ -13,6 +13,7 @@
 //! model fingerprint and placeholder vertical fields; it never leaves the
 //! probe and is not a proposed schema.
 
+mod latent;
 mod moisture;
 
 use std::time::Instant;
@@ -615,6 +616,16 @@ fn median(values: &mut [f64]) -> f64 {
 #[test]
 #[ignore = "release-only A10 reduced-climate probe"]
 fn a10_reduced_climate_probe() {
+    run_a10_probe(false);
+}
+
+#[test]
+#[ignore = "release-only fixed-flow latent-energy diagnostic"]
+fn a10_fixed_flow_latent_flux_probe() {
+    run_a10_probe(true);
+}
+
+fn run_a10_probe(latent_only: bool) {
     let profile = match std::env::var("SEKAI_A10_PROFILE").as_deref() {
         Ok("standard") => NaturalQualityProfile::Standard,
         _ => NaturalQualityProfile::Draft,
@@ -796,6 +807,48 @@ fn a10_reduced_climate_probe() {
     log(format!(
         "baseline: start forcing {start_forcing_seconds:.3} s, start P4 {baseline_start_seconds:.3} s, P5+endpoint {baseline_closure_seconds:.3} s"
     ));
+    if latent_only {
+        assert!(
+            physics.column_consistent_eddy_moisture
+                && physics.nondivergent_zonal_vapour_advection
+                && !physics.hadley_meridional_only
+                && !physics.zonal_mean_hadley,
+            "latent diagnostic supports the final qdiff/zpsi local-Hadley operator"
+        );
+        let forcing = reduced_forcing(
+            &domain_artifact,
+            baseline_terrain.current_elevation_m(),
+            baseline_terrain.surface_water_geometry(),
+            substrate.relative_permeability(),
+            &climate_spec,
+        );
+        let inputs =
+            ReducedInputs::from_forcing(&reduced_grid, &forcing, &climate_spec, longwave, ice)
+                .with_physics(&reduced_grid, physics)
+                .with_budyko_iteration(budyko_depth, budyko_omega);
+        let work = solve_reduced_climate(&reduced_grid, &inputs, true);
+        let summary = json!({
+            "diagnostic_identity": "a10-fixed-flow-latent-r1",
+            "profile": format!("{profile:?}"),
+            "seed": seed,
+            "physics": physics,
+            "diagnostics": work.diagnostics,
+            "moisture_budget": moisture::budget(&reduced_grid, &inputs, &work),
+            "latent_flux": latent::audit(&reduced_grid, &inputs, &work),
+            "work_grid_annual": work_grid_dump(&reduced_grid, &inputs, &work),
+        });
+        let path = out_dir.join(format!("latent-{profile:?}-seed{seed}.json"));
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&summary).expect("diagnostic JSON"),
+        )
+        .expect("write latent diagnostic");
+        log(format!(
+            "latent-only diagnostic written to {}",
+            path.display()
+        ));
+        return;
+    }
     let baseline_quality = quality::evaluate_global_circulation_quality_for_formation_cancellable(
         surface,
         baseline_terrain,
@@ -1033,8 +1086,8 @@ fn a10_reduced_climate_probe() {
         &cancellation,
     );
     log(format!(
-        "reduced on baseline forcing: {:?}",
-        work_b.diagnostics
+        "reduced on baseline forcing: {}",
+        serde_json::to_string(&work_b.diagnostics).expect("diagnostics JSON")
     ));
 
     // Scheme-C L0 lapse correction evidence: dry-land neighbour lapse.
