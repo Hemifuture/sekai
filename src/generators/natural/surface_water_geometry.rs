@@ -9,6 +9,10 @@ use crate::world::spatial::{
 };
 use crate::world::CellId;
 
+#[cfg(test)]
+#[path = "lake_tin_probe.rs"]
+mod lake_tin_probe;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::generators::natural) struct SurfaceWaterWorkingGeometry {
     surface_ref: SurfaceRef,
