@@ -1,19 +1,41 @@
+#![cfg(not(debug_assertions))]
+
 use std::time::Instant;
 
 use sekai::app::build_spherical_formation_external_artifacts;
 use sekai::app::SphericalFormationFieldDocument;
 use sekai::engine::{Artifact, BuildCancellation, BuildEngine, MemoryStageCache};
-use sekai::generators::natural::{causal_natural_formation_graph, NaturalFormationBundleArtifact};
+use sekai::generators::natural::{
+    causal_natural_formation_graph, fibonacci_probe, FormationDerivationInputs,
+    HierarchicalEvaluator, NaturalFormationBundleArtifact,
+};
 use sekai::generators::spatial::ProfileSurfaceBuilder;
 use sekai::world::natural::{
-    GeologicSpec, NaturalQualityProfile, ReliefSpec, TectonicSpec, WorldFormationPreset,
-    WorldFormationSpec, EARTH_WATER_REFERENCE_RADIUS_M,
+    GeologicSpec, NaturalQualityProfile, ReliefSpec, SeaLevelPolicy, SurfaceWaterKind,
+    TectonicSpec, WorldFormationPreset, WorldFormationSpec, EARTH_WATER_REFERENCE_RADIUS_M,
 };
 use sekai::world::{Meters, RootSeed};
 
 #[test]
 #[ignore = "offline full-chain Draft procedural coast preview; run in Release"]
 fn procedural_coast_publishes_a_valid_final_bundle() {
+    generate_procedural_coast_preview(ReliefSpec::default(), "full-chain.json");
+}
+
+#[test]
+#[ignore = "offline user-accepted 25-percent target-land preview; run in Release"]
+fn procedural_coast_target25_has_coherent_fine_shorelines() {
+    generate_procedural_coast_preview(
+        ReliefSpec {
+            sea_level_policy: SeaLevelPolicy::TargetLandFraction,
+            target_land_fraction: 0.25,
+            ..ReliefSpec::default()
+        },
+        "full-chain-target25.json",
+    );
+}
+
+fn generate_procedural_coast_preview(relief: ReliefSpec, output_name: &str) {
     let profile = NaturalQualityProfile::Draft;
     let seed = RootSeed::new(42);
     let surface = ProfileSurfaceBuilder::build(
@@ -33,7 +55,7 @@ fn procedural_coast_publishes_a_valid_final_bundle() {
         surface,
         &formation,
         &TectonicSpec::default(),
-        &ReliefSpec::default(),
+        &relief,
         &GeologicSpec::default(),
     )
     .unwrap();
@@ -78,7 +100,36 @@ fn procedural_coast_publishes_a_valid_final_bundle() {
         mean_change > 0.0,
         "the candidate must traverse the surface-process chain"
     );
+    let evaluator = HierarchicalEvaluator::from_formation_product(
+        FormationDerivationInputs {
+            surface,
+            compatibility: bundle.tectonics().compatibility(),
+            substrate: bundle.substrate(),
+            formation: bundle.surface_formation(),
+            climate: bundle.climate(),
+        },
+        seed,
+    )
+    .unwrap();
+    // Same probe set as the existing hierarchical product gate. Report against
+    // P5's fractional ocean geometry, not the old whole-cell color classification.
+    let total = 16_384;
+    let mut shoreline = Vec::new();
+    for level in [1, 6] {
+        let mut ocean = 0;
+        for index in 0..total {
+            let reading = evaluator.read(fibonacci_probe(index, total), level);
+            ocean += usize::from(reading.water == SurfaceWaterKind::Ocean);
+        }
+        shoreline.push(serde_json::json!({
+            "level": level,
+            "ocean_fraction": ocean as f64 / total as f64,
+            "ocean_fraction_absolute_error": (ocean as f64 / total as f64
+                - (1.0 - f64::from(geometry.global_land_area_fraction(surface).unwrap()))).abs(),
+        }));
+    }
     let report = serde_json::json!({
+        "relief_spec": relief,
         "seed": 42, "profile": profile, "preset": formation.preset,
         "source_cells": surface.cells().len(), "graph_elapsed_ms": elapsed_ms,
         "initial_land_fraction": bundle.primary_relief().surface_water_geometry()
@@ -89,12 +140,13 @@ fn procedural_coast_publishes_a_valid_final_bundle() {
         "climate_budget": bundle.climate().budget_report(),
         "surface_quality": bundle.surface_quality(),
         "tectonic_quality": bundle.tectonic_quality(),
+        "fine_shoreline": shoreline,
     });
     let directory =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/coast-climate-preview");
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(
-        directory.join("full-chain.json"),
+        directory.join(output_name),
         serde_json::to_vec_pretty(&report).unwrap(),
     )
     .unwrap();

@@ -18,6 +18,22 @@ pub(crate) const P4_OLR_LABEL: &str = "OLR";
 pub(crate) const P4_WATER_FLUX_UNIT: &str = "mm/day";
 pub(crate) const P4_RADIATIVE_FLUX_UNIT: &str = "W/m²";
 pub(crate) const EARTH_REFERENCE_LABEL: &str = "地球参考";
+/// Inspector row: the P5 L0 elevation beside a derived pick (LOD-1 §3.5).
+pub(crate) const L0_ELEVATION_LABEL: &str = "高程（L0 权威，P5）";
+/// Inspector row: the P5 whole-cell water class (discrete hydrology terminal).
+pub(crate) const L0_WATER_LABEL: &str = "海陆类别（L0，离散水文终端）";
+/// Inspector row: P5's published sub-cell ocean area fraction.
+pub(crate) const P5_OCEAN_AREA_FRACTION_LABEL: &str = "海洋面积分数（P5 亚格元）";
+
+/// Inspector row label of the elevation the display derives at level `level`.
+pub(crate) fn derived_elevation_label(level: u8) -> String {
+    format!("高程（派生 L{level}）")
+}
+
+/// Inspector row label of the water class the display derives at `level`.
+pub(crate) fn derived_water_label(level: u8) -> String {
+    format!("水体（派生 L{level}）")
+}
 
 pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
     let Some(tail) = key.strip_prefix(NATURAL_FIELD_PREFIX) else {

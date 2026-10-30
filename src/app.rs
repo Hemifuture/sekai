@@ -50,9 +50,10 @@ use crate::{
             P4_WATER_FLUX_UNIT,
         },
         spherical::{
-            apply_spherical_canvas_action, interact_spherical_canvas,
-            queue_spherical_canvas_callback, show_spherical_controls, show_spherical_inspector,
-            SphericalCanvasAction, SphericalInspectorCache,
+            apply_spherical_canvas_action, derived_pick_rows, interact_spherical_canvas,
+            queue_spherical_canvas_callback, show_spherical_controls, show_spherical_derived_pick,
+            show_spherical_inspector, SphericalCanvasAction, SphericalCanvasState,
+            SphericalDerivedPick, SphericalInspectorCache,
         },
     },
     view::{DisplayRevisionClock, VectorGlyphLod},
@@ -183,6 +184,8 @@ struct AmplifiedDisplayBundle {
     river_radius_m: f64,
     detail: std::sync::Arc<amplified_mesh::AmplifiedDetailContext>,
     initial_hash: u64,
+    /// The initial selection's exact batch coverage (what a pick reads).
+    pick_batches: Vec<amplified_mesh::DetailBatch>,
 }
 
 /// One camera snapshot deciding whether the detail selection reruns.
@@ -245,6 +248,8 @@ struct AmplifiedDetailPayload {
     /// The built selection's hash; the UI records it as installed only
     /// after the GPU upload actually ran.
     selection_hash: u64,
+    /// The built selection's exact batch coverage (what a pick reads).
+    pick_batches: Vec<amplified_mesh::DetailBatch>,
 }
 
 /// The camera-driven incremental rebuild worker of the amplified display
@@ -354,6 +359,7 @@ fn spawn_amplified_detail_engine(
                     map_indices,
                     rivers: amplified_mesh::build_river_polylines(&context, &selection),
                     selection_hash: selection.hash,
+                    pick_batches: selection.into_pick_batches(),
                     mesh,
                 })
             }));
@@ -432,6 +438,7 @@ mod amplified_detail_engine_tests {
                 map_indices: Vec::new(),
                 rivers: Vec::new(),
                 selection_hash,
+                pick_batches: Vec::new(),
             }),
             serial,
         }
@@ -508,6 +515,47 @@ struct WorldBuildCompletion {
     stage_cache: MemoryStageCache,
     formation_surface: Option<FormationSurfaceCacheEntry>,
     amplified: Option<AmplifiedDisplayBundle>,
+}
+
+/// Assembles the LOD-1 spec §3.5 D5 reading of the inspected point: the
+/// leaf the installed detail selection draws there, read from the same
+/// engine the mesh is built from, plus P5's sub-cell ocean fraction. Only
+/// while the amplified terrain stands in for the cell fill (every other
+/// field is drawn per cell and already reads back exactly).
+fn derived_pick(
+    state: &SphericalCanvasState,
+    context: Option<&amplified_mesh::AmplifiedDetailContext>,
+    pick_batches: Option<&[amplified_mesh::DetailBatch]>,
+    presentation: &crate::app::PublishedSphericalPresentation,
+) -> Option<SphericalDerivedPick> {
+    if !state.field_state().layer_visibility().amplified {
+        return None;
+    }
+    let Some(crate::view::SelectedSurfaceEntity::Cell(cell)) =
+        state.field_state().selected_entity()
+    else {
+        return None;
+    };
+    let (level, reading) =
+        amplified_mesh::picked_reading(context?, pick_batches?, state.picked_direction()?)?;
+    if reading.cell != cell {
+        return None;
+    }
+    let ocean_area_fraction = *presentation
+        .document()
+        .formation()?
+        .formation_snapshot()
+        .terrain_fields()
+        .surface_water_geometry()
+        .ocean_area_fraction()
+        .get(cell.raw() as usize)?;
+    Some(SphericalDerivedPick {
+        cell,
+        level,
+        elevation_m: reading.value.elevation_m,
+        water: reading.water,
+        ocean_area_fraction,
+    })
 }
 
 /// Starts one worker attempt while keeping P5 cache writes private until publication.
@@ -596,6 +644,13 @@ pub struct TemplateApp {
     formation_surface: Option<FormationSurfaceCacheEntry>,
     #[serde(skip)]
     amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
+    /// The installed amplified mesh's per-cell leaf levels and the world's
+    /// detail context, kept with it so a pick reads the selection on
+    /// screen from the engine the mesh is built from (LOD-1 spec §3.5 D5).
+    #[serde(skip)]
+    amplified_pick_batches: Option<Vec<amplified_mesh::DetailBatch>>,
+    #[serde(skip)]
+    amplified_context: Option<std::sync::Arc<amplified_mesh::AmplifiedDetailContext>>,
     #[serde(skip)]
     amplified_detail: Option<AmplifiedDetailEngine>,
     #[serde(skip)]
@@ -643,6 +698,8 @@ impl Default for TemplateApp {
             geologic_spec: GeologicSpec::default(),
             world_pipeline: WorldPipeline::default(),
             amplified_mesh: None,
+            amplified_pick_batches: None,
+            amplified_context: None,
             amplified_map_projected: None,
             amplified_detail: None,
             river_polylines: None,
@@ -875,6 +932,8 @@ impl TemplateApp {
         match amplified {
             Some(bundle) => {
                 self.amplified_mesh = Some(std::sync::Arc::new(bundle.mesh));
+                self.amplified_pick_batches = Some(bundle.pick_batches);
+                self.amplified_context = Some(std::sync::Arc::clone(&bundle.detail));
                 self.amplified_map_projected = None;
                 self.river_polylines = Some(std::sync::Arc::new(bundle.rivers));
                 self.river_radius_m = Some(bundle.river_radius_m);
@@ -885,6 +944,8 @@ impl TemplateApp {
             }
             None => {
                 self.amplified_mesh = None;
+                self.amplified_pick_batches = None;
+                self.amplified_context = None;
                 self.amplified_map_projected = None;
                 self.amplified_detail = None;
                 self.river_polylines = None;
@@ -912,6 +973,7 @@ impl TemplateApp {
         if let Some(payload) = poll.install {
             let selection_hash = payload.selection_hash;
             self.amplified_mesh = Some(std::sync::Arc::new(payload.mesh));
+            self.amplified_pick_batches = Some(payload.pick_batches);
             self.amplified_map_projected = Some(std::sync::Arc::new((
                 payload.map_vertices,
                 payload.map_indices,
@@ -1322,7 +1384,6 @@ impl TemplateApp {
                                 hydrology.drainage_area_km2()[segment.from().raw() as usize]
                             })
                             .collect(),
-                        surface_water: hydrology.surface_water().clone(),
                     });
                     let selection = amplified_mesh::initial_selection(&detail);
                     let mut cache = amplified_mesh::BatchCache::default();
@@ -1334,6 +1395,7 @@ impl TemplateApp {
                         river_radius_m: detail.evaluator.radius_m(),
                         detail,
                         initial_hash: selection.hash,
+                        pick_batches: selection.into_pick_batches(),
                     })
                 })
             };
@@ -2065,7 +2127,25 @@ impl eframe::App for TemplateApp {
                             self.spherical_canvas_state.field_state(),
                             self.spherical_canvas_state.view_mode(),
                         ) {
-                            Ok(model) => show_spherical_inspector(ui, model),
+                            Ok(model) => {
+                                show_spherical_inspector(ui, model);
+                                if let Some(pick) = derived_pick(
+                                    &self.spherical_canvas_state,
+                                    self.amplified_context.as_deref(),
+                                    self.amplified_pick_batches.as_deref(),
+                                    presentation,
+                                ) {
+                                    match derived_pick_rows(presentation, &pick) {
+                                        Ok(rows) => show_spherical_derived_pick(ui, &rows),
+                                        Err(error) => {
+                                            ui.colored_label(
+                                                egui::Color32::LIGHT_RED,
+                                                error.to_string(),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                             Err(error) => {
                                 ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
                             }
@@ -2947,11 +3027,9 @@ mod natural_app_tests {
                 river_cells: Vec::new(),
                 river_orders: Vec::new(),
                 river_drainage_area_km2: Vec::new(),
-                surface_water: crate::world::natural::SurfaceWaterField::from_kinds(vec![
-                    crate::world::natural::SurfaceWaterKind::DryLand; count
-                ]),
             }),
             initial_hash: 0,
+            pick_batches: Vec::new(),
         }
     }
 

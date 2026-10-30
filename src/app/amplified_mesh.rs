@@ -2,8 +2,9 @@
 //!
 //! The visible surface is a mosaic of T1 v2 hierarchical primitives: every
 //! leaf triangle is one data atom rendered as one solid patch whose color
-//! uses the published water class and the land hypsometric palette, carried
-//! by a dedicated provoking vertex and flat-interpolated on the GPU.
+//! uses its fine-shoreline water class (T1 v2.2 §5.1) and the land
+//! hypsometric palette, carried by a dedicated provoking vertex and
+//! flat-interpolated on the GPU.
 //!
 //! A *selection* replaces the M1 uniform global depth (Ulrich 2002 chunked
 //! LOD) on a physical ladder: levels halve the spec §5 primitive edge from
@@ -30,13 +31,13 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::generators::natural::{
-    HierarchicalEvaluator, HierarchicalPath, PrimitiveValue, HIERARCHICAL_PATH_DEPTH_MAX,
+    geometric_midpoint, subdivision_children, DerivedReading, HierarchicalEvaluator,
+    HierarchicalPath, LocatedPrimitive, HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::view::{
     project_unit_direction, AmplifiedSurfaceMesh, GlobeCamera, MapScreenTransform, ProjectionPoint,
     RiverPolylineSegment, SphericalPresentationViewState, SphericalProjection, SphericalViewMode,
 };
-use crate::world::natural::SurfaceWaterField;
 use crate::world::spatial::UnitVector3;
 use crate::world::CellId;
 
@@ -95,14 +96,12 @@ pub(super) struct AmplifiedDetailContext {
     pub(super) river_orders: Vec<u8>,
     /// Per reach: P5 contributing area at its origin, for Horton main-stem tracing.
     pub(super) river_drainage_area_km2: Vec<f32>,
-    /// The same validated water classification used to clip river mouths.
-    pub(super) surface_water: SurfaceWaterField,
 }
 
 /// One renderable subtree: the leaves `extra` levels below
 /// `(cell, sector, prefix)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct DetailBatch {
+pub(super) struct DetailBatch {
     cell: u32,
     sector: u8,
     prefix: HierarchicalPath,
@@ -114,10 +113,7 @@ impl DetailBatch {
         4_usize.pow(u32::from(self.extra))
     }
 
-    /// Test-only since rivers read [`DetailSelection::cell_levels`]:
-    /// batch levels understate walked cells (hidden subtrees collapse
-    /// to shallow single leaves).
-    #[cfg(test)]
+    /// Actual drawn level; hidden subtrees may be shallower than their cell target.
     fn leaf_level(&self) -> u8 {
         1 + self.prefix.steps().len() as u8 + self.extra
     }
@@ -137,11 +133,52 @@ pub(super) struct DetailSelection {
     cell_levels: Vec<u8>,
 }
 
+impl DetailSelection {
+    /// Moves the exact installed batch coverage alongside its mesh, without copying it.
+    pub(super) fn into_pick_batches(self) -> Vec<DetailBatch> {
+        self.batches
+    }
+}
+
+/// Reads the leaf a selection draws under `direction` (LOD-1 spec §3.5
+/// D5). Batch prefixes, unlike nominal cell levels, describe coarse hidden
+/// subtrees that may become visible before the next asynchronous mesh arrives.
+pub(super) fn picked_reading(
+    context: &AmplifiedDetailContext,
+    batches: &[DetailBatch],
+    direction: UnitVector3,
+) -> Option<(u8, DerivedReading)> {
+    let LocatedPrimitive::Triangle { cell, sector, path } = context
+        .evaluator
+        .locate(direction, (HIERARCHICAL_PATH_DEPTH_MAX + 1) as u8)
+    else {
+        return None;
+    };
+    // Selection emits cells, sectors and child prefixes in lexicographic order.
+    // The last prefix at or before this path is its unique covering batch.
+    let end = batches.partition_point(|batch| {
+        (batch.cell, batch.sector, batch.prefix.steps()) <= (cell.raw(), sector, path.steps())
+    });
+    let batch = batches.get(end.checked_sub(1)?)?;
+    if batch.cell != cell.raw()
+        || batch.sector != sector
+        || !path.steps().starts_with(batch.prefix.steps())
+    {
+        return None;
+    }
+    let level = batch.leaf_level();
+    Some((level, context.evaluator.read(direction, level)))
+}
+
 fn finish_selection(
     batches: Vec<DetailBatch>,
     leaves: usize,
     cell_levels: Vec<u8>,
 ) -> DetailSelection {
+    debug_assert!(batches.windows(2).all(|pair| {
+        (pair[0].cell, pair[0].sector, pair[0].prefix.steps())
+            < (pair[1].cell, pair[1].sector, pair[1].prefix.steps())
+    }));
     let mut hasher = DefaultHasher::new();
     for batch in &batches {
         batch.hash(&mut hasher);
@@ -689,16 +726,7 @@ fn walk_node(
         emit(target_level - node_level, batches, leaves);
         return;
     }
-    let ab = direction_midpoint(corners[0], corners[1]);
-    let bc = direction_midpoint(corners[1], corners[2]);
-    let ca = direction_midpoint(corners[2], corners[0]);
-    let children = [
-        [corners[0], ab, ca],
-        [ab, corners[1], bc],
-        [ca, bc, corners[2]],
-        [ab, bc, ca],
-    ];
-    for (child, child_corners) in children.into_iter().enumerate() {
+    for (child, child_corners) in subdivision_children(corners).into_iter().enumerate() {
         prefix[usize::from(depth)] = child as u8;
         walk_node(
             cap,
@@ -875,15 +903,15 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
         &mut midpoints,
         &mut triangles,
     )?;
-    let mut values = Vec::with_capacity(batch.leaves());
-    context.evaluator.for_each_leaf_value(
+    let mut readings = Vec::with_capacity(batch.leaves());
+    context.evaluator.for_each_leaf_reading(
         cell,
         batch.sector,
         batch.prefix.steps(),
         batch.extra,
-        &mut |value| values.push(value),
+        &mut |reading| readings.push(reading),
     );
-    if values.len() * TRIANGLE_CORNERS != triangles.len() {
+    if readings.len() * TRIANGLE_CORNERS != triangles.len() {
         return None;
     }
     let mut directions: Vec<[f64; 3]> = vertices
@@ -895,7 +923,7 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
         let provoking = u32::try_from(directions.len()).ok()?;
         let corner = directions[triangle[0] as usize];
         directions.push(corner);
-        colors.push(flat_color(context, cell, values[leaf]));
+        colors.push(flat_color(context, &readings[leaf]));
         triangle[0] = provoking;
     }
     Some(CachedBatch {
@@ -911,24 +939,9 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
 /// commutative renormalized-sum midpoint.
 fn descend_prefix(mut corners: [UnitVector3; 3], steps: &[u8]) -> [UnitVector3; 3] {
     for &child in steps {
-        let ab = direction_midpoint(corners[0], corners[1]);
-        let bc = direction_midpoint(corners[1], corners[2]);
-        let ca = direction_midpoint(corners[2], corners[0]);
-        corners = match child {
-            0 => [corners[0], ab, ca],
-            1 => [ab, corners[1], bc],
-            2 => [ca, bc, corners[2]],
-            _ => [ab, bc, ca],
-        };
+        corners = subdivision_children(corners)[usize::from(child)];
     }
     corners
-}
-
-fn direction_midpoint(a: UnitVector3, b: UnitVector3) -> UnitVector3 {
-    let [ax, ay, az] = a.components();
-    let [bx, by, bz] = b.components();
-    UnitVector3::new(ax + bx, ay + by, az + bz)
-        .expect("fan subdivision midpoints stay strictly inside one hemisphere")
 }
 
 /// Recursive four-way subdivision preserving winding order; leaves emit
@@ -970,23 +983,21 @@ fn midpoint_index(
     if let Some(&existing) = midpoints.get(&key) {
         return Some(existing);
     }
-    let direction = direction_midpoint(vertices[a as usize], vertices[b as usize]);
+    let direction = geometric_midpoint(vertices[a as usize], vertices[b as usize]);
     let index = u32::try_from(vertices.len()).ok()?;
     vertices.push(direction);
     midpoints.insert(key, index);
     Some(index)
 }
 
-/// One leaf's water-aware color, preserving the authoritative cell boundary.
-fn flat_color(context: &AmplifiedDetailContext, cell: CellId, value: PrimitiveValue) -> [u8; 4] {
+/// One leaf's water-aware color: the shoreline is the water-surface
+/// contour of the derived field, so it refines with every level.
+fn flat_color(context: &AmplifiedDetailContext, reading: &DerivedReading) -> [u8; 4] {
     let base = crate::view::terrain_water_color(
-        value.elevation_m,
+        reading.value.elevation_m,
         context.sea_level_m,
         context.display_radius_m,
-        context
-            .surface_water
-            .get(cell.raw() as usize)
-            .expect("validated water covers the mesh"),
+        reading.water,
     );
     let components = base.components();
     [
@@ -1048,15 +1059,17 @@ pub(super) fn build_river_polylines(
             .evaluator
             .river_width_m(reach as u32)
             .expect("the reach metadata is evaluator-aligned");
-        let path = context
+        for piece in context
             .evaluator
-            .river_path(reach as u32, level.saturating_sub(1));
-        for pair in path.windows(2) {
-            polylines.push(RiverPolylineSegment {
-                start: pair[0].components(),
-                end: pair[1].components(),
-                width_m,
-            });
+            .river_path(reach as u32, level.saturating_sub(1))
+        {
+            for pair in piece.windows(2) {
+                polylines.push(RiverPolylineSegment {
+                    start: pair[0].components(),
+                    end: pair[1].components(),
+                    width_m,
+                });
+            }
         }
     }
     polylines
@@ -1065,11 +1078,22 @@ pub(super) fn build_river_polylines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generators::natural::{AmplificationFieldsView, LocatedPrimitive};
+    use crate::generators::natural::{AmplificationFieldsView, PublishedHydrology};
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::view::{MapCamera, SphericalProjectionKind};
-    use crate::world::natural::{SphericalOrogenyKind, SurfaceWaterKind};
+    use crate::world::natural::{Lake, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind};
+    use crate::world::LakeId;
     use crate::world::{Meters, RootSeed, SphericalSpaceSpec};
+
+    /// Drawn segments of one reach at one depth, across its pieces.
+    fn segment_count(context: &AmplifiedDetailContext, reach: u32, depth: u8) -> usize {
+        context
+            .evaluator
+            .river_path(reach, depth)
+            .iter()
+            .map(|piece| piece.len() - 1)
+            .sum()
+    }
 
     fn test_context() -> AmplifiedDetailContext {
         let surface = GeodesicVoronoiBuilder::build_cancellable(
@@ -1101,25 +1125,93 @@ mod tests {
             orogeny_kind: &kinds,
             orogeny_age_myr: &zeros,
         };
+        // Exercise the actual mesh binding and its cache with all three
+        // water classes, rather than only testing the palette in isolation.
+        let lakes = [Lake::new(
+            LakeId::from_raw(0),
+            (0..count)
+                .filter(|index| index % 3 == 2)
+                .map(|index| CellId::from_raw(index as u32))
+                .collect(),
+            500.0,
+            1.0,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap()];
+        // Lake cells sit at the lake level of the fill, everything else at
+        // its own height, as a priority flood would leave them.
+        let fill: Vec<f32> = (0..count)
+            .map(|index| {
+                if index % 3 == 2 {
+                    500.0
+                } else {
+                    elevation[index]
+                }
+            })
+            .collect();
+        let evaluator = HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7))
+            .unwrap()
+            .with_hydrology(
+                &surface,
+                PublishedHydrology {
+                    segments: &[],
+                    surface_water: &SurfaceWaterField::from_kinds(
+                        (0..count)
+                            .map(|index| match index % 3 {
+                                0 => SurfaceWaterKind::DryLand,
+                                1 => SurfaceWaterKind::Ocean,
+                                _ => SurfaceWaterKind::Lake,
+                            })
+                            .collect(),
+                    ),
+                    lakes: &lakes,
+                    fill_surface_m: &fill,
+                },
+            )
+            .unwrap();
         AmplifiedDetailContext {
-            evaluator: HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7)).unwrap(),
+            evaluator,
             sea_level_m: 0.0,
             display_radius_m: 2_000.0,
             river_cells: Vec::new(),
             river_orders: Vec::new(),
             river_drainage_area_km2: Vec::new(),
-            // Exercise the actual mesh binding and its cache with all three
-            // water classes, rather than only testing the palette in isolation.
-            surface_water: SurfaceWaterField::from_kinds(
-                (0..count)
-                    .map(|index| match index % 3 {
-                        0 => SurfaceWaterKind::DryLand,
-                        1 => SurfaceWaterKind::Ocean,
-                        _ => SurfaceWaterKind::Lake,
-                    })
-                    .collect(),
-            ),
         }
+    }
+
+    #[test]
+    fn ocean_parent_must_not_force_every_detail_leaf_to_water() {
+        let context = test_context();
+        // Ocean parents in this fixture have index 1 modulo 3. Compare actual
+        // fine readings inside one parent, rather than inventing a color mask.
+        for index in (1..context.evaluator.cell_count()).step_by(3) {
+            let cell = CellId::from_raw(index as u32);
+            let mut ocean = None;
+            let mut land = None;
+            for sector in 0..context.evaluator.sector_count(cell) {
+                context.evaluator.for_each_leaf_reading(
+                    cell,
+                    sector as u8,
+                    &[],
+                    2,
+                    &mut |reading| match reading.water {
+                        SurfaceWaterKind::Ocean => ocean = Some(flat_color(&context, &reading)),
+                        SurfaceWaterKind::DryLand => land = Some(flat_color(&context, &reading)),
+                        SurfaceWaterKind::Lake => {}
+                    },
+                );
+            }
+            if let (Some(ocean), Some(land)) = (ocean, land) {
+                assert_ne!(
+                    ocean, land,
+                    "the shoreline must resolve inside a parent cell"
+                );
+                return;
+            }
+        }
+        panic!("the fixture must exercise a parent with both dry and wet detail leaves");
     }
 
     /// A confluence whose wetter, narrower catchment opposes area-based tracing.
@@ -1208,13 +1300,17 @@ mod tests {
         ];
         let evaluator = HierarchicalEvaluator::new(&surface, fields, RootSeed::new(7))
             .unwrap()
-            .with_rivers(
+            .with_hydrology(
                 &surface,
-                &segments,
-                &SurfaceWaterField::from_kinds(vec![
-                    SurfaceWaterKind::DryLand;
-                    surface.cells().len()
-                ]),
+                PublishedHydrology {
+                    segments: &segments,
+                    surface_water: &SurfaceWaterField::from_kinds(vec![
+                        SurfaceWaterKind::DryLand;
+                        surface.cells().len()
+                    ]),
+                    lakes: &[],
+                    fill_surface_m: &elevation,
+                },
             )
             .unwrap();
         AmplifiedDetailContext {
@@ -1230,7 +1326,6 @@ mod tests {
                 .map(|segment| segment.strahler_order())
                 .collect(),
             river_drainage_area_km2: vec![1.0, 4.0, 2.0],
-            surface_water: SurfaceWaterField::from_kinds(vec![SurfaceWaterKind::DryLand; count]),
         }
     }
 
@@ -1242,7 +1337,7 @@ mod tests {
         let coarse = build_river_polylines(&context, &uniform_selection(&context, 1));
         let coarse_expected: usize = [1, 2]
             .into_iter()
-            .map(|reach| context.evaluator.river_path(reach, 0).len() - 1)
+            .map(|reach| segment_count(&context, reach, 0))
             .sum();
         assert_eq!(
             coarse.len(),
@@ -1251,20 +1346,20 @@ mod tests {
         );
         // The selected headwater is reach 2 (larger area), although reach 0
         // has greater discharge and hydraulic width. This catches wrong UI binding.
-        let trunk_segments = context.evaluator.river_path(1, 0).len() - 1;
+        let trunk_segments = segment_count(&context, 1, 0);
         assert_eq!(
             coarse[trunk_segments].start,
-            context.evaluator.river_path(2, 0)[0].components()
+            context.evaluator.river_path(2, 0)[0][0].components()
         );
         let deeper = build_river_polylines(&context, &uniform_selection(&context, 4));
         let deep_expected: usize = (0..context.evaluator.river_reach_count() as u32)
-            .map(|reach| context.evaluator.river_path(reach, 3).len() - 1)
+            .map(|reach| segment_count(&context, reach, 3))
             .sum();
         assert_eq!(deeper.len(), deep_expected);
         let again = build_river_polylines(&context, &uniform_selection(&context, 4));
         assert_eq!(deeper, again, "polylines are deterministic");
         // Chain junction stays welded: reach 0 ends where reach 1 begins.
-        let first_reach_segments = context.evaluator.river_path(0, 3).len() - 1;
+        let first_reach_segments = segment_count(&context, 0, 3);
         let mid = deeper[first_reach_segments - 1].end;
         assert_eq!(mid, deeper[first_reach_segments].start);
     }
@@ -1275,7 +1370,7 @@ mod tests {
         let polylines = build_river_polylines(&context, &uniform_selection(&context, 4));
         let mut cursor = 0;
         for reach in 0..context.evaluator.river_reach_count() as u32 {
-            let segment_count = context.evaluator.river_path(reach, 3).len() - 1;
+            let segment_count = segment_count(&context, reach, 3);
             let width_m = context
                 .evaluator
                 .river_width_m(reach)
@@ -1309,10 +1404,9 @@ mod tests {
         // Reach 0 renders at its deeper endpoint (level 4 → depth 3)
         // although its other endpoint sits at level 1; the other reaches
         // stay at their portal-split depth-zero paths.
-        let expected = context.evaluator.river_path(0, 3).len() - 1
-            + context.evaluator.river_path(1, 0).len()
-            - 1
-            + context.evaluator.river_path(2, 0).len()
+        let expected = segment_count(&context, 0, 3) + segment_count(&context, 1, 0) + 1 - 1
+            + segment_count(&context, 2, 0)
+            + 1
             - 1;
         assert_eq!(polylines.len(), expected);
     }
@@ -1553,13 +1647,10 @@ mod tests {
                     let [cx, cy, cz] = corner(2);
                     let centroid =
                         UnitVector3::new(ax + bx + cx, ay + by + cy, az + bz + cz).unwrap();
-                    let located = match context.evaluator.locate(centroid, batch.leaf_level()) {
-                        LocatedPrimitive::Cell(cell) => context.evaluator.cell_value(cell),
-                        LocatedPrimitive::Triangle { cell, sector, path } => {
-                            context.evaluator.value(cell, sector, path.steps())
-                        }
-                    };
-                    let expected = flat_color(&context, CellId::from_raw(batch.cell), located);
+                    let expected = flat_color(
+                        &context,
+                        &context.evaluator.read(centroid, batch.leaf_level()),
+                    );
                     assert_eq!(
                         mesh.colors()[indices[base] as usize],
                         expected,
@@ -1568,6 +1659,50 @@ mod tests {
                 }
             }
             triangle += batch.leaves();
+        }
+    }
+
+    /// LOD-1 spec §3.5 D5 / §4 I9: a pick reads exactly the leaf the mesh
+    /// draws there — the same level, the same face value bit for bit, and
+    /// the same fine-shoreline water class (hence the same color).
+    #[test]
+    fn picked_reading_is_the_drawn_leaf() {
+        let context = test_context();
+        let mut cache = BatchCache::default();
+        for level in [1_u8, 3] {
+            let selection = uniform_selection(&context, level);
+            let mesh = build_detail_mesh(&context, &selection, &mut cache).unwrap();
+            let indices = mesh.indices();
+            let mut water_kinds = std::collections::HashSet::new();
+            for triangle in (0..mesh.triangle_count()).step_by(13) {
+                let base = triangle * TRIANGLE_CORNERS;
+                let corner = |slot: usize| mesh.directions()[indices[base + slot] as usize];
+                let [ax, ay, az] = corner(0);
+                let [bx, by, bz] = corner(1);
+                let [cx, cy, cz] = corner(2);
+                let centroid = UnitVector3::new(ax + bx + cx, ay + by + cy, az + bz + cz).unwrap();
+                let (picked_level, reading) =
+                    picked_reading(&context, &selection.batches, centroid).unwrap();
+                assert_eq!(picked_level, level);
+                let LocatedPrimitive::Triangle { cell, sector, path } =
+                    context.evaluator.locate(centroid, level)
+                else {
+                    panic!("levels above zero locate triangles");
+                };
+                let drawn = context.evaluator.value(cell, sector, path.steps());
+                assert_eq!(reading.cell, cell);
+                assert_eq!(
+                    reading.value.elevation_m.to_bits(),
+                    drawn.elevation_m.to_bits()
+                );
+                assert_eq!(
+                    mesh.colors()[indices[base] as usize],
+                    flat_color(&context, &reading),
+                    "the picked reading is what the leaf is painted from"
+                );
+                water_kinds.insert(reading.water);
+            }
+            assert!(water_kinds.len() > 1, "picks must span water classes");
         }
     }
 
@@ -1586,5 +1721,31 @@ mod tests {
             assert_eq!(cold.indices(), other.indices());
         }
         assert!(cold_cache.cached_leaves <= CACHE_LEAF_CAPACITY);
+    }
+
+    #[test]
+    fn picking_uses_the_installed_shallow_subtree_not_the_cell_target_level() {
+        let context = test_context();
+        let cell = CellId::from_raw(0);
+        let batches = (0..4)
+            .map(|child| DetailBatch {
+                cell: cell.raw(),
+                sector: 0,
+                prefix: HierarchicalPath::new(&[child]),
+                extra: if child == 0 { 0 } else { 3 },
+            })
+            .collect::<Vec<_>>();
+        let leaves = batches.iter().map(DetailBatch::leaves).sum();
+        let selection = finish_selection(batches, leaves, vec![5; context.evaluator.cell_count()]);
+        let corners = descend_prefix(context.evaluator.sector_corners(cell, 0), &[0]);
+        let direction = UnitVector3::new(
+            corners.iter().map(|p| p.components()[0]).sum(),
+            corners.iter().map(|p| p.components()[1]).sum(),
+            corners.iter().map(|p| p.components()[2]).sum(),
+        )
+        .unwrap();
+        let (level, reading) = picked_reading(&context, &selection.batches, direction).unwrap();
+        assert_eq!(level, 2, "the displayed subtree has one coarse leaf");
+        assert_eq!(reading, context.evaluator.read(direction, 2));
     }
 }
