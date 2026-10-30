@@ -18,6 +18,15 @@ const INITIAL_ADJACENCY_RINGS: usize = 2;
 const MAX_ADJACENCY_RINGS: usize = 8;
 const RADIUS_RELATIVE_TOLERANCE: f64 = 128.0 * f64::EPSILON;
 
+#[cfg(test)]
+pub(crate) fn lake_probe_overlap_steradians(
+    polygon: &[UnitVector3],
+    surface: &SphericalSurfaceSnapshot,
+    cell: CellId,
+) -> Result<f64, ConservativeRemapError> {
+    spherical_polygon_area(&clip_against_cell(polygon, surface, cell)?)
+}
+
 /// Builds deterministic conservative overlap maps between validated spherical surfaces.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConservativeSurfaceMapBuilder;

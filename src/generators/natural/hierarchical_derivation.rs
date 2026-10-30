@@ -216,6 +216,45 @@ impl Conditions {
     }
 }
 
+/// Test-only access to the existing T1 conditioning facts for the native-TIN experiment.
+#[cfg(test)]
+pub(super) fn probe_cell_conditions(
+    inputs: FormationDerivationInputs<'_>,
+    seed: RootSeed,
+) -> Result<Vec<[f64; 2]>, TerrainAmplificationError> {
+    let amplifier = TerrainAmplifier::from_formation_fields(inputs, seed)?;
+    let view = amplifier.conditioning();
+    Ok((0..view.elevation_m.len())
+        .map(|index| {
+            let condition = cell_conditions(&view, index);
+            [condition.a0_m, condition.hurst]
+        })
+        .collect())
+}
+
+/// Test-only symmetric node conditioning and production amplitude, without a lake constraint.
+#[cfg(test)]
+pub(super) fn probe_mean_condition_amplitude(
+    a: [f64; 2],
+    b: [f64; 2],
+    level: u32,
+) -> ([f64; 2], f64) {
+    let condition = Conditions::mean(
+        Conditions {
+            a0_m: a[0],
+            hurst: a[1],
+        },
+        Conditions {
+            a0_m: b[0],
+            hurst: b[1],
+        },
+    );
+    (
+        [condition.a0_m, condition.hurst],
+        condition.amplitude_m(level),
+    )
+}
+
 /// The two condition sources available inside one sector tree.
 #[derive(Clone, Copy)]
 struct SectorConditions {

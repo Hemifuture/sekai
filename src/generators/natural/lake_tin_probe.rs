@@ -28,6 +28,11 @@ use crate::world::RootSeed;
 // this three-lake experiment into an unrequested full-world refinement.
 const L6_LEAF_BUDGET: usize = 196_608;
 
+#[path = "lake_b1_probe.rs"]
+mod b1_probe;
+#[path = "lake_native_refine_probe.rs"]
+mod native_refine_probe;
+
 fn fixture(
     profile: NaturalQualityProfile,
 ) -> (

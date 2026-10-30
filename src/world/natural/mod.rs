@@ -10,6 +10,8 @@ mod formation_bundle;
 mod geologic_spec;
 mod geology;
 mod global_circulation;
+#[cfg(test)]
+pub(crate) use global_circulation::lake_probe_freshwater_evaporation_kg_m2_s;
 mod hydro_erosion;
 mod hydro_erosion_spec;
 mod hydrology;

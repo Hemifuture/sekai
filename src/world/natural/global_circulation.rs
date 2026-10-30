@@ -1018,6 +1018,23 @@ pub fn bulk_surface_evaporation_kg_m2_s(
         * water_fraction.clamp(0.0, 1.0)
 }
 
+#[cfg(test)]
+pub(crate) fn lake_probe_freshwater_evaporation_kg_m2_s(
+    temperature_c: f64,
+    humidity_kg_kg: f64,
+    wind_m_s: f64,
+) -> f64 {
+    let sea = saturation_specific_humidity_and_temperature_derivative(
+        temperature_c,
+        SEAWATER_SATURATION_VAPOR_PRESSURE_FRACTION,
+    )
+    .0;
+    let fresh = saturation_specific_humidity_kg_kg(temperature_c);
+    // Algebraic test adapter at the humidity-deficit input, before the bulk
+    // law's max(0). No physical humidity field is modified or published.
+    bulk_surface_evaporation_kg_m2_s(temperature_c, humidity_kg_kg + sea - fresh, wind_m_s, 1.0)
+}
+
 /// Smith raw-upslope condensation source in kg/m2/s.
 pub fn raw_orographic_condensation_kg_m2_s(
     lower_specific_humidity_kg_kg: f64,

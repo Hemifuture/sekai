@@ -6,6 +6,8 @@ mod profile_surface;
 mod remap_fields;
 mod spherical_stage;
 
+#[cfg(test)]
+pub(crate) use conservative_remap::lake_probe_overlap_steradians;
 pub use conservative_remap::{ConservativeRemapError, ConservativeSurfaceMapBuilder};
 pub use geodesic_voronoi::{GeodesicVoronoiBuilder, SphericalSurfaceBuildError};
 pub(crate) use geodesic_voronoi::{BASE_FACE_VERTICES, BASE_VERTEX_COMPONENTS};
