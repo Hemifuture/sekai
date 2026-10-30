@@ -90,6 +90,9 @@ const CASES: [MatrixCase; 4] = [
 fn requested_preset(preset: ResolvedWorldFormationPreset) -> WorldFormationPreset {
     match preset {
         ResolvedWorldFormationPreset::Continents => WorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::ProceduralContinents => {
+            WorldFormationPreset::ProceduralContinents
+        }
         ResolvedWorldFormationPreset::Archipelago => WorldFormationPreset::Archipelago,
         ResolvedWorldFormationPreset::Supercontinent => WorldFormationPreset::Supercontinent,
         ResolvedWorldFormationPreset::GreatIsland => WorldFormationPreset::GreatIsland,

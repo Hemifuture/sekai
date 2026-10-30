@@ -23,7 +23,7 @@ use crate::generators::natural::fractal::FractalProfile;
 use crate::generators::natural::morphology::noise::SphericalNoise3d;
 use crate::generators::natural::random::{
     LabeledSubstreams, INITIAL_CRUST_V3_LABEL, INITIAL_DOMAINS_V5_LABEL, INITIAL_PLATES_V3_LABEL,
-    PLATE_MOTION_V3_LABEL,
+    PLATE_MOTION_V3_LABEL, PROCEDURAL_COAST_V1_LABEL,
 };
 use crate::generators::natural::topology::{
     farthest_point_seeds, multi_source_distance, NaturalTopologyIndex,
@@ -604,10 +604,36 @@ fn continental_from_plate_nuclei(
     target_fraction: f32,
     cap_center: Option<UnitVector3>,
 ) -> Vec<bool> {
+    if preset == ResolvedWorldFormationPreset::ProceduralContinents {
+        return procedural_continental_mask(surface, streams, target_fraction);
+    }
     let nuclei = select_continental_nuclei(surface, plate_reps, preset, streams, cap_center);
     let (owner, dist) = hop_nearest_nuclei(topology, &nuclei);
     let primary_first = preset.satellite_nucleus_count() > 0;
     let order = continental_cell_order(&owner, &dist, primary_first);
+    area_prefix_mask(surface, &order, target_fraction)
+}
+
+/// Authoring prior: a spherical fBm excursion set, followed by the existing
+/// area-budget selection. This initializes material; it never edits evolved terrain.
+fn procedural_continental_mask(
+    surface: &SphericalSurfaceSnapshot,
+    streams: &LabeledSubstreams,
+    target_fraction: f32,
+) -> Vec<bool> {
+    let mut rng = streams.stream(PROCEDURAL_COAST_V1_LABEL);
+    let noise = SphericalNoise3d::new(rng.next_u32());
+    let profile = FormationTectonicRecipe::for_preset(ResolvedWorldFormationPreset::Continents)
+        .initial_crust_profile;
+    let sample_spacing_m = (surface.total_cell_area().get() / surface.cells().len() as f64).sqrt();
+    let profile = profile.limited_to_resolution(surface.radius().get(), sample_spacing_m);
+    let signals = surface
+        .cells()
+        .iter()
+        .map(|cell| noise.fbm(cell.centroid, profile))
+        .collect::<Vec<_>>();
+    let mut order = (0..signals.len()).collect::<Vec<_>>();
+    order.sort_by(|&a, &b| signals[b].total_cmp(&signals[a]).then(a.cmp(&b)));
     area_prefix_mask(surface, &order, target_fraction)
 }
 
@@ -1011,6 +1037,41 @@ mod tests {
             StageIdentity::new("initial-tectonics-test", 1, "sekai.test"),
         ));
         LabeledSubstreams::capture(&mut rng)
+    }
+
+    #[test]
+    fn procedural_initial_crust_is_repeatable_material_backed_and_area_bounded() {
+        let (surface, topology) = fixture(642);
+        let spec = TectonicSpec::default();
+        let make = |preset| {
+            build_initial_state_v5(&surface, &topology, &spec, preset, &streams(42)).unwrap()
+        };
+        let state = make(ResolvedWorldFormationPreset::ProceduralContinents);
+        let repeated = make(ResolvedWorldFormationPreset::ProceduralContinents);
+        let old = make(ResolvedWorldFormationPreset::Continents);
+        let kinds = |state: &super::TectonicState| {
+            state
+                .samples
+                .iter()
+                .map(|sample| sample.kind)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(kinds(&state), kinds(&repeated));
+        assert_ne!(kinds(&state), kinds(&old));
+        let mut area = 0.0;
+        for sample in &state.samples {
+            assert_eq!(sample.material.compatibility_kind(), sample.kind);
+            if sample.kind == CrustKind::Continental {
+                area += surface.cells()[sample.anchor.raw() as usize].area.get();
+            }
+        }
+        let target = surface.total_cell_area().get() * f64::from(spec.continental_crust_fraction);
+        let maximum_cell_area = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .fold(0.0, f64::max);
+        assert!((area - target).abs() <= maximum_cell_area);
     }
 
     fn connected_owner_count(

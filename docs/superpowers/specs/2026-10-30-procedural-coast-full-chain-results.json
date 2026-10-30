@@ -1,0 +1,644 @@
+{
+  "climate_budget": {
+    "absorbed_shortwave_global_mean_w_m2": 244.17929763134262,
+    "atmosphere_mass_relative_error": 7.204365917896852e-11,
+    "energy_relative_error": 9.409067169471816e-11,
+    "evaporation_global_mean_mm_day": 3.421010624173473,
+    "evaporation_precipitation_relative_imbalance": 0.0038041140553521416,
+    "moisture_relative_error": 1.3820953148621331e-9,
+    "ocean_volume_relative_error": 4.437611922569827e-13,
+    "outgoing_longwave_global_mean_w_m2": 245.20297976926562,
+    "paired_exchange_relative_error": 3.7283052694785313e-8,
+    "planetary_albedo_global_mean": 0.28235652939699263,
+    "precipitation_global_mean_mm_day": 3.434074234235049,
+    "toa_net_radiation_global_mean_w_m2": -1.0236821379230037
+  },
+  "final_land_fraction": 0.14531126618385315,
+  "graph_elapsed_ms": 19066.5939,
+  "initial_land_fraction": 0.13839100301265717,
+  "mean_absolute_surface_process_change_m": 38.12962362288488,
+  "preset": "ProceduralContinents",
+  "profile": "draft",
+  "sea_level_m": 576.0691528320312,
+  "seed": 42,
+  "source_cells": 20252,
+  "surface_quality": {
+    "metrics": [
+      {
+        "bounds": {
+          "max": 0.0,
+          "min": null
+        },
+        "id": {
+          "name": "component-identity-mismatch-count",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 0.0
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": 1.25
+        },
+        "id": {
+          "name": "deposited-sediment-enrichment-ratio",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3084,
+        "status": "pass",
+        "value": 3.3728354528028266
+      },
+      {
+        "bounds": {
+          "max": 0.03,
+          "min": null
+        },
+        "id": {
+          "name": "final-land-fraction-absolute-change",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 0.005953565310129555
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": 1.5
+        },
+        "id": {
+          "name": "fluvial-incision-support-enrichment-ratio",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 794,
+        "status": "pass",
+        "value": 2.814495423517497
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "land-area-share-below-100m",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3245,
+        "status": "pass",
+        "value": 0.0820917052388959
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": 0.95
+        },
+        "id": {
+          "name": "land-outlet-path-area-fraction",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3245,
+        "status": "pass",
+        "value": 1.0
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "land-relief-mean-m",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3245,
+        "status": "pass",
+        "value": 693.08784072254
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "land-relief-p05-m",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3245,
+        "status": "pass",
+        "value": 64.60601806640625
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "land-relief-p25-m",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3245,
+        "status": "pass",
+        "value": 274.730712890625
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "land-relief-p50-m",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3245,
+        "status": "pass",
+        "value": 592.1150512695312
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "land-relief-p75-m",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3245,
+        "status": "pass",
+        "value": 993.6989135742188
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "land-relief-p95-m",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 3245,
+        "status": "pass",
+        "value": 1597.37744140625
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": 3.0
+        },
+        "id": {
+          "name": "largest-network-strahler-order",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 2479,
+        "status": "pass",
+        "value": 4.0
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "ocean-depth-p50-m",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 17007,
+        "status": "pass",
+        "value": 3524.77783203125
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": 0.9
+        },
+        "id": {
+          "name": "primary-final-elevation-correlation",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 0.9997507894345943
+      },
+      {
+        "bounds": {
+          "max": 1e-7,
+          "min": null
+        },
+        "id": {
+          "name": "provenance-mass-relative-error",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 3.2986403024457006e-15
+      },
+      {
+        "bounds": {
+          "max": 0.0,
+          "min": null
+        },
+        "id": {
+          "name": "receiver-adjacency-violation-count",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 0.0
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": 1.0
+        },
+        "id": {
+          "name": "river-reach-count",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 2479,
+        "status": "pass",
+        "value": 2479.0
+      },
+      {
+        "bounds": {
+          "max": 1e-8,
+          "min": null
+        },
+        "id": {
+          "name": "sediment-mass-relative-error",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 3.2469267796610867e-15
+      },
+      {
+        "bounds": {
+          "max": 0.0,
+          "min": null
+        },
+        "id": {
+          "name": "through-ocean-land-river-count",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 0.0
+      },
+      {
+        "bounds": {
+          "max": 1e-6,
+          "min": null
+        },
+        "id": {
+          "name": "water-volume-relative-error",
+          "namespace": "sekai.surface-formation-v2",
+          "version": 2
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 4.235082193300034e-9
+      }
+    ],
+    "schema_version": 1,
+    "subject_fingerprint": [
+      181,
+      47,
+      149,
+      73,
+      90,
+      60,
+      237,
+      85,
+      149,
+      34,
+      78,
+      103,
+      179,
+      105,
+      57,
+      87,
+      218,
+      7,
+      25,
+      120,
+      43,
+      78,
+      190,
+      59,
+      21,
+      203,
+      207,
+      245,
+      119,
+      152,
+      162,
+      83
+    ],
+    "surface_ref": {
+      "cell_count": 20252,
+      "edge_count": 60750,
+      "fingerprint": [
+        13,
+        9,
+        223,
+        122,
+        161,
+        49,
+        209,
+        32,
+        73,
+        2,
+        2,
+        116,
+        27,
+        15,
+        211,
+        24,
+        73,
+        25,
+        234,
+        150,
+        129,
+        241,
+        101,
+        55,
+        161,
+        79,
+        129,
+        240,
+        229,
+        128,
+        111,
+        46
+      ],
+      "geometry_kind": "spherical_v1",
+      "geometry_schema": 1
+    }
+  },
+  "tectonic_quality": {
+    "metrics": [
+      {
+        "bounds": {
+          "max": 0.0001,
+          "min": null
+        },
+        "id": {
+          "name": "authority-material-relative-error",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 4,
+        "status": "pass",
+        "value": 0.0
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": 0.8
+        },
+        "id": {
+          "name": "collision-causality-fraction",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 16,
+        "status": "pass",
+        "value": 0.875
+      },
+      {
+        "bounds": {
+          "max": 0.45,
+          "min": 0.3
+        },
+        "id": {
+          "name": "continental-area-fraction",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 0.4068536241702697
+      },
+      {
+        "bounds": {
+          "max": 1.15,
+          "min": 0.75
+        },
+        "id": {
+          "name": "continental-area-retention",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 1,
+        "status": "pass",
+        "value": 1.0707468031992573
+      },
+      {
+        "bounds": {
+          "max": 0.0001,
+          "min": null
+        },
+        "id": {
+          "name": "control-material-relative-error",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 4,
+        "status": "pass",
+        "value": 2.2871887841542298e-11
+      },
+      {
+        "bounds": {
+          "max": 0.0,
+          "min": null
+        },
+        "id": {
+          "name": "lineage-closure-error",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 1,
+        "status": "pass",
+        "value": 0.0
+      },
+      {
+        "bounds": {
+          "max": 0.45,
+          "min": null
+        },
+        "id": {
+          "name": "maximum-plate-area-fraction",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 10,
+        "status": "pass",
+        "value": 0.31588971930313225
+      },
+      {
+        "bounds": {
+          "max": 0.0,
+          "min": null
+        },
+        "id": {
+          "name": "non-finite-value-count",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 303780,
+        "status": "pass",
+        "value": 0.0
+      },
+      {
+        "bounds": {
+          "max": 0.35,
+          "min": null
+        },
+        "id": {
+          "name": "regular-triple-junction-angle-fraction",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 48,
+        "status": "pass",
+        "value": 0.20833333333333334
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": null
+        },
+        "id": {
+          "name": "remap-category-ambiguity-fraction",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 20252,
+        "status": "pass",
+        "value": 0.001075459933179108
+      },
+      {
+        "bounds": {
+          "max": null,
+          "min": 0.8
+        },
+        "id": {
+          "name": "subduction-causality-fraction",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 989,
+        "status": "pass",
+        "value": 0.9191102123356926
+      },
+      {
+        "bounds": {
+          "max": 0.5,
+          "min": null
+        },
+        "id": {
+          "name": "transform-to-convergent-uplift-ratio",
+          "namespace": "sekai.tectonics-v5",
+          "version": 1
+        },
+        "reason": null,
+        "sample_count": 2643,
+        "status": "pass",
+        "value": 0.0
+      }
+    ],
+    "schema_version": 1,
+    "surface_ref": {
+      "cell_count": 20252,
+      "edge_count": 60750,
+      "fingerprint": [
+        13,
+        9,
+        223,
+        122,
+        161,
+        49,
+        209,
+        32,
+        73,
+        2,
+        2,
+        116,
+        27,
+        15,
+        211,
+        24,
+        73,
+        25,
+        234,
+        150,
+        129,
+        241,
+        101,
+        55,
+        161,
+        79,
+        129,
+        240,
+        229,
+        128,
+        111,
+        46
+      ],
+      "geometry_kind": "spherical_v1",
+      "geometry_schema": 1
+    }
+  }
+}

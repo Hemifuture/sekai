@@ -33,6 +33,9 @@ impl WorldFormationGenerator {
         let resolved = match spec.preset {
             WorldFormationPreset::Random => resolve_weighted_roll(roll % 100),
             WorldFormationPreset::Continents => ResolvedWorldFormationPreset::Continents,
+            WorldFormationPreset::ProceduralContinents => {
+                ResolvedWorldFormationPreset::ProceduralContinents
+            }
             WorldFormationPreset::Archipelago => ResolvedWorldFormationPreset::Archipelago,
             WorldFormationPreset::Supercontinent => ResolvedWorldFormationPreset::Supercontinent,
             WorldFormationPreset::GreatIsland => ResolvedWorldFormationPreset::GreatIsland,

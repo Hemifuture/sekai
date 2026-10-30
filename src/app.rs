@@ -1901,11 +1901,19 @@ impl eframe::App for TemplateApp {
                             for preset in [
                                 WorldFormationPreset::Random,
                                 WorldFormationPreset::Continents,
+                                WorldFormationPreset::ProceduralContinents,
                                 WorldFormationPreset::Archipelago,
                                 WorldFormationPreset::Supercontinent,
                                 WorldFormationPreset::GreatIsland,
                                 WorldFormationPreset::VolcanicIslands,
                             ] {
+                                if preset == WorldFormationPreset::ProceduralContinents
+                                    && (self.world_pipeline != WorldPipeline::Formation
+                                        || self.formation_quality_profile
+                                            != crate::world::natural::NaturalQualityProfile::Draft)
+                                {
+                                    continue;
+                                }
                                 ui.selectable_value(
                                     &mut self.formation_spec.preset,
                                     preset,
@@ -2261,6 +2269,7 @@ fn formation_preset_label(preset: WorldFormationPreset) -> &'static str {
     match preset {
         WorldFormationPreset::Random => "随机（按种子）",
         WorldFormationPreset::Continents => "多大陆",
+        WorldFormationPreset::ProceduralContinents => "程序化海岸（实验）",
         WorldFormationPreset::Archipelago => "群岛",
         WorldFormationPreset::Supercontinent => "超级大陆",
         WorldFormationPreset::GreatIsland => "大岛与卫星岛",
@@ -2278,6 +2287,9 @@ fn apply_formation_preset_selection(
     let resolved = match selected {
         WorldFormationPreset::Random => None,
         WorldFormationPreset::Continents => Some(ResolvedWorldFormationPreset::Continents),
+        WorldFormationPreset::ProceduralContinents => {
+            Some(ResolvedWorldFormationPreset::ProceduralContinents)
+        }
         WorldFormationPreset::Archipelago => Some(ResolvedWorldFormationPreset::Archipelago),
         WorldFormationPreset::Supercontinent => Some(ResolvedWorldFormationPreset::Supercontinent),
         WorldFormationPreset::GreatIsland => Some(ResolvedWorldFormationPreset::GreatIsland),

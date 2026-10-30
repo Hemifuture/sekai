@@ -994,6 +994,7 @@ impl FormationTectonicRecipe {
         };
 
         match preset {
+            ResolvedWorldFormationPreset::ProceduralContinents => Self::for_preset(Continents),
             Continents => Self::new(4, 1.8, 0.75, 1_000, 1_000)
                 .with_oceanization(OceanizationPolicy::Complete),
             Archipelago => {

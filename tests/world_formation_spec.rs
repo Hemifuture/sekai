@@ -43,6 +43,27 @@ fn resolve(seed: u64, preset: WorldFormationPreset) -> ResolvedWorldFormationArt
 }
 
 #[test]
+fn procedural_continents_is_an_explicit_opt_in_preserving_existing_defaults() {
+    let requested: Result<WorldFormationPreset, _> =
+        serde_json::from_str("\"ProceduralContinents\"");
+    assert!(
+        requested.is_ok(),
+        "the experimental procedural preset must be selectable"
+    );
+    let requested = requested.unwrap();
+    let resolved = resolve(42, requested);
+    assert_eq!(
+        serde_json::to_string(&resolved.formation().resolved()).unwrap(),
+        "\"ProceduralContinents\""
+    );
+    assert_eq!(
+        WorldFormationSpec::default().preset,
+        WorldFormationPreset::Continents
+    );
+    assert_ne!(resolved, resolve(42, WorldFormationPreset::Continents));
+}
+
+#[test]
 fn default_spec_requests_named_multi_continents() {
     let spec = WorldFormationSpec::default();
 

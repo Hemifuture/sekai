@@ -395,6 +395,9 @@ struct CrustFormationProfile {
 impl CrustFormationProfile {
     const fn for_preset(preset: ResolvedWorldFormationPreset) -> Self {
         match preset {
+            ResolvedWorldFormationPreset::ProceduralContinents => {
+                Self::for_preset(ResolvedWorldFormationPreset::Continents)
+            }
             ResolvedWorldFormationPreset::Continents => Self {
                 nucleus_count: CONTINENT_OWNER_SCALES.len(),
                 corridor_half_width_steps: 2,

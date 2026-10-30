@@ -17,6 +17,7 @@ pub(super) const HOTSPOT_STRENGTH_LABEL: &str = "hotspot-strength-v1";
 pub(super) const BEDROCK_PROVINCE_LABEL: &str = "bedrock-province-v1";
 pub(super) const INITIAL_PLATES_V3_LABEL: &str = "initial-plates-v3";
 pub(super) const INITIAL_CRUST_V3_LABEL: &str = "initial-crust-v3";
+pub(super) const PROCEDURAL_COAST_V1_LABEL: &str = "procedural-coast-v1";
 pub(super) const PLATE_MOTION_V3_LABEL: &str = "plate-motion-v3";
 pub(super) const RIFT_EVENTS_V3_LABEL: &str = "rift-events-v3";
 pub(super) const OROGENIC_DETAIL_V3_LABEL: &str = "orogenic-detail-v3";
