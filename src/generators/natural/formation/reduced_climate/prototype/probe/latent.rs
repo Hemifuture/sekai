@@ -2,15 +2,68 @@
 //! No temperature, water, circulation, or evaporation is resolved here.
 
 use super::super::{
-    eddy_driven_zonal_wind, hadley_lower_branch, moist_static_energy_j_kg, mse_edge_transport_kg_s,
-    vapour_column_mass_kg_m2, water_edge_transport, WaterMonth,
+    coupled::periodic_storage_rate, eddy_driven_zonal_wind, hadley_lower_branch,
+    moist_static_energy_j_kg, mse_edge_transport_kg_s, vapour_column_mass_kg_m2,
+    water_edge_transport, WaterMonth,
 };
 use super::{json, ReducedClimateGeometry, ReducedInputs, ReducedWorkClimate, Value, MONTHS};
 use crate::world::natural::{
-    saturation_specific_humidity_kg_kg, P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K,
-    P4_LOWER_LAYER_REFERENCE_PRESSURE_PA, REFERENCE_SURFACE_RELATIVE_HUMIDITY,
-    STANDARD_GRAVITY_M_S2, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    p4_seasonal_storage_heat_capacities_j_m2_k, saturation_specific_humidity_kg_kg,
+    P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K, P4_LOWER_LAYER_REFERENCE_PRESSURE_PA,
+    REFERENCE_SURFACE_RELATIVE_HUMIDITY, SECONDS_PER_CLIMATOLOGICAL_MONTH, STANDARD_GRAVITY_M_S2,
+    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
+
+/// Estimates storage scales from adjacent periodic month samples, not the E1 harmonic residual.
+/// The air-only thermal scale is also the full E1 thermal scale on pure land cells.
+pub(super) fn monthly_storage_scale(
+    grid: &ReducedClimateGeometry,
+    inputs: &ReducedInputs,
+    work: &ReducedWorkClimate,
+) -> Value {
+    let latent_mass = WATER_VAPORIZATION_LATENT_HEAT_J_KG * vapour_column_mass_kg_m2();
+    let (air_capacity, _) = p4_seasonal_storage_heat_capacities_j_m2_k();
+    let latent: Vec<[f64; MONTHS]> = work
+        .specific_humidity
+        .iter()
+        .map(|months| periodic_storage_rate(months).map(|rate| latent_mass * rate))
+        .collect();
+    let thermal: Vec<[f64; MONTHS]> = work
+        .theta_c
+        .iter()
+        .map(|months| periodic_storage_rate(months).map(|rate| air_capacity * rate))
+        .collect();
+    let absolute: Vec<[f64; MONTHS]> = latent.iter().map(|m| m.map(f64::abs)).collect();
+    let maximum = absolute.iter().flatten().copied().fold(0.0_f64, f64::max);
+    let mut pure_land_area = 0.0;
+    let mut equivalent_sum = 0.0;
+    let mut equivalent_max = 0.0_f64;
+    for (cell, months) in work.specific_humidity.iter().enumerate() {
+        if inputs.land_fraction[cell] != 1.0 {
+            continue;
+        }
+        let minimum = months.iter().copied().fold(f64::INFINITY, f64::min);
+        let maximum = months.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let equivalent = latent_mass * (maximum - minimum) / air_capacity;
+        pure_land_area += grid.area_m2[cell];
+        equivalent_sum += grid.area_m2[cell] * equivalent;
+        equivalent_max = equivalent_max.max(equivalent);
+    }
+    json!({
+        "identity": "a10-adjacent-month-storage-scale-r1",
+        "note": "Periodic adjacent monthly-mean sampling differences with the production equal-month interval. This is a storage magnitude estimate, not an exact E1 Crank-Nicolson harmonic residual or a new water solve. Air thermal storage excludes ocean mixed-layer storage; it equals full thermal storage on pure land. Kelvin-equivalent is an inventory scale, not a predicted temperature response.",
+        "sample_interval_seconds": SECONDS_PER_CLIMATOLOGICAL_MONTH,
+        "air_capacity_j_m2_k": air_capacity,
+        "latent_storage": regions(grid, inputs, &latent),
+        "absolute_latent_storage": regions(grid, inputs, &absolute),
+        "air_thermal_storage": regions(grid, inputs, &thermal),
+        "max_cell_month_absolute_latent_storage_w_m2": maximum,
+        "pure_land_latent_peak_to_peak_equivalent_k_mean":
+            (pure_land_area > 0.0).then_some(equivalent_sum / pure_land_area),
+        "pure_land_latent_peak_to_peak_equivalent_k_max":
+            (pure_land_area > 0.0).then_some(equivalent_max),
+    })
+}
 
 /// Evaluates every monthly edge with the exact Q1 coefficients and common donor.
 /// Values are signed convergences in W/m2; equivalent mm/day is only an energy unit.

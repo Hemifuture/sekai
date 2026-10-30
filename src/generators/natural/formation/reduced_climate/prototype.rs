@@ -25,6 +25,7 @@
 //!   month with an active-set loop (E and P close by construction);
 //! - O1 Stommel wind-driven barotropic streamfunction per month.
 
+mod coupled;
 #[cfg(test)]
 mod probe;
 

@@ -625,6 +625,12 @@ fn a10_fixed_flow_latent_flux_probe() {
     run_a10_probe(true);
 }
 
+#[test]
+#[ignore = "release-only monthly latent-storage scale diagnostic"]
+fn a10_monthly_latent_storage_probe() {
+    run_a10_probe(true);
+}
+
 fn run_a10_probe(latent_only: bool) {
     let profile = match std::env::var("SEKAI_A10_PROFILE").as_deref() {
         Ok("standard") => NaturalQualityProfile::Standard,
@@ -835,6 +841,7 @@ fn run_a10_probe(latent_only: bool) {
             "diagnostics": work.diagnostics,
             "moisture_budget": moisture::budget(&reduced_grid, &inputs, &work),
             "latent_flux": latent::audit(&reduced_grid, &inputs, &work),
+            "monthly_storage_scale": latent::monthly_storage_scale(&reduced_grid, &inputs, &work),
             "work_grid_annual": work_grid_dump(&reduced_grid, &inputs, &work),
         });
         let path = out_dir.join(format!("latent-{profile:?}-seed{seed}.json"));
