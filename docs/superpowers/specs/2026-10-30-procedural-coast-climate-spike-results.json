@@ -1,0 +1,87 @@
+{
+  "cases": [
+    {
+      "budget": {
+        "absorbed_shortwave_global_mean_w_m2": 231.4943381813521,
+        "atmosphere_mass_relative_error": 3.6593100829069705e-9,
+        "energy_relative_error": 2.509599580814899e-10,
+        "evaporation_global_mean_mm_day": 2.0830654386008414,
+        "evaporation_precipitation_relative_imbalance": 0.008800994148416862,
+        "moisture_relative_error": 1.1060050495127348e-9,
+        "ocean_volume_relative_error": 9.40912207916508e-13,
+        "outgoing_longwave_global_mean_w_m2": 232.0138867088783,
+        "paired_exchange_relative_error": 3.5041432002678816e-8,
+        "planetary_albedo_global_mean": 0.3196376521002551,
+        "precipitation_global_mean_mm_day": 2.1015612670143744,
+        "toa_net_radiation_global_mean_w_m2": -0.5195485275261831
+      },
+      "climate_elapsed_ms": 7476.297,
+      "land_fraction": 0.3499796688556671,
+      "sea_level_m": 2.3905394807774427e-13,
+      "solve": {
+        "continuation_steps": 48,
+        "dense_state_bytes": 31541456,
+        "fast_substeps": 191,
+        "final_residual": 0.17972154681377253,
+        "formation_cycles": 4,
+        "initial_residual": 0.3974791858635993,
+        "integrated_model_seconds": 345600,
+        "linear_iterations": 0,
+        "maximum_cfl": 0.7687500987882976
+      },
+      "water_relative_error": 0.0
+    },
+    {
+      "budget": {
+        "absorbed_shortwave_global_mean_w_m2": 231.5008326432365,
+        "atmosphere_mass_relative_error": 5.171522237482791e-11,
+        "energy_relative_error": 1.7773055949115256e-10,
+        "evaporation_global_mean_mm_day": 2.0743706142502165,
+        "evaporation_precipitation_relative_imbalance": 0.00943753736655475,
+        "moisture_relative_error": 1.3958577797042062e-9,
+        "ocean_volume_relative_error": 2.9024151815046834e-13,
+        "outgoing_longwave_global_mean_w_m2": 232.03999898723706,
+        "paired_exchange_relative_error": 3.506796534919468e-8,
+        "planetary_albedo_global_mean": 0.3196185648054248,
+        "precipitation_global_mean_mm_day": 2.094134082908239,
+        "toa_net_radiation_global_mean_w_m2": -0.539166344000563
+      },
+      "climate_elapsed_ms": 7433.875999999999,
+      "land_fraction": 0.3494207262992859,
+      "sea_level_m": 0.6185416579246521,
+      "solve": {
+        "continuation_steps": 48,
+        "dense_state_bytes": 31541456,
+        "fast_substeps": 191,
+        "final_residual": 0.18244015365926702,
+        "formation_cycles": 4,
+        "initial_residual": 0.3956920812508723,
+        "integrated_model_seconds": 345600,
+        "linear_iterations": 0,
+        "maximum_cfl": 0.7687500987882976
+      },
+      "water_relative_error": 1.0878303110605497e-11
+    }
+  ],
+  "initial_condition": {
+    "amplitude": 0.2,
+    "band_width": 0.35,
+    "boundary_offset": 0.3,
+    "frequencies": [
+      3.0,
+      6.0
+    ],
+    "height_scale_m": 4000.0,
+    "weights": [
+      1.0,
+      0.5
+    ]
+  },
+  "precipitation_area_month_mean_absolute_difference_mm_day": 0.25408316132095266,
+  "profile": "draft",
+  "scope": "input coupling only; no geomorphic feedback, skill or UI claim",
+  "seed": 42,
+  "source_cells": 20252,
+  "temperature_area_month_mean_absolute_difference_c": 0.27590140243763706,
+  "water_inventory_m3": 8.619579639087743e+17
+}
