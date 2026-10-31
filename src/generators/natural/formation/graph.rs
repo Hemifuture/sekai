@@ -289,7 +289,7 @@ impl Stage for CausalNaturalFormationStage {
         let cancellation = rng.cancellation_signal();
         if inputs.formation.formation().resolved()
             == crate::world::natural::ResolvedWorldFormationPreset::ProceduralContinents
-            && inputs.profile.profile() != NaturalQualityProfile::Draft
+            && !inputs.profile.profile().supports_procedural_coast()
         {
             return Err(StageError::new(
                 INVALID_PROFILE_CODE,

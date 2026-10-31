@@ -20,6 +20,14 @@ pub enum NaturalQualityProfile {
 }
 
 impl NaturalQualityProfile {
+    /// Returns whether this profile is in the procedural-coast experiment's supported domain.
+    ///
+    /// The 2026-10-30 procedural-coast UI preview plan authorizes only Draft;
+    /// this is a validation boundary, not a claim that higher profiles are physically invalid.
+    pub(crate) fn supports_procedural_coast(self) -> bool {
+        self == Self::Draft
+    }
+
     /// Returns the authoritative spherical-cell request for this profile.
     pub const fn authoritative_target_cell_count(self) -> u32 {
         match self {

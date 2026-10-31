@@ -78,7 +78,7 @@ const FORMATION_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 演化板块 → 基底/初级地形 → 全球环流 → 耦合地貌（P5）";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
 const INITIAL_PLATE_COUNT_LABEL: &str = "初始板块数";
-const PROCEDURAL_COAST_DRAFT_ONLY_TEXT: &str = "程序化海岸（实验）目前仅支持草稿档";
+const PROCEDURAL_COAST_DRAFT_ONLY_TEXT: &str = "程序化海岸（实验）目前仅支持完整生成链的草稿档";
 /// The default quality tier for interactive formation builds.
 fn default_formation_quality_profile() -> crate::world::natural::NaturalQualityProfile {
     crate::world::natural::NaturalQualityProfile::Draft
@@ -1246,6 +1246,14 @@ impl TemplateApp {
         if self.world_build.is_some() {
             return;
         }
+        if procedural_coast_unsupported(
+            self.formation_spec.preset,
+            self.world_pipeline,
+            self.formation_quality_profile,
+        ) {
+            self.spherical_runtime_error = Some(PROCEDURAL_COAST_DRAFT_ONLY_TEXT.to_owned());
+            return;
+        }
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancellation = crate::engine::BuildCancellation::new();
         let worker_cancellation = cancellation.clone();
@@ -1944,11 +1952,6 @@ impl eframe::App for TemplateApp {
             .default_width(320.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    let rebuild_blocked = procedural_coast_unsupported(
-                        self.formation_spec.preset,
-                        self.world_pipeline,
-                        self.formation_quality_profile,
-                    );
                     ui.heading("自然世界");
                     ui.label(CURRENT_SLICE_SUBTITLE);
                     ui.separator();
@@ -1957,14 +1960,6 @@ impl eframe::App for TemplateApp {
                         ui.label("根种子");
                         ui.add(egui::DragValue::new(&mut self.world_seed).range(0..=u64::MAX));
                     });
-                    if ui
-                        .add_enabled(!rebuild_blocked, egui::Button::new("新种子并重建"))
-                        .on_disabled_hover_text(PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
-                        .clicked()
-                    {
-                        new_seed = true;
-                    }
-
                     ui.add_space(8.0);
                     let previous_preset = self.formation_spec.preset;
                     egui::ComboBox::from_label("世界形态")
@@ -2100,6 +2095,19 @@ impl eframe::App for TemplateApp {
                             });
                     }
                     ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效");
+                    // Both actions must see this pass's edited preset and quality profile.
+                    let rebuild_blocked = procedural_coast_unsupported(
+                        self.formation_spec.preset,
+                        self.world_pipeline,
+                        self.formation_quality_profile,
+                    );
+                    if ui
+                        .add_enabled(!rebuild_blocked, egui::Button::new("新种子并重建"))
+                        .on_disabled_hover_text(PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
+                        .clicked()
+                    {
+                        new_seed = true;
+                    }
                     if ui
                         .add_enabled(!rebuild_blocked, egui::Button::new("按当前参数重建"))
                         .on_disabled_hover_text(PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
@@ -2365,17 +2373,15 @@ fn show_formation_area_summary(
     });
 }
 
-/// True when the formation stage would reject this request: the
-/// experimental procedural coast runs only on the Draft formation chain.
-/// Hiding the menu entry alone leaves an earlier selection standing.
+/// Applies the production profile domain plus the app's formation-only restriction.
+/// Hiding the menu entry alone leaves an earlier or persisted selection standing.
 fn procedural_coast_unsupported(
     preset: WorldFormationPreset,
     pipeline: WorldPipeline,
     profile: crate::world::natural::NaturalQualityProfile,
 ) -> bool {
     preset == WorldFormationPreset::ProceduralContinents
-        && (pipeline != WorldPipeline::Formation
-            || profile != crate::world::natural::NaturalQualityProfile::Draft)
+        && (pipeline != WorldPipeline::Formation || !profile.supports_procedural_coast())
 }
 
 fn formation_preset_label(preset: WorldFormationPreset) -> &'static str {
@@ -2524,23 +2530,147 @@ mod natural_app_tests {
 
     #[test]
     fn a_kept_procedural_coast_selection_blocks_non_draft_rebuilds() {
+        use crate::world::natural::NaturalQualityProfile::{Draft, High, Standard};
+        assert!(Draft.supports_procedural_coast());
+        for profile in [Draft, Standard, High] {
+            assert_eq!(
+                procedural_coast_unsupported(
+                    WorldFormationPreset::ProceduralContinents,
+                    WorldPipeline::Formation,
+                    profile,
+                ),
+                !profile.supports_procedural_coast(),
+            );
+            assert!(procedural_coast_unsupported(
+                WorldFormationPreset::ProceduralContinents,
+                WorldPipeline::LegacyFoundation,
+                profile,
+            ));
+            assert!(!procedural_coast_unsupported(
+                WorldFormationPreset::Continents,
+                WorldPipeline::Formation,
+                profile,
+            ));
+        }
+    }
+
+    #[test]
+    fn procedural_rebuild_buttons_follow_quality_changes_in_the_same_pass() {
         use crate::world::natural::NaturalQualityProfile::{Draft, Standard};
-        let procedural = WorldFormationPreset::ProceduralContinents;
-        assert!(!procedural_coast_unsupported(
-            procedural,
-            WorldPipeline::Formation,
-            Draft
-        ));
-        assert!(procedural_coast_unsupported(
-            procedural,
-            WorldPipeline::Formation,
-            Standard
-        ));
-        assert!(!procedural_coast_unsupported(
-            WorldFormationPreset::Continents,
-            WorldPipeline::Formation,
-            Standard
-        ));
+
+        // Headless egui input exercises actual control ordering without a GPU or OS input.
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = TemplateApp {
+            world_pipeline: WorldPipeline::Formation,
+            formation_quality_profile: Draft,
+            formation_spec: WorldFormationSpec {
+                preset: WorldFormationPreset::ProceduralContinents,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let render = |app: &mut TemplateApp, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 1200.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    eframe::App::update(app, context, &mut eframe::Frame::_new_kittest());
+                },
+            )
+        };
+        let click = |output: &egui::FullOutput, label: &str| {
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .and_then(|(_, node)| node.bounds())
+                .unwrap_or_else(|| panic!("control {label} must be visible"));
+            let pos = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        let _ = render(&mut app, Vec::new());
+        let mut output = render(&mut app, Vec::new());
+        for to in [Standard, Draft] {
+            let _ = render(&mut app, click(&output, "质量档位"));
+            // Popup geometry becomes interactive on the next pass.
+            output = render(&mut app, Vec::new());
+            output = render(&mut app, click(&output, super::quality_tier_label(to)));
+            assert_eq!(app.formation_quality_profile, to);
+            for label in ["新种子并重建", "按当前参数重建"] {
+                let node = &output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .expect("both rebuild actions are visible")
+                    .1;
+                assert_eq!(node.is_disabled(), !to.supports_procedural_coast());
+            }
+        }
+        assert!(app.world_build.is_none());
+    }
+
+    #[test]
+    fn unsupported_procedural_startup_does_not_spawn_a_build() {
+        use crate::world::natural::NaturalQualityProfile::{High, Standard};
+
+        // The startup path and explicit regeneration both call this request method.
+        // No surface generation or GPU fixture is needed to prove preflight rejection.
+        for (pipeline, profile) in [
+            (WorldPipeline::Formation, Standard),
+            (WorldPipeline::Formation, High),
+            (WorldPipeline::LegacyFoundation, Standard),
+        ] {
+            let mut app = TemplateApp {
+                world_pipeline: pipeline,
+                formation_quality_profile: profile,
+                formation_spec: WorldFormationSpec {
+                    preset: WorldFormationPreset::ProceduralContinents,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            app.request_spherical_world_build();
+            assert!(
+                app.world_build.is_none(),
+                "unsupported startup must not spawn a worker"
+            );
+            assert_eq!(
+                app.spherical_runtime_error.as_deref(),
+                Some(super::PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
+            );
+        }
     }
 
     #[derive(Default)]
