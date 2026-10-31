@@ -241,10 +241,13 @@ fn conservative_material_resample_v5(
             surface_cells: cell_count,
         });
     }
-    // The mask is each cell's semi-Lagrangian winner kind: the rigidly
-    // advected mask, with no area threshold, diffusion, or interpolation that
-    // could bridge a seaway or open a hole nothing moved into (G1e §3.4). A
-    // cell nobody covers keeps the kind the per-cell resample resolved.
+    // The mask is the sign of the interface distance the plate's samples
+    // carry, interpolated to each centroid with the same linear weights as
+    // thickness (P2 boundary-noise spec §5.4; Strain 1999). Taking the nearest
+    // sample's kind instead is point sampling of the moved staircase: every
+    // resample re-quantizes the coastline to whole cells and the error grows
+    // with the resample count (spec §1.3, §2.1). A cell with no candidate keeps
+    // the semi-Lagrangian winner kind.
     //
     // Thickness is intensive and is carried to the cell with linear
     // (barycentric) weights from the plate's compatible samples, exactly as
@@ -253,18 +256,33 @@ fn conservative_material_resample_v5(
     // nearest-grid-point assignment, which re-injects grid-scale noise at
     // every resample (Hockney & Eastwood 1988, ch. 5; G1e R4).
     let mut kinds = Vec::with_capacity(cell_count);
+    let mut winner_kinds = Vec::with_capacity(cell_count);
+    let mut interpolated = Vec::with_capacity(cell_count);
     let mut cell_thickness = Vec::with_capacity(cell_count);
+    let mut candidates = Vec::with_capacity(32);
     for (cell, provisional) in surface.cells().iter().zip(remapped.iter()) {
         let winner = if coverage.sample_indices(cell.id).is_empty() {
             *provisional
         } else {
             source.samples[coverage_winner(&source.samples, coverage, cell.id, cell.centroid)?]
         };
-        kinds.push(winner.kind);
-        cell_thickness.push(if provisional.kind == winner.kind {
+        let distance = interpolate_interface_distance(
+            surface,
+            topology,
+            &source.samples,
+            coverage,
+            cell.id,
+            provisional.owner,
+            &mut candidates,
+        )?;
+        let kind = distance.map_or(winner.kind, kind_of_interface_distance);
+        kinds.push(kind);
+        winner_kinds.push(winner.kind);
+        interpolated.push(distance);
+        cell_thickness.push(if provisional.kind == kind {
             Some(provisional.thickness_km)
         } else {
-            match winner.kind {
+            match kind {
                 CrustKind::Continental => winner.material.continental_thickness_km(),
                 CrustKind::Oceanic => winner.material.oceanic_thickness_km(),
             }
@@ -276,7 +294,6 @@ fn conservative_material_resample_v5(
     // basin. Its kind follows its neighborhood; its parcel travels to the
     // nearest cell of its own kind below and the group rebalance closes the
     // cell's area.
-    let mut flipped = Vec::new();
     for cell in 0..cell_count {
         let kind = kinds[cell];
         let isolated = topology.arcs()[cell]
@@ -291,20 +308,122 @@ fn conservative_material_resample_v5(
                 CrustKind::Continental => CrustKind::Oceanic,
                 CrustKind::Oceanic => CrustKind::Continental,
             };
-            flipped.push(cell);
         }
     }
-    let nearest_continental = nearest_cell_of_kind(topology, &kinds, CrustKind::Continental);
-    let nearest_oceanic = nearest_cell_of_kind(topology, &kinds, CrustKind::Oceanic);
 
     // Donor-cell deposition: every source column is a parcel landing whole in
     // its anchor cell when that cell is of its kind, otherwise in the nearest
     // cell of its kind. Reference area rides with the parcel, so a cell may
     // hold more or less than its own area; nothing is rescaled or mixed.
+    //
+    // A cell whose kind no parcel landed in (the interface moved past its own
+    // samples, or the resolution floor flipped it) borrows its cell's worth
+    // from its neighbors' parcels of that kind, in proportion to what they
+    // hold and at their thickness, so nothing is created. A cell no neighbor
+    // can feed falls back to its winner's kind, whose parcel lands in it, and
+    // the deposition is redone; each pass reverts at least one cell, so the
+    // loop ends.
+    let (continental, oceanic, moved_area) = loop {
+        let (mut continental, mut oceanic, moved_area) =
+            deposit_parcels(topology, &source.samples, &kinds, cell_count)?;
+        let mut starving = Vec::new();
+        for cell in 0..cell_count {
+            let store = match kinds[cell] {
+                CrustKind::Continental => &mut continental,
+                CrustKind::Oceanic => &mut oceanic,
+            };
+            if store[cell].0 > 0.0 {
+                continue;
+            }
+            let neighbors = topology.arcs()[cell]
+                .iter()
+                .map(|arc| arc.neighbor.raw() as usize)
+                .collect::<Vec<_>>();
+            let available = neighbors.iter().map(|&n| store[n].0).sum::<f64>();
+            if available <= 0.0 {
+                starving.push(cell);
+                continue;
+            }
+            let need = surface.cells()[cell].area.get();
+            let fraction = (need / available).min(0.5);
+            for &n in &neighbors {
+                let (area, volume) = store[n];
+                let taken_area = area * fraction;
+                let taken_volume = volume * fraction;
+                store[n] = (area - taken_area, volume - taken_volume);
+                store[cell].0 += taken_area;
+                store[cell].1 += taken_volume;
+            }
+        }
+        let mut reverted = false;
+        for cell in starving {
+            if kinds[cell] != winner_kinds[cell] {
+                kinds[cell] = winner_kinds[cell];
+                reverted = true;
+            }
+        }
+        if !reverted {
+            break (continental, oceanic, moved_area);
+        }
+    };
+
+    for index in 0..cell_count {
+        if continental[index].0 > 0.0 || oceanic[index].0 > 0.0 {
+            remapped[index].material = MaterialColumn::new(
+                continental[index].0,
+                continental[index].1,
+                oceanic[index].0,
+                oceanic[index].1,
+            )?;
+        }
+        let previous_kind = remapped[index].kind;
+        remapped[index].synchronize_compatibility_from_material();
+        if remapped[index].kind == CrustKind::Continental {
+            remapped[index].age_myr = CONTINENTAL_CRUST_AGE_SENTINEL_MYR;
+        } else if previous_kind == CrustKind::Continental {
+            remapped[index].age_myr = 0.0;
+        }
+    }
+    ledger.record_resample_overlap_moved_area(moved_area);
+    rebalance_columns_to_cells(
+        surface,
+        topology,
+        remapped,
+        &mut kinds,
+        &cell_thickness,
+        ledger,
+    )?;
+    // Reinitialize the level set on the final mask, ruptures included, so the
+    // next resample interpolates distances rather than their drift (spec §5.5).
+    let final_kinds = remapped
+        .iter()
+        .map(|sample| sample.kind)
+        .collect::<Vec<_>>();
+    let distances =
+        reinitialize_interface_distance(surface, topology, &final_kinds, Some(&interpolated));
+    for (sample, distance) in remapped.iter_mut().zip(distances) {
+        sample.interface_distance_m = Some(distance);
+    }
+    Ok(())
+}
+
+/// Per-cell continental and oceanic (area, volume) stores, and the
+/// continental area that had to leave its anchor cell.
+type ParcelStores = (Vec<(f64, f64)>, Vec<(f64, f64)>, f64);
+
+/// Donor-cell deposition of every source parcel (see the caller).
+fn deposit_parcels(
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    kinds: &[CrustKind],
+    cell_count: usize,
+) -> Result<ParcelStores, ResampleError> {
+    let nearest_continental = nearest_cell_of_kind(topology, kinds, CrustKind::Continental);
+    let nearest_oceanic = nearest_cell_of_kind(topology, kinds, CrustKind::Oceanic);
     let mut continental = vec![(0.0_f64, 0.0_f64); cell_count];
     let mut oceanic = vec![(0.0_f64, 0.0_f64); cell_count];
     let mut moved_area = 0.0;
-    for (sample_index, sample) in source.samples.iter().enumerate() {
+    for (sample_index, sample) in samples.iter().enumerate() {
         let anchor = sample.anchor.raw() as usize;
         if anchor >= cell_count {
             return Err(ResampleError::InvalidFinalAnchor {
@@ -339,64 +458,103 @@ fn conservative_material_resample_v5(
             oceanic[target].1 += material.oceanic_volume_m3();
         }
     }
+    Ok((continental, oceanic, moved_area))
+}
 
-    // A flipped cell has no parcel of its new kind: it borrows its cell's
-    // worth from its neighbors' parcels of that kind, in proportion to what
-    // they hold and at their thickness, so nothing is created.
-    for &cell in &flipped {
-        let kind = kinds[cell];
-        let neighbors = topology.arcs()[cell]
-            .iter()
-            .map(|arc| arc.neighbor.raw() as usize)
-            .collect::<Vec<_>>();
-        let pool = |store: &[(f64, f64)]| neighbors.iter().map(|&n| store[n].0).sum::<f64>();
-        let need = surface.cells()[cell].area.get();
-        let store = match kind {
-            CrustKind::Continental => &mut continental,
-            CrustKind::Oceanic => &mut oceanic,
-        };
-        let available = pool(store);
-        if available <= 0.0 {
-            continue;
-        }
-        let fraction = (need / available).min(0.5);
-        for &n in &neighbors {
-            let (area, volume) = store[n];
-            let taken_area = area * fraction;
-            let taken_volume = volume * fraction;
-            store[n] = (area - taken_area, volume - taken_volume);
-            store[cell].0 += taken_area;
-            store[cell].1 += taken_volume;
+/// Interface distance at a cell centroid, linearly interpolated from the
+/// non-marker samples of the cell's reconstructed owner in the cell and its
+/// first ring (second ring when fewer than three), over the containing sample
+/// triangle (Sulsky et al. 1994 linear shape functions, as for thickness).
+/// Falls back to the nearest candidate; `None` when the owner has none here.
+fn interpolate_interface_distance(
+    surface: &SphericalSurfaceSnapshot,
+    topology: &NaturalTopologyIndex,
+    samples: &[CrustSample],
+    coverage: &super::contacts::CoverageScratch,
+    cell: CellId,
+    owner: LineageId,
+    candidates: &mut Vec<usize>,
+) -> Result<Option<f64>, ResampleError> {
+    let target = surface
+        .cell(cell)
+        .expect("validated spherical cell IDs are contiguous")
+        .centroid;
+    candidates.clear();
+    append_interface_candidates(coverage, samples, cell, owner, candidates)?;
+    for arc in &topology.arcs()[cell.raw() as usize] {
+        append_interface_candidates(coverage, samples, arc.neighbor, owner, candidates)?;
+    }
+    if candidates.len() < 3 {
+        for arc in &topology.arcs()[cell.raw() as usize] {
+            for second in &topology.arcs()[arc.neighbor.raw() as usize] {
+                append_interface_candidates(coverage, samples, second.neighbor, owner, candidates)?;
+            }
         }
     }
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    candidates.sort_by(|&first, &second| {
+        samples[second]
+            .position
+            .dot(target)
+            .total_cmp(&samples[first].position.dot(target))
+            .then_with(|| first.cmp(&second))
+    });
+    candidates.truncate(MAXIMUM_TRIANGLE_CANDIDATES);
+    let value = |index: usize| effective_interface_distance(surface, &samples[index]);
+    Ok(Some(
+        match containing_triangle(target, samples, candidates) {
+            Some((indices, weights)) => indices
+                .into_iter()
+                .zip(weights)
+                .map(|(index, weight)| value(index) * weight)
+                .sum(),
+            None => value(candidates[0]),
+        },
+    ))
+}
 
-    for index in 0..cell_count {
-        if continental[index].0 > 0.0 || oceanic[index].0 > 0.0 {
-            remapped[index].material = MaterialColumn::new(
-                continental[index].0,
-                continental[index].1,
-                oceanic[index].0,
-                oceanic[index].1,
-            )?;
-        }
-        let previous_kind = remapped[index].kind;
-        remapped[index].synchronize_compatibility_from_material();
-        if remapped[index].kind == CrustKind::Continental {
-            remapped[index].age_myr = CONTINENTAL_CRUST_AGE_SENTINEL_MYR;
-        } else if previous_kind == CrustKind::Continental {
-            remapped[index].age_myr = 0.0;
+fn append_interface_candidates(
+    coverage: &super::contacts::CoverageScratch,
+    samples: &[CrustSample],
+    cell: CellId,
+    owner: LineageId,
+    output: &mut Vec<usize>,
+) -> Result<(), ResampleError> {
+    for &raw_index in coverage.sample_indices(cell) {
+        let index = raw_index as usize;
+        let sample = samples
+            .get(index)
+            .ok_or(ResampleError::InvalidCoverageSample {
+                sample: index,
+                samples: samples.len(),
+            })?;
+        if sample.owner == owner
+            && sample.interface_distance_m.is_some()
+            && !output.contains(&index)
+        {
+            output.push(index);
         }
     }
-    ledger.record_resample_overlap_moved_area(moved_area);
-    rebalance_columns_to_cells(
-        surface,
-        topology,
-        remapped,
-        &mut kinds,
-        &cell_thickness,
-        ledger,
-    )?;
     Ok(())
+}
+
+/// A sample's carried distance when its sign agrees with its kind; a process
+/// that changed the kind since the last reinitialization (subduction of a
+/// mixed column's ocean) leaves a stale sign, and the sample then counts as a
+/// cell-resolved feature whose interface is its own cell edge (spec §5.2).
+fn effective_interface_distance(surface: &SphericalSurfaceSnapshot, sample: &CrustSample) -> f64 {
+    match sample.interface_distance_m {
+        Some(distance) if kind_of_interface_distance(f64::from(distance)) == sample.kind => {
+            f64::from(distance)
+        }
+        _ => f64::from(voronoi_interface_distance_m(
+            surface,
+            sample.anchor,
+            sample.kind,
+        )),
+    }
 }
 
 /// Brings every resampled column back to its cell's area without touching the
