@@ -62,33 +62,62 @@
 - 找不到直接对口出处时：给出最接近的一手依据加上明确的类比论证，并把该
   项作为**开放问题**写进规格交用户裁定，不得以"看起来合理"落地（先例：
   T0 §11.4 陆地占比、T0b §8 常量表）。
-- 世界设定可以偏离地球（水量、陆地占比等由用户决定），但机制必须守
-  物理：偏离的是参数取值，不是方程（用户裁定：过程守物理，结果归玩家，
-  系统只给建议值）。
+- 世界设定可以偏离地球（水量、陆地占比等由用户决定），但过程必须有物理
+  依据，结果归玩家，系统只给建议值。方程可按下节声明的尺度采用有出处的
+  简化模型；不得把保留现有完整方程误当成物理正确性的必要条件。
+
+### 修订：允许程序化地形初态（用户指令，2026-10-30）
+
+- 允许借鉴 Civ Atlas 等已有程序化制图方法生成大陆与海岸的初始形状，作为
+  明确声明的世界初始条件；不要求每处初始形状都由完整地质历史推导。
+  此项取代上文“一切位移必须由过程产生”对**初态构造**的限制，不追认
+  数值重采样误差为地貌，也不放宽后续演化的物理与账本要求。
+- 程序化初态须进入权威地形，并与地壳/基底、高程、海底及水量初始化一致；
+  不得仅修改显示岸线。形状参数属于作者先验，不冒充物理常量或已复演的历史。
+  方法仍须有出处，参数与适用尺度须显式记录，生产默认值仍须先测后钉。
+- 允许气候与地形双向塑造：地形影响气候，降水、径流、侵蚀与沉积改变地形，
+  再按有依据的时间尺度与耦合策略反馈；不要求完整历史或无限平衡迭代。
+- 水量/物质账本、声明的能量收支、身份、最终态一致性和 UI 验收保持不变。
+  禁止在求解后为美化岸线而改海陆、高程或重映射结果，却保留旧气候/河网。
+  海峡连通与小岛等未解析细节不得被静默宣称为物理有效。
+- 本次授权先开独立工作区、修订规格并做最小验证；采用新的初态不等于已验证
+  气候真实、完整地表耦合或最终海岸美观。具体证据见本轮规格与验证记录。
 
 ## 产品边界：最终态与科学近似（用户指令，2026-08-25）
+
+**修订（用户指令，2026-10-14）：** 保持整体物理正确，在明确支持的分辨率与
+物理尺度下满足最终地图需求；停止追求没有产品收益的极致物理精度，全面优化
+算法与生成链路。以下取代旧版“只改变求解策略、必须保留同一组方程”的限制。
 
 - Sekai 是**地图生成器**，不是生态、气候或地球动力学预测模拟器。产品是一次
   生成结束时原子发布的最终当前态；时间轨迹、耦合中间态、迭代序列、拒绝步和
   高精度参考解只属于私有求解过程，不是最终产物，不得仅为“模拟完整”而进入
   artifact、持久缓存契约或 UI。
-- 科学性首先约束**机制**：方程与过程来源、单位、因果归属、质量/水量守恒、
-  数值域、跨层身份和最终态自洽必须正确。不得用无成因修形、魔法系数、
-  事后重映射或科学状态 clamp 掩盖机制或账本错误。
-- 效率允许约束**求解策略**：可以采用有数值分析或工业实践依据的算子分裂、
-  显式/隐式方法、预测—校正、固定或有界迭代、近似线性解、较低频率耦合和
-  多分辨率工作域。类似为同一数学问题选择牛顿法、拟牛顿法或其他迭代器；
-  近似可以改变求解成本和误差，不得偷换被求解的物理机制。
-- 默认选择满足最终态质量与性能目标的最小求解方案。除非最终地图有已证明的
-  真实需求，不得默认要求单次生成的完整时间轨迹收敛、保存历史，或把多级
-  步长加密/高精度参考求解设为每次构建的发布门禁。
-- 新增或改变近似策略时，先在代表性 seed/profile 语料上用生产算子与更高成本
-  的参考路径做离线对照，记录最终态误差、守恒、质量指标、耗时和适用范围。
-  参考路径只提供研发证据，不进入产品 schema；验收以最终态不变式、既有质量
-  包络、性能门禁和 UI 结果为准。若需要新的误差阈值，仍须遵循“先测后钉”和
-  出处纪律。
-- 近似导致最终态不守恒、身份不一致、非有限或越出科学支持域时，必须调整
-  求解器、步长或耦合策略；不得以地图生成器为理由放宽硬不变式或裁剪结果。
+- 科学性约束**整体机制与账本**：来源、单位、因果归属、质量/水量守恒、声明的
+  能量收支、数值域、跨层身份和最终态自洽必须成立。守恒按有依据的离散误差
+  容差检查，不要求浮点运算数学上零误差；不得用无成因修形、魔法系数、事后
+  重映射或科学状态 clamp 掩盖机制或账本错误。
+- 效率同时约束**模型复杂度与求解策略**：允许有出处且适用于目标尺度的降阶、
+  诊断式平衡、参数化、较少层数、固定工作分辨率、较低耦合频率及有界近似求解。
+  可替换现有方程组；设计须明确保留的过程、被近似或省略的过程、适用域和
+  下游影响。现有层数、轨迹、求解器与逐位旧结果都不是必须保留的产品要求。
+- **分辨率是适用域的一部分**：先声明支持的档位、物理尺度与最终字段消费者，
+  再选算法和误差预算。物理工作网格可独立于显示细分；更细显示不自动触发更贵
+  的物理。只验证声明支持域，不追求任意网格下相同结果、无限加密收敛或未解析
+  尺度的真实性；不得把不支持的尺度静默宣称为有效。
+- 默认选择满足最终地图需求的最低成本方案。每项额外精度必须有可见质量或
+  下游消费者收益；不足以影响目标尺度结果的细节不计算。完整时间轨迹收敛、
+  历史保存、多级加密和高成本参考解不得默认成为每次构建的发布门禁。
+- 模型或近似改变先做最小充分的离线对照，记录最终态质量、守恒、耗时、内存
+  和适用范围。参考按问题选择解析解、受控夹具、观测或较高成本路径；现有模型
+  只是基线，不自动是真值。验收以目标尺度的最终态不变式、适用质量包络和用户
+  UI 结果为准；旧模型专属门槛须显式审查与修订，新误差预算仍先测后钉。
+- **全面优化按实测成本排序**：覆盖模型、求解、耦合、几何/重采样、校验/身份、
+  内存及显示/GPU 发布；优先删除无产品收益的工作，再减少重复、改善算法，最后
+  按测量引入并行/SIMD。全面评估不等于同时重写所有模块，局部提速须报告端到端
+  收益；旧时延预算不是停止优化的目标线，也不预先承诺未经实测的新时延。
+- 近似导致最终态超出守恒容差、身份不一致、非有限或越出声明支持域时，必须
+  调整模型、求解器或耦合策略；不得以地图生成器为理由掩盖这些错误。
 
 ## 测试范围纪律（用户指令，2026-08-26）
 
@@ -436,6 +465,14 @@ pub fn calculate_total(items: &[Item], tax_rate: f64) -> Result<f64, Calculation
 
 ---
 
+English amendment (2026-10-30): Procedural continent/coast geometry is permitted
+as an explicitly declared initial condition, without reconstructing its complete
+geologic history. This supersedes the process-only restriction for initialization,
+not for subsequent evolution. Initialize authoritative terrain, substrate and water
+consistently; retain physical feedbacks, budgets, identity, supported-scale limits
+and user UI acceptance. Never beautify final coastlines while retaining stale
+climate or drainage. Numerical resampling artifacts remain defects.
+
 English mirror: this file is the single source of truth for agent
 instructions (CLAUDE.md only points here). Engineering principles mandated
 by the user: minimalism (build the least that solves the problem, prefer
@@ -463,18 +500,22 @@ fraction); its mechanisms may not leave physics. Product boundary: Sekai is a
 map generator, not a predictive ecosystem, climate, or geodynamics simulator.
 Only the atomically published final current state is a product; trajectories,
 iterations, rejected steps, and high-accuracy references remain private solver
-work. Physical mechanisms, units, causal ownership, conservation, numeric
-domains, artifact identity, and final-state consistency are hard constraints.
-Numerical strategy may use sourced and measured approximations—operator
-splitting, explicit/implicit or predictor-corrector schemes, bounded iteration,
-approximate linear solves, reduced coupling cadence, and multiresolution work
-domains—just as one chooses an iterative solver for the same mathematical
-problem. Choose the least expensive method that meets final-state quality and
-performance; do not require trajectory convergence, history publication, or a
-high-accuracy reference solve on every build without a demonstrated final-map
-need. Validate new approximations offline on representative seeds against a
-costlier reference path, while keeping conservation and final-state invariants
-mandatory and following measure-before-pinning for any new tolerance.
+work. The 2026-10-14 revision makes correctness conditional on declared supported
+resolution and physical scale, while preserving sourced mechanisms, units,
+causality, conservation within justified numerical tolerances, declared energy
+budgets, valid domains, artifact identity, and final-state consistency. Model
+reduction, diagnostic balances, parameterization, fewer layers, fixed work grids,
+and cheaper coupling or solvers may replace the existing equations. Additional
+precision requires demonstrated final-map or downstream benefit; arbitrary-grid
+agreement and unresolved detail are not requirements. Display refinement need
+not increase physical resolution. Compare changes offline with suitable analytic,
+controlled, observational, or higher-cost evidence; the old model is a baseline,
+not automatically truth. Explicitly revise model-specific gates and measure new
+error budgets before pinning them. Optimize the entire path in measured cost
+order, removing unnecessary work before kernel tuning or parallelism, and report
+end-to-end gains. Old latency budgets do not justify stopping optimization; new
+speed claims require measurement. No per-build trajectory convergence, history,
+or expensive reference solve without demonstrated final-map need.
 Testing follows minimal sufficient evidence: every new or enlarged test must
 name the contract, risk, or reproduced regression it covers and explain why a
 smaller layer is insufficient. Prefer the cheapest effective layer; do not

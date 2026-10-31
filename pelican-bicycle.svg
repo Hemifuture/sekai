@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 800 800" role="img" aria-labelledby="title desc">
+  <title id="title">A pelican out for a bicycle ride</title>
+  <desc id="desc">A cheerful white pelican with an enormous golden bill and a coral scarf pedals a teal bicycle beside the sea.</desc>
+  <defs>
+    <style>
+      .outline { stroke: #243e45; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
+      .spoke { stroke: #a8bfba; stroke-width: 2; }
+    </style>
+    <g id="wheel">
+      <circle r="109" fill="#fffaf0" stroke="#243e45" stroke-width="12"/>
+      <circle r="97" fill="none" stroke="#d0dcd2" stroke-width="3"/>
+      <g class="spoke">
+        <path d="M-96 0H96M0-96V96M-68-68L68 68M-68 68L68-68M-89-37L89 37M-89 37L89-37M-37-89L37 89M-37 89L37-89"/>
+      </g>
+      <circle r="11" fill="#e7b660" stroke="#243e45" stroke-width="4"/>
+    </g>
+  </defs>
+
+  <rect width="800" height="800" rx="40" fill="#fbf5e8"/>
+  <circle cx="406" cy="371" r="282" fill="#e2eee5"/>
+  <circle cx="598" cy="188" r="57" fill="#f5cc78"/>
+  <g fill="none" stroke="#b1cec5" stroke-width="4" stroke-linecap="round">
+    <path d="M126 464H248M139 480H206M620 468H687M648 485H710"/>
+    <path d="M167 220q12-14 24 0q12-14 24 0M259 165q9-11 18 0q9-11 18 0"/>
+  </g>
+  <ellipse cx="412" cy="711" rx="288" ry="17" fill="#dbe0cf"/>
+
+  <!-- Wheels and the far pedal sit behind the frame. -->
+  <use href="#wheel" x="236" y="593"/>
+  <use href="#wheel" x="589" y="593"/>
+  <path d="M391 584L357 552H333" fill="none" class="outline"/>
+  <path d="M324 552H350" fill="none" stroke="#243e45" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Far leg, bent at the knee, with a webbed foot on its pedal. -->
+  <path d="M371 422L322 472L345 534" fill="none" stroke="#243e45" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M371 422L322 472L345 534" fill="none" stroke="#e6a34e" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M343 526Q357 530 366 547L326 547L333 535Z" fill="#e6a34e" class="outline"/>
+
+  <!-- The step-through bicycle, fork, saddle and swept handlebars. -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M236 593L326 453L391 593H236L540 461L391 593M326 453L540 461M540 461L589 593" stroke="#243e45" stroke-width="15"/>
+    <path d="M236 593L326 453L391 593H236L540 461L391 593M326 453L540 461M540 461L589 593" stroke="#359d99" stroke-width="8"/>
+    <path d="M326 453L315 424M540 461L522 401Q519 389 533 389H560Q576 389 576 373" stroke="#243e45" stroke-width="9"/>
+    <path d="M552 389H565" stroke="#d77c59" stroke-width="13"/>
+    <path d="M153 511Q210 465 273 490M548 484Q604 464 648 503" stroke="#359d99" stroke-width="7"/>
+  </g>
+  <path d="M286 420Q315 412 344 421Q348 431 329 434H291Q279 431 286 420Z" fill="#ad694c" class="outline"/>
+  <circle cx="391" cy="593" r="24" fill="#fbf5e8" class="outline"/>
+  <circle cx="391" cy="593" r="8" fill="#359d99"/>
+  <path d="M391 593L435 621H458" fill="none" class="outline"/>
+  <path d="M439 623H471" fill="none" stroke="#243e45" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Tail and body lead into the long curved pelican neck. -->
+  <path d="M290 372L226 343L245 382L220 379Q251 412 302 412" fill="#e8ede5" class="outline"/>
+  <path d="M281 361C302 330 349 325 395 339C427 349 443 339 444 307L441 245C439 211 458 188 489 185C524 181 548 205 544 233C541 257 526 270 506 273L509 327C514 387 475 439 410 449C348 461 286 436 271 406C263 389 269 373 281 361Z" fill="#fffdf5" class="outline"/>
+  <path d="M487 278L490 328C495 382 460 422 416 430C374 438 332 430 306 412C348 420 387 407 415 383C451 353 464 319 463 283Z" fill="#dde7df"/>
+
+  <!-- Scarf catches the sea breeze. -->
+  <path d="M457 296C420 281 389 289 365 266L369 291L351 303C387 317 423 303 458 314" fill="#e77c62" class="outline"/>
+  <path d="M447 290Q475 306 505 289L509 311Q478 328 448 311Z" fill="#ee8d6d" class="outline"/>
+  <path d="M375 291Q401 302 426 299" fill="none" stroke="#bf584b" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Near wing reaches naturally to the handlebar. -->
+  <path d="M319 364C352 342 385 357 416 373C452 393 487 390 530 378Q545 375 550 386Q542 400 524 405C471 424 411 424 370 407C346 398 327 384 319 364Z" fill="#f4f5eb" class="outline"/>
+  <g fill="none" stroke="#a7bcb4" stroke-width="4" stroke-linecap="round">
+    <path d="M342 370Q375 399 420 405M364 369Q394 391 430 395"/>
+  </g>
+
+  <!-- The near foot is planted on the forward pedal. -->
+  <path d="M411 438L449 503L430 594" fill="none" stroke="#243e45" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M411 438L449 503L430 594" fill="none" stroke="#f1b654" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M429 586Q437 596 450 599L476 612Q479 619 465 619H421Q415 611 421 598Z" fill="#f1b654" class="outline"/>
+  <path d="M441 605L450 613M455 607L462 614" fill="none" stroke="#cb873e" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- A long bill and suspended throat pouch make the silhouette unmistakable. -->
+  <path d="M520 237L684 246C655 263 620 300 572 299C540 299 520 273 520 237Z" fill="#f1bb65" class="outline"/>
+  <path d="M536 252Q548 286 576 287Q617 287 654 262" fill="none" stroke="#dc984d" stroke-width="4" stroke-linecap="round"/>
+  <path d="M519 225C560 224 627 232 694 243Q705 248 692 254L521 245Z" fill="#f7cf75" class="outline"/>
+  <path d="M683 243L694 243Q705 248 692 254L681 253" fill="#df8861"/>
+  <ellipse cx="500" cy="220" rx="14" ry="16" fill="#f1e5c7"/>
+  <circle cx="503" cy="219" r="7" fill="#243e45"/>
+  <circle cx="505" cy="216" r="2" fill="#fffdf5"/>
+  <path d="M482 198Q491 192 501 197M456 207Q448 186 456 175M463 201Q461 182 471 175" fill="none" class="outline"/>
+
+  <!-- Small roadside plants finish the seaside vignette. -->
+  <g fill="none" stroke="#7eaa94" stroke-width="5" stroke-linecap="round">
+    <path d="M107 704L103 671M107 704L87 688M107 704L120 682M698 704L704 675M698 704L683 688"/>
+  </g>
+</svg>
