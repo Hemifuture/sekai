@@ -44,7 +44,11 @@
 
 ### 5. 整合与清理
 
-- [ ] 审计 A9、校验/预热、LOD、Phase A、站点导出、G4/P2 与 recovered 分支的包含关系。
+- [x] 审计 A9、校验/预热、LOD、Phase A、站点导出、G4/P2 与 recovered 分支的包含关系。
+  只读独立审计：`D:/hemifuture-probes/consolidation-20261031/branch-audit.md`。
+  Coast 已按内容移植 LOD-1 R3，不重复贴补丁；A10 impl 不整体作为产品合并基底。
+  优化链按 prewarm（含 validate/A9 前段）加 A9 尾文档，再适配 Phase A、site；
+  site 的冻结旧导出保留历史身份，新气候工作尺度须另导出，不能静默覆盖青岚。
 - [ ] 可采纳的实现按依赖整合；预览专用和失败研究不整体合入。
 - [ ] 共享身份/重采样/schema 变更后执行 Release 全量与工程门禁；不默认跑昂贵 Debug 全量。
 - [ ] 更新 README/PROGRESS，准确区分已集成、待用户验收和研究阻塞。
