@@ -53,6 +53,10 @@
 - [ ] 共享身份/重采样/schema 变更后执行 Release 全量与工程门禁；不默认跑昂贵 Debug 全量。
 - [ ] 更新 README/PROGRESS，准确区分已集成、待用户验收和研究阻塞。
 - [ ] 清理重复工作区与已包含分支，保留必要研究入口和备份恢复说明。
+  首批已完成：`a10-climate-reduced` 与 `lod1-spec` 两个工作区及其旧本地分支；
+  全部提交由 `a10-impl`（LOD1 另由湖线）保留，Orca 检查无终端，Git 干净，忽略项仅构建缓存。
+  逐项恢复记录：`D:/hemifuture/sekai-backup-20261031-consolidation/cleanup-record.md`。
+  当前工作区数从 10 降为 8；未动任何远端 ref。
 - [ ] 向用户提供唯一推荐启动目录、提交与逐项 UI 检查步骤。用户确认后才记最终交付。
 
 ## 验证与资源边界
