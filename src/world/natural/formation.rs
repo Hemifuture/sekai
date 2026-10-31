@@ -88,6 +88,8 @@ pub enum WorldFormationPreset {
     Random,
     /// Favors several separated major continents.
     Continents,
+    /// Experimental procedural continental geometry, selected explicitly by the author.
+    ProceduralContinents,
     /// Favors many separated small landmasses.
     Archipelago,
     /// Favors one dominant continental mass.
@@ -103,6 +105,8 @@ pub enum WorldFormationPreset {
 pub enum ResolvedWorldFormationPreset {
     /// Several separated major continents.
     Continents,
+    /// Experimental procedural continental geometry with ordinary physical evolution.
+    ProceduralContinents,
     /// Many separated small landmasses.
     Archipelago,
     /// One dominant continental mass.
@@ -118,6 +122,7 @@ impl ResolvedWorldFormationPreset {
     pub const fn recommended_continental_crust_fraction(self) -> f32 {
         match self {
             Self::Continents => 0.38,
+            Self::ProceduralContinents => Self::Continents.recommended_continental_crust_fraction(),
             Self::Archipelago => 0.26,
             Self::Supercontinent => 0.42,
             Self::GreatIsland => 0.28,
@@ -132,6 +137,8 @@ impl ResolvedWorldFormationPreset {
     pub const fn recommended_land_fraction(self) -> f32 {
         match self {
             Self::Continents => 0.20,
+            // A control input inherited from the baseline, not a calibrated new median.
+            Self::ProceduralContinents => Self::Continents.recommended_land_fraction(),
             Self::Archipelago => 0.22,
             Self::Supercontinent => 0.17,
             Self::GreatIsland => 0.23,
@@ -149,6 +156,7 @@ impl ResolvedWorldFormationPreset {
     pub const fn continental_nucleus_count(self) -> u16 {
         match self {
             Self::Continents => 6,
+            Self::ProceduralContinents => Self::Continents.continental_nucleus_count(),
             Self::Archipelago => 14,
             Self::Supercontinent | Self::GreatIsland => 1,
             Self::VolcanicIslands => 4,
@@ -167,7 +175,8 @@ impl ResolvedWorldFormationPreset {
     pub const fn opens_in_dispersal_phase(self) -> bool {
         match self {
             Self::Continents => true,
-            Self::Archipelago
+            Self::ProceduralContinents
+            | Self::Archipelago
             | Self::Supercontinent
             | Self::GreatIsland
             | Self::VolcanicIslands => false,
@@ -181,9 +190,11 @@ impl ResolvedWorldFormationPreset {
     pub const fn satellite_nucleus_count(self) -> u16 {
         match self {
             Self::GreatIsland => 4,
-            Self::Continents | Self::Archipelago | Self::Supercontinent | Self::VolcanicIslands => {
-                0
-            }
+            Self::Continents
+            | Self::ProceduralContinents
+            | Self::Archipelago
+            | Self::Supercontinent
+            | Self::VolcanicIslands => 0,
         }
     }
 }
@@ -317,6 +328,7 @@ impl ResolvedWorldFormation {
         match self.resolved {
             ResolvedWorldFormationPreset::VolcanicIslands => MantleFormationBias::VolcanicIslands,
             ResolvedWorldFormationPreset::Continents
+            | ResolvedWorldFormationPreset::ProceduralContinents
             | ResolvedWorldFormationPreset::Archipelago
             | ResolvedWorldFormationPreset::Supercontinent
             | ResolvedWorldFormationPreset::GreatIsland => MantleFormationBias::Neutral,

@@ -4,6 +4,7 @@ mod climate;
 mod climate_rule_input;
 mod connectivity;
 mod erosion;
+mod fine_shoreline;
 mod fractal;
 mod geologic_rule_input;
 mod geology;
@@ -106,7 +107,8 @@ pub use geologic_rule_input::{
 };
 pub use geology::{GeologicGenerationError, GeologicGenerator};
 pub use hierarchical_derivation::{
-    HierarchicalEvaluator, HierarchicalPath, HierarchicalProbe, LocatedPrimitive, PrimitiveValue,
+    geometric_midpoint, subdivision_children, DerivedReading, HierarchicalEvaluator,
+    HierarchicalPath, HierarchicalProbe, LocatedPrimitive, PrimitiveValue, PublishedHydrology,
     HIERARCHICAL_PATH_DEPTH_MAX, HIERARCHICAL_PROBE_COUNT,
 };
 pub use hydro_erosion::{HydroErosionGenerationError, HydroErosionGenerator};

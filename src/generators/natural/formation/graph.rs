@@ -287,6 +287,15 @@ impl Stage for CausalNaturalFormationStage {
     ) -> Result<Self::Output, StageError> {
         rng.check_cancelled().map_err(|_| cancelled())?;
         let cancellation = rng.cancellation_signal();
+        if inputs.formation.formation().resolved()
+            == crate::world::natural::ResolvedWorldFormationPreset::ProceduralContinents
+            && !inputs.profile.profile().supports_procedural_coast()
+        {
+            return Err(StageError::new(
+                INVALID_PROFILE_CODE,
+                "程序化海岸实验目前仅支持 Draft（草稿）档",
+            ));
+        }
         let profile_bundle = ProfileSurfaceBuilder::complete(
             inputs.profile.profile(),
             inputs.surface.snapshot(),

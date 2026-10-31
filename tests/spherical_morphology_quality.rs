@@ -52,6 +52,9 @@ fn build_surface(target_cell_count: u32) -> SphericalSurfaceSnapshot {
 fn requested_preset(preset: ResolvedWorldFormationPreset) -> WorldFormationPreset {
     match preset {
         ResolvedWorldFormationPreset::Continents => WorldFormationPreset::Continents,
+        ResolvedWorldFormationPreset::ProceduralContinents => {
+            WorldFormationPreset::ProceduralContinents
+        }
         ResolvedWorldFormationPreset::Archipelago => WorldFormationPreset::Archipelago,
         ResolvedWorldFormationPreset::Supercontinent => WorldFormationPreset::Supercontinent,
         ResolvedWorldFormationPreset::GreatIsland => WorldFormationPreset::GreatIsland,
@@ -62,6 +65,9 @@ fn requested_preset(preset: ResolvedWorldFormationPreset) -> WorldFormationPrese
 fn preset_fraction(preset: ResolvedWorldFormationPreset) -> f32 {
     match preset {
         ResolvedWorldFormationPreset::Continents => 0.38,
+        ResolvedWorldFormationPreset::ProceduralContinents => {
+            preset.recommended_continental_crust_fraction()
+        }
         ResolvedWorldFormationPreset::Archipelago => 0.26,
         ResolvedWorldFormationPreset::Supercontinent => 0.42,
         ResolvedWorldFormationPreset::GreatIsland => 0.28,

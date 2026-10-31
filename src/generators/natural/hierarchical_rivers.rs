@@ -13,13 +13,19 @@
 //! path confined to the parent chord's corridor. The §4 carve reads the
 //! level's path through a bound-pruned descent of the same tree, so
 //! valleys and displayed channels stay one geometry.
+//!
+//! LOD-1 spec §3.4 D4: reaches touching dry land keep both legs, and the
+//! drawn line and the carve keep only the path's fine-dry vertices — each
+//! centreline vertex classified by the production fine shoreline on the
+//! uncarved field floored by the reach bed — so lines end on the drawn
+//! water edge instead of at the L0 portal.
 
 use std::sync::{Arc, RwLock};
 
 use super::hierarchical_derivation::{signed_unit_noise, HierarchicalEvaluator};
 use super::terrain_amplification::{
-    arc_angle, arc_nearest_point, spherical_triangle_contains, spherical_triangle_margin, RiverLeg,
-    RiverReach, TerrainAmplifier,
+    arc_angle, arc_nearest_point, spherical_triangle_contains, spherical_triangle_margin,
+    ReachFlow, RiverLeg, RiverReach, TerrainAmplifier,
 };
 use crate::world::spatial::UnitVector3;
 
@@ -72,12 +78,16 @@ pub(super) struct ReachPathData {
 /// produced.
 pub(super) struct ReachPathCache {
     deepest: [RwLock<Option<Arc<ReachPathData>>>; 2],
+    /// Per display depth: the fine-dry clip of the path (D4), memoized as
+    /// a pure function of the reach and the depth.
+    clips: [RwLock<Option<Arc<ReachClip>>>; PATH_DEPTH_LIMIT as usize + 1],
 }
 
 impl Default for ReachPathCache {
     fn default() -> Self {
         Self {
             deepest: std::array::from_fn(|_| RwLock::new(None)),
+            clips: std::array::from_fn(|_| RwLock::new(None)),
         }
     }
 }
@@ -86,6 +96,176 @@ impl ReachPathCache {
     fn leg(&self, leg_index: usize) -> Option<&RwLock<Option<Arc<ReachPathData>>>> {
         self.deepest.get(leg_index)
     }
+}
+
+/// The kept vertices of one reach's centreline at one display depth: one
+/// flag per vertex of the welded leg chain, plus each leg's range in it.
+/// A path segment is drawn and carved only when both its ends are kept.
+pub(super) struct ReachClip {
+    keep: Vec<bool>,
+    /// `kept_before[k]`: kept chain segments among segments `0..k`, so a
+    /// descent prunes spans with nothing kept in O(1).
+    kept_before: Vec<u32>,
+    legs: [(usize, usize); 2],
+}
+
+impl ReachClip {
+    fn new(keep: Vec<bool>, legs: [(usize, usize); 2]) -> Self {
+        let mut kept_before = Vec::with_capacity(keep.len());
+        let mut count = 0_u32;
+        kept_before.push(count);
+        for pair in keep.windows(2) {
+            count += u32::from(pair[0] && pair[1]);
+            kept_before.push(count);
+        }
+        Self {
+            keep,
+            kept_before,
+            legs,
+        }
+    }
+
+    /// One leg's view of the clip, in leg-local vertex indices.
+    fn leg(&self, leg_index: usize) -> LegClip<'_> {
+        LegClip {
+            clip: self,
+            offset: self.legs[leg_index].0,
+        }
+    }
+}
+
+/// One leg's kept segments (leg-local vertex indices).
+#[derive(Clone, Copy)]
+struct LegClip<'a> {
+    clip: &'a ReachClip,
+    offset: usize,
+}
+
+impl LegClip<'_> {
+    /// Whether any segment between leg vertices `start..end` is kept.
+    fn any_kept(self, start: usize, end: usize) -> bool {
+        self.clip.kept_before[self.offset + end] > self.clip.kept_before[self.offset + start]
+    }
+}
+
+/// The welded centreline of one reach at one display depth.
+pub(super) struct Centreline {
+    /// The same points as [`materialize_path`], each with its reach-bed
+    /// fraction (uniform in vertex index, as the carve's path fraction is).
+    vertices: Vec<([f64; 3], f64)>,
+    /// Each leg's `(start, len)` vertex range in `vertices`.
+    legs: [(usize, usize); 2],
+}
+
+/// The welded [`Centreline`] of one reach at display depth `depth`.
+pub(super) fn centreline_vertices(
+    evaluator: &HierarchicalEvaluator,
+    reach_index: u32,
+    reach: &RiverReach,
+    depth: u8,
+) -> Centreline {
+    let depth = depth.min(smooth_depth_cap(evaluator, reach_index));
+    let mut chain: Vec<([f64; 3], f64)> = Vec::new();
+    let mut ranges = [(0, 0); 2];
+    for (leg_index, leg) in reach.legs.iter().enumerate() {
+        let Some(leg) = leg else {
+            continue;
+        };
+        let leg_depth = depth.min(smooth_leg_depth_cap(evaluator, reach, leg));
+        let points = materialize_leg(evaluator, reach_index, leg_index, reach, leg, leg_depth);
+        let welded = chain.last().is_some_and(|(last, _)| *last == points[0]);
+        ranges[leg_index] = (chain.len() - usize::from(welded), points.len());
+        let span = (points.len() - 1) as f64;
+        chain.extend(
+            points
+                .iter()
+                .enumerate()
+                .skip(usize::from(welded))
+                .map(|(index, &point)| {
+                    let local = index as f64 / span;
+                    (
+                        point,
+                        leg.fraction_from + local * (leg.fraction_to - leg.fraction_from),
+                    )
+                }),
+        );
+    }
+    Centreline {
+        vertices: chain,
+        legs: ranges,
+    }
+}
+
+/// The reach bed at path fraction `fraction` (the carve's A4 bed law).
+fn bed_at_m(reach: &RiverReach, fraction: f64) -> f64 {
+    reach.bed_from_m + fraction * (reach.bed_to_m - reach.bed_from_m)
+}
+
+/// The memoized D4.3 clip of one reach at `depth`, or `None` when no
+/// vertex can be water (both owner cells see no water body at all).
+fn reach_clip(
+    evaluator: &HierarchicalEvaluator,
+    reach_index: u32,
+    reach: &RiverReach,
+    depth: u8,
+) -> Option<Arc<ReachClip>> {
+    let shoreline = evaluator.shoreline();
+    if reach.flow == ReachFlow::Submerged
+        || (shoreline.never_wet(reach.from_cell) && shoreline.never_wet(reach.to_cell))
+    {
+        return None;
+    }
+    let depth = depth.min(PATH_DEPTH_LIMIT);
+    let slot = &evaluator
+        .river_path_slot(reach_index)
+        .expect("reach indices come from the engine's own reach lists")
+        .clips[usize::from(depth)];
+    let lock_clean = "the reach clip lock only guards infallible derivation";
+    if let Some(clip) = slot.read().expect(lock_clean).as_ref() {
+        return Some(Arc::clone(clip));
+    }
+    let mut guard = slot.write().expect(lock_clean);
+    if let Some(clip) = guard.as_ref() {
+        return Some(Arc::clone(clip));
+    }
+    let Centreline {
+        vertices: chain,
+        legs,
+    } = centreline_vertices(evaluator, reach_index, reach, depth);
+    // D4.2: a vertex is fine-dry when the production fine shoreline paints
+    // `min(uncarved(p, depth + 1), bed(f))` dry — the display level the
+    // line is drawn for and the bed the carve cuts to, without reading any
+    // carved value (so the clip never feeds back).
+    let mut cursor = evaluator.centreline_cursor(depth.saturating_add(1));
+    let mut dry = |&(point, fraction): &([f64; 3], f64)| {
+        cursor.is_dry(
+            UnitVector3::from_verified_unit_components(point),
+            bed_at_m(reach, fraction),
+        )
+    };
+    let keep = match reach.flow {
+        // A river on land is drawn wherever the land is (USGS EDH: the
+        // network breaks at water-body boundaries).
+        ReachFlow::Overland | ReachFlow::Submerged => chain.iter().map(&mut dry).collect(),
+        // Into a water body: up to the last dry vertex before the first
+        // water vertex (the scan stops there).
+        ReachFlow::Inflow => {
+            let reached = chain.iter().position(|vertex| !dry(vertex));
+            let kept = reached.unwrap_or(chain.len());
+            (0..chain.len()).map(|index| index < kept).collect()
+        }
+        // Out of a water body: from the first dry vertex after the last
+        // water vertex, scanning upstream from the dry end.
+        ReachFlow::Outflow => {
+            let left = chain.iter().rposition(|vertex| !dry(vertex));
+            (0..chain.len())
+                .map(|index| left.is_none_or(|left| index > left))
+                .collect()
+        }
+    };
+    let clip = Arc::new(ReachClip::new(keep, legs));
+    *guard = Some(Arc::clone(&clip));
+    Some(clip)
 }
 
 /// One cache slot per reach, all empty (engine construction).
@@ -428,8 +608,47 @@ fn leg_depth_cap(evaluator: &HierarchicalEvaluator, reach: &RiverReach, leg: &Ri
     ((chord_m / half_wavelength).log2().floor() as u8).min(PATH_DEPTH_LIMIT)
 }
 
-/// Materializes one reach's dry-land polyline at `depth`, concatenating
-/// its authoritative legs in flow order and welding their shared portal.
+/// Materializes one reach's drawn polyline pieces at `depth` (D4.3): the
+/// runs of consecutive kept centreline vertices, each at least one
+/// segment long, in flow order.
+pub(super) fn materialize_pieces(
+    evaluator: &HierarchicalEvaluator,
+    reach_index: u32,
+    depth: u8,
+) -> Vec<Vec<UnitVector3>> {
+    let reaches = evaluator.amplifier().river_reaches();
+    let Some(reach) = reaches.get(reach_index as usize) else {
+        return Vec::new();
+    };
+    let Some(clip) = reach_clip(evaluator, reach_index, reach, depth) else {
+        let path = materialize_path(evaluator, reach_index, depth);
+        return if path.len() >= 2 {
+            vec![path]
+        } else {
+            Vec::new()
+        };
+    };
+    let chain = centreline_vertices(evaluator, reach_index, reach, depth).vertices;
+    let mut pieces = Vec::new();
+    let mut piece: Vec<UnitVector3> = Vec::new();
+    for ((point, _), &kept) in chain.iter().zip(&clip.keep) {
+        if kept {
+            piece.push(UnitVector3::from_verified_unit_components(*point));
+        } else if !piece.is_empty() {
+            if piece.len() >= 2 {
+                pieces.push(std::mem::take(&mut piece));
+            }
+            piece.clear();
+        }
+    }
+    if piece.len() >= 2 {
+        pieces.push(piece);
+    }
+    pieces
+}
+
+/// Materializes one reach's full centreline at `depth`, concatenating its
+/// authoritative legs in flow order and welding their shared portal.
 pub(super) fn materialize_path(
     evaluator: &HierarchicalEvaluator,
     reach_index: u32,
@@ -503,8 +722,9 @@ pub(super) fn carve_elevation_m(
         for &reach_index in &indices[start..end] {
             let reach = &reaches[reach_index as usize];
             let depth = leaf_level.saturating_sub(1);
+            let clip = reach_clip(evaluator, reach_index, reach, depth);
             let Some((lateral_m, fraction)) =
-                nearest_on_path(evaluator, reach_index, reach, depth, p)
+                nearest_on_path(evaluator, reach_index, reach, depth, clip.as_deref(), p)
             else {
                 continue;
             };
@@ -516,12 +736,13 @@ pub(super) fn carve_elevation_m(
     carve
 }
 
-/// Nearest point of `p` on the reach's dry-land legs at `depth`.
+/// Nearest point of `p` on the reach's kept path segments at `depth`.
 fn nearest_on_path(
     evaluator: &HierarchicalEvaluator,
     reach_index: u32,
     reach: &RiverReach,
     depth: u8,
+    clip: Option<&ReachClip>,
     p: [f64; 3],
 ) -> Option<(f64, f64)> {
     let mut best: Option<(f64, f64)> = None;
@@ -533,9 +754,19 @@ fn nearest_on_path(
             continue;
         }
         let depth = depth.min(smooth_leg_depth_cap(evaluator, reach, leg));
-        let Some((lateral, local_fraction)) =
-            nearest_on_leg(evaluator, reach_index, leg_index, reach, leg, depth, p)
-        else {
+        let keep = clip.map(|clip| clip.leg(leg_index));
+        let Some((lateral, local_fraction)) = nearest_on_leg(
+            evaluator,
+            LegQuery {
+                reach_index,
+                leg_index,
+                reach,
+                leg,
+                depth,
+                keep,
+            },
+            p,
+        ) else {
             continue;
         };
         let fraction = leg.fraction_from + local_fraction * (leg.fraction_to - leg.fraction_from);
@@ -546,47 +777,91 @@ fn nearest_on_path(
     best
 }
 
-fn nearest_on_leg(
-    evaluator: &HierarchicalEvaluator,
+/// One leg's nearest-point query: which leg, at which depth, and which of
+/// its vertices the D4 clip keeps (`None`: all).
+struct LegQuery<'a> {
     reach_index: u32,
     leg_index: usize,
-    reach: &RiverReach,
-    leg: &RiverLeg,
+    reach: &'a RiverReach,
+    leg: &'a RiverLeg,
     depth: u8,
+    keep: Option<LegClip<'a>>,
+}
+
+fn nearest_on_leg(
+    evaluator: &HierarchicalEvaluator,
+    query: LegQuery<'_>,
     p: [f64; 3],
 ) -> Option<(f64, f64)> {
+    let LegQuery {
+        reach_index,
+        leg_index,
+        reach,
+        leg,
+        depth,
+        keep,
+    } = query;
     let radius_m = evaluator.amplifier().radius_m();
+    let chord = || {
+        keep.is_none_or(|keep| keep.any_kept(0, 1))
+            .then(|| arc_nearest_point(leg.from, leg.to, p, radius_m))
+            .flatten()
+    };
     if depth == 0 {
-        return arc_nearest_point(leg.from, leg.to, p, radius_m);
+        return chord();
     }
     let data = cached_path(evaluator, reach_index, leg_index, reach, leg, depth);
     let depth = u32::from(depth).min((data.points.len() - 1).trailing_zeros());
     if depth == 0 {
-        return arc_nearest_point(leg.from, leg.to, p, radius_m);
+        return chord();
     }
     let stride = (data.points.len() - 1) >> depth;
+    if keep.is_some_and(|keep| !keep.any_kept(0, 1 << depth)) {
+        return None;
+    }
     let mut best: Option<(f64, f64)> = None;
     descend_nearest(
         &data,
-        stride,
+        Descent {
+            stride,
+            keep,
+            p,
+            radius_m,
+        },
         (0, data.points.len() - 1),
         (0.0, 1.0),
-        p,
-        radius_m,
         &mut best,
     );
     best
 }
 
-fn descend_nearest(
-    data: &ReachPathData,
+/// The per-query constants of one bound-pruned nearest-point descent.
+#[derive(Clone, Copy)]
+struct Descent<'a> {
     stride: usize,
-    (start, end): (usize, usize),
-    (fraction_a, fraction_b): (f64, f64),
+    keep: Option<LegClip<'a>>,
     p: [f64; 3],
     radius_m: f64,
+}
+
+fn descend_nearest(
+    data: &ReachPathData,
+    descent: Descent<'_>,
+    (start, end): (usize, usize),
+    (fraction_a, fraction_b): (f64, f64),
     best: &mut Option<(f64, f64)>,
 ) {
+    let Descent {
+        stride,
+        keep,
+        p,
+        radius_m,
+    } = descent;
+    // A clipped segment is neither drawn nor carved (D4.3): skip every
+    // span holding none of the kept ones.
+    if keep.is_some_and(|keep| !keep.any_kept(start / stride, end / stride)) {
+        return;
+    }
     let points = &data.points;
     let a = points[start];
     let b = points[end];
@@ -622,7 +897,7 @@ fn descend_nearest(
         [second, first]
     };
     for (span, fractions) in ordered {
-        descend_nearest(data, stride, span, fractions, p, radius_m, best);
+        descend_nearest(data, descent, span, fractions, best);
     }
 }
 
@@ -652,12 +927,15 @@ mod tests {
     use super::super::hierarchical_derivation::HierarchicalEvaluator;
     use super::super::terrain_amplification::AmplificationFieldsView;
     use super::*;
+    use crate::generators::natural::hierarchical_derivation::tests::lake_fill_surface;
+    use crate::generators::natural::PublishedHydrology;
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::world::natural::{
-        RiverSegment, RiverSegmentKind, SphericalOrogenyKind, SurfaceWaterField, SurfaceWaterKind,
+        Lake, RiverSegment, RiverSegmentKind, SphericalOrogenyKind, SurfaceWaterField,
+        SurfaceWaterKind,
     };
     use crate::world::spatial::SphericalSurfaceSnapshot;
-    use crate::world::{Meters, RiverSegmentId, RootSeed, SphericalSpaceSpec};
+    use crate::world::{LakeId, Meters, RiverSegmentId, RootSeed, SphericalSpaceSpec};
 
     fn test_surface() -> SphericalSurfaceSnapshot {
         GeodesicVoronoiBuilder::build_cancellable(
@@ -752,7 +1030,15 @@ mod tests {
         ];
         let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(11))
             .unwrap()
-            .with_rivers(&surface, &segments, &dry_surface_water(&surface))
+            .with_hydrology(
+                &surface,
+                PublishedHydrology {
+                    segments: &segments,
+                    surface_water: &dry_surface_water(&surface),
+                    lakes: &[],
+                    fill_surface_m: &fields.elevation,
+                },
+            )
             .unwrap();
         (evaluator, surface)
     }
@@ -766,6 +1052,96 @@ mod tests {
         let edge_index = 0;
         let edge = &surface.edges()[edge_index];
         let [from, to] = edge.cells;
+        let mut water = vec![SurfaceWaterKind::DryLand; surface.cells().len()];
+        water[from.raw() as usize] = from_water;
+        water[to.raw() as usize] = to_water;
+        let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(13))
+            .unwrap()
+            .with_hydrology(
+                &surface,
+                PublishedHydrology {
+                    segments: &[RiverSegment::new(
+                        RiverSegmentId::from_raw(0),
+                        from,
+                        to,
+                        RiverSegmentKind::Channel,
+                        1,
+                        25.0,
+                    )
+                    .unwrap()],
+                    surface_water: &SurfaceWaterField::from_kinds(water),
+                    lakes: &[],
+                    fill_surface_m: &fields.elevation,
+                },
+            )
+            .unwrap();
+        (evaluator, surface, edge_index)
+    }
+
+    /// One downhill reach between two adjacent cells, one of them (or a
+    /// third cell in the ring) a lake whose published surface lies at
+    /// `surface_fraction` of the way from the low cell's value up to the
+    /// high cell's, so the fine shoreline cuts across the reach.
+    struct LakeReach {
+        evaluator: HierarchicalEvaluator,
+        low: usize,
+    }
+
+    fn lake_reach(flow: ReachFlow, surface_fraction: f32) -> LakeReach {
+        let surface = test_surface();
+        let fields = Fields::new(&surface);
+        let edge = surface
+            .edges()
+            .iter()
+            .max_by(|a, b| {
+                let drop = |edge: &&crate::world::spatial::SphericalSurfaceEdge| {
+                    let [p, q] = edge.cells.map(|cell| fields.elevation[cell.raw() as usize]);
+                    (p - q).abs()
+                };
+                drop(a).total_cmp(&drop(b))
+            })
+            .unwrap();
+        let [p, q] = edge.cells;
+        let (high, low) = if fields.elevation[p.raw() as usize] > fields.elevation[q.raw() as usize]
+        {
+            (p, q)
+        } else {
+            (q, p)
+        };
+        let (z_high, z_low) = (
+            fields.elevation[high.raw() as usize],
+            fields.elevation[low.raw() as usize],
+        );
+        let lake_surface = z_low + surface_fraction * (z_high - z_low);
+        // Inflow and overland run downhill; outflow leaves the lake uphill
+        // of nothing — it drains the low lake cell onto the high cell, so
+        // the lake surface sits above the low cell only.
+        let (from, to, lake_cell) = match flow {
+            ReachFlow::Inflow => (high, low, low),
+            ReachFlow::Outflow => (low, high, low),
+            ReachFlow::Overland | ReachFlow::Submerged => {
+                let ring = surface
+                    .edges()
+                    .iter()
+                    .filter(|candidate| candidate.cells.contains(&low))
+                    .flat_map(|candidate| candidate.cells)
+                    .find(|cell| ![high, low].contains(cell))
+                    .unwrap();
+                (high, low, ring)
+            }
+        };
+        let mut water = vec![SurfaceWaterKind::DryLand; surface.cells().len()];
+        water[lake_cell.raw() as usize] = SurfaceWaterKind::Lake;
+        let lakes = [Lake::new(
+            LakeId::from_raw(0),
+            vec![lake_cell],
+            lake_surface,
+            1.0,
+            1.0,
+            None,
+            None,
+        )
+        .unwrap()];
         let segment = RiverSegment::new(
             RiverSegmentId::from_raw(0),
             from,
@@ -775,48 +1151,240 @@ mod tests {
             25.0,
         )
         .unwrap();
-        let mut water = vec![SurfaceWaterKind::DryLand; surface.cells().len()];
-        water[from.raw() as usize] = from_water;
-        water[to.raw() as usize] = to_water;
         let evaluator = HierarchicalEvaluator::new(&surface, fields.view(), RootSeed::new(13))
             .unwrap()
-            .with_rivers(&surface, &[segment], &SurfaceWaterField::from_kinds(water))
+            .with_hydrology(
+                &surface,
+                PublishedHydrology {
+                    segments: &[segment],
+                    surface_water: &SurfaceWaterField::from_kinds(water),
+                    lakes: &lakes,
+                    fill_surface_m: &lake_fill_surface(&surface, &fields.elevation, &lakes),
+                },
+            )
             .unwrap();
-        (evaluator, surface, edge_index)
+        LakeReach {
+            evaluator,
+            low: low.raw() as usize,
+        }
     }
 
+    /// The unclipped centreline of reach 0 at `depth` with each vertex's
+    /// production centreline wetness (LOD-1 spec §3.4 D4.2).
+    fn classified_centreline(
+        evaluator: &HierarchicalEvaluator,
+        depth: u8,
+    ) -> Vec<(UnitVector3, bool)> {
+        let reach = &evaluator.amplifier().river_reaches()[0];
+        let mut cursor = evaluator.centreline_cursor(depth + 1);
+        centreline_vertices(evaluator, 0, reach, depth)
+            .vertices
+            .into_iter()
+            .map(|(point, fraction)| {
+                let direction = UnitVector3::from_verified_unit_components(point);
+                (
+                    direction,
+                    !cursor.is_dry(direction, bed_at_m(reach, fraction)),
+                )
+            })
+            .collect()
+    }
+
+    /// The bound-pruned, walk-sharing centreline cursor decides exactly
+    /// what the plain definitions decide, whether its points arrive
+    /// scattered or in path order: the ocean by `min(uncarved, bed) as f32`
+    /// against sea level (LOD-1 spec §3.4 D4.2), a lake by the connectivity
+    /// class the mesh and the picking read paint the primitive with (R2).
     #[test]
-    fn river_path_uses_shared_portal_and_omits_water_interiors() {
+    fn pruned_centreline_test_matches_the_plain_classification() {
+        use crate::generators::natural::fibonacci_probe;
+        use crate::generators::natural::LocatedPrimitive;
+
+        let lake = lake_reach(ReachFlow::Inflow, 0.5).evaluator;
+        let (ocean, _, _) =
+            evaluator_with_water_transition(SurfaceWaterKind::DryLand, SurfaceWaterKind::Ocean);
+        for evaluator in [&lake, &ocean] {
+            let river = &evaluator.amplifier().river_reaches()[0];
+            let scattered: Vec<UnitVector3> = (0..4_096)
+                .map(|index| fibonacci_probe(index, 4_096))
+                .collect();
+            let in_path_order: Vec<UnitVector3> = centreline_vertices(evaluator, 0, river, 9)
+                .vertices
+                .into_iter()
+                .map(|(point, _)| UnitVector3::from_verified_unit_components(point))
+                .collect();
+            let (mut dry, mut wet) = (0, 0);
+            for level in [1_u8, 4, 9, 14] {
+                for bed_m in [f64::INFINITY, -4_000.0, 0.0, 800.0] {
+                    let mut cursor = evaluator.centreline_cursor(level);
+                    for &point in scattered.iter().chain(&in_path_order) {
+                        let LocatedPrimitive::Cell(cell) = evaluator.locate(point, 0) else {
+                            unreachable!("level 0 locates a cell")
+                        };
+                        let value = evaluator
+                            .uncarved_sample_elevation_m(point, level)
+                            .min(bed_m) as f32;
+                        let ocean_wet = evaluator.shoreline().row(cell).iter().any(|candidate| {
+                            candidate.lake.is_none() && value < candidate.surface_m
+                        });
+                        let lake_wet = evaluator.read(point, level).water == SurfaceWaterKind::Lake;
+                        let plain = !(ocean_wet || lake_wet);
+                        assert_eq!(cursor.is_dry(point, bed_m), plain);
+                        dry += usize::from(plain);
+                        wet += usize::from(!plain);
+                    }
+                }
+            }
+            assert!(dry > 0 && wet > 0, "{dry} dry, {wet} wet");
+        }
+    }
+
+    /// LOD-1 spec §3.4 D4.3 / §4 I8: an inflow line ends on the last
+    /// fine-dry centreline vertex and the next centreline vertex is water;
+    /// the drawn line is a prefix of the full centreline (absent while
+    /// that prefix is a single vertex — the resolution is one vertex).
+    #[test]
+    fn inflow_line_stops_at_the_fine_shoreline() {
+        let reach = lake_reach(ReachFlow::Inflow, 0.5);
+        let mut truncated = false;
+        for depth in 0..=6 {
+            let centreline = classified_centreline(&reach.evaluator, depth);
+            let pieces = reach.evaluator.river_path(0, depth);
+            let first_wet = centreline
+                .iter()
+                .position(|&(_, wet)| wet)
+                .expect("the lake cell centroid lies below its surface");
+            assert_eq!(pieces.len(), usize::from(first_wet >= 2), "depth {depth}");
+            let drawn = pieces.concat();
+            assert_eq!(drawn.len(), if first_wet >= 2 { first_wet } else { 0 });
+            for (index, point) in drawn.iter().enumerate() {
+                assert_eq!(*point, centreline[index].0);
+                assert!(!centreline[index].1, "a drawn vertex is fine water");
+            }
+            truncated |= first_wet + 1 < centreline.len();
+        }
+        assert!(truncated, "the shoreline must cut the reach somewhere");
+    }
+
+    /// The outflow mirror: the line starts on the first fine-dry vertex
+    /// after the last water vertex.
+    #[test]
+    fn outflow_line_starts_at_the_fine_shoreline() {
+        let reach = lake_reach(ReachFlow::Outflow, 0.5);
+        for depth in 0..=6 {
+            let centreline = classified_centreline(&reach.evaluator, depth);
+            let pieces = reach.evaluator.river_path(0, depth);
+            let last_wet = centreline
+                .iter()
+                .rposition(|&(_, wet)| wet)
+                .expect("the lake cell centroid lies below its surface");
+            let kept = centreline.len() - last_wet - 1;
+            assert_eq!(pieces.len(), usize::from(kept >= 2), "depth {depth}");
+            if kept >= 2 {
+                assert_eq!(pieces[0].len(), kept);
+                assert_eq!(pieces[0][0], centreline[last_wet + 1].0);
+            }
+        }
+    }
+
+    /// An overland reach drops exactly its fine-water vertices: nothing
+    /// drawn lies on water, nothing dry is lost, and every piece is a line.
+    #[test]
+    fn overland_line_drops_only_fine_water_vertices() {
+        let reach = lake_reach(ReachFlow::Overland, 0.5);
+        let mut dropped = 0;
+        for depth in 0..=6 {
+            let centreline = classified_centreline(&reach.evaluator, depth);
+            let pieces = reach.evaluator.river_path(0, depth);
+            let drawn: Vec<UnitVector3> = pieces.concat();
+            assert!(pieces.iter().all(|piece| piece.len() >= 2));
+            for (index, &(point, wet)) in centreline.iter().enumerate() {
+                let dry_neighbour = [index.wrapping_sub(1), index + 1].iter().any(|&other| {
+                    centreline
+                        .get(other)
+                        .is_some_and(|&(_, other_wet)| !other_wet)
+                });
+                assert_eq!(
+                    drawn.contains(&point),
+                    !wet && dry_neighbour,
+                    "a vertex is drawn iff it and a neighbour are dry"
+                );
+                dropped += usize::from(wet);
+            }
+        }
+        assert!(dropped > 0, "the ring lake must reach the reach");
+    }
+
+    /// LOD-1 spec §3.4 D4.5: an inflow whose whole centreline stays dry is
+    /// drawn to the water body's P5 node instead of vanishing.
+    #[test]
+    fn dry_inflow_falls_back_to_the_water_node() {
+        let reach = lake_reach(ReachFlow::Inflow, -0.5);
+        let surface = test_surface();
+        let pieces = reach.evaluator.river_path(0, 4);
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(
+            pieces[0].last().copied(),
+            Some(surface.cells()[reach.low].centroid)
+        );
+    }
+
+    /// LOD-1 spec §3.4 D4.3: the carve follows the drawn line — nothing is
+    /// carved along the clipped water part, so a clipped vertex is never
+    /// cut below the bed of the last drawn vertex.
+    #[test]
+    fn carve_skips_the_clipped_water_part() {
+        let reach = lake_reach(ReachFlow::Inflow, 0.5);
+        let evaluator = &reach.evaluator;
+        let river = &evaluator.amplifier().river_reaches()[0];
+        let depth = 5;
+        let vertices = centreline_vertices(evaluator, 0, river, depth).vertices;
+        let classified = classified_centreline(evaluator, depth);
+        let first_wet = classified.iter().position(|&(_, wet)| wet).unwrap();
+        assert!(first_wet > 0);
+        let last_kept_bed = bed_at_m(river, vertices[first_wet - 1].1);
+        for &(point, _) in &classified[first_wet..] {
+            if let Some(carve) = carve_elevation_m(evaluator, point, depth + 1, 0.3) {
+                assert!(
+                    carve >= last_kept_bed - 1.0e-9,
+                    "carved {carve} below the drawn bed {last_kept_bed} on water"
+                );
+            }
+        }
+    }
+
+    /// LOD-1 spec §3.4 D4.1: a reach touching dry land is the full
+    /// centroid–portal–centroid chain on both sides (here the water cells
+    /// publish no lake record, so no shoreline clips it); water to water
+    /// draws nothing.
+    #[test]
+    fn river_path_uses_shared_portal_on_both_sides() {
         use SurfaceWaterKind::{DryLand, Lake};
 
         for (from_water, to_water, expected_points) in [
             (DryLand, DryLand, 3_usize),
-            (DryLand, Lake, 2),
-            (Lake, DryLand, 2),
+            (DryLand, Lake, 3),
+            (Lake, DryLand, 3),
             (Lake, Lake, 0),
         ] {
             let (evaluator, surface, edge_index) =
                 evaluator_with_water_transition(from_water, to_water);
             let edge = &surface.edges()[edge_index];
             let [from, to] = edge.cells;
-            let path = evaluator.river_path(0, 0);
+            let path = evaluator.river_path(0, 0).concat();
             assert_eq!(path.len(), expected_points);
-            if from_water == DryLand {
+            if expected_points > 0 {
                 assert_eq!(
                     path.first().copied(),
                     Some(surface.cells()[from.raw() as usize].centroid)
                 );
-            }
-            if to_water == DryLand {
                 assert_eq!(
                     path.last().copied(),
                     Some(surface.cells()[to.raw() as usize].centroid)
                 );
-            }
-            if expected_points > 0 {
                 assert!(
                     path.contains(&edge.midpoint),
-                    "every rendered water transition is split at the shoreline portal"
+                    "every rendered reach is split at the shared-edge portal"
                 );
             }
         }
@@ -828,7 +1396,7 @@ mod tests {
         for reach_index in 0..evaluator.river_reach_count() as u32 {
             let reach = &evaluator.amplifier().river_reaches()[reach_index as usize];
             let depth = smooth_depth_cap(&evaluator, reach_index).min(9);
-            let path = evaluator.river_path(reach_index, depth);
+            let path = materialize_path(&evaluator, reach_index, depth);
             for pair in path.windows(2) {
                 assert!(
                     reach.legs.iter().flatten().any(|leg| {
@@ -851,7 +1419,7 @@ mod tests {
         let (evaluator, _surface) = evaluator_with_rivers();
         for reach_index in 0..evaluator.river_reach_count() as u32 {
             let reach = &evaluator.amplifier().river_reaches()[reach_index as usize];
-            let path = evaluator.river_path(reach_index, 9);
+            let path = materialize_path(&evaluator, reach_index, 9);
             for leg in reach.legs.iter().flatten() {
                 let frame = LegFrame::new(leg).expect("a surface leg is non-degenerate");
                 let start = path
@@ -877,8 +1445,8 @@ mod tests {
     #[test]
     fn different_reaches_only_meet_at_authoritative_cell_nodes() {
         let (evaluator, _surface) = evaluator_with_rivers();
-        let upstream = evaluator.river_path(0, 9);
-        let downstream = evaluator.river_path(1, 9);
+        let upstream = materialize_path(&evaluator, 0, 9);
+        let downstream = materialize_path(&evaluator, 1, 9);
         let junction = *upstream.last().expect("the upstream reach is visible");
         assert_eq!(downstream.first().copied(), Some(junction));
 
@@ -898,7 +1466,7 @@ mod tests {
         let reaches = evaluator.amplifier().river_reaches();
         for reach_index in 0..evaluator.river_reach_count() as u32 {
             let reach = &reaches[reach_index as usize];
-            let chain = evaluator.river_path(reach_index, 0);
+            let chain = materialize_path(&evaluator, reach_index, 0);
             let mut expected = Vec::new();
             for leg in reach.legs.iter().flatten() {
                 if expected.last().copied() != Some(leg.from) {
@@ -914,7 +1482,7 @@ mod tests {
                 expected
             );
             for depth in 1..=evaluator.river_path_depth_cap(reach_index).min(8) {
-                let path = evaluator.river_path(reach_index, depth);
+                let path = materialize_path(&evaluator, reach_index, depth);
                 for endpoint in &expected {
                     assert!(path.iter().any(|point| point.components() == *endpoint));
                 }
@@ -930,8 +1498,8 @@ mod tests {
         let (second, _surface_b) = evaluator_with_rivers();
         for reach_index in 0..first.river_reach_count() as u32 {
             let depth = first.river_path_depth_cap(reach_index).min(6);
-            let path_a = first.river_path(reach_index, depth);
-            let path_b = second.river_path(reach_index, depth);
+            let path_a = materialize_path(&first, reach_index, depth);
+            let path_b = materialize_path(&second, reach_index, depth);
             assert_eq!(path_a.len(), path_b.len());
             for (left, right) in path_a.iter().zip(&path_b) {
                 assert_eq!(
@@ -952,11 +1520,11 @@ mod tests {
         for reach_index in 0..shallow_first.river_reach_count() as u32 {
             let cap = shallow_first.river_path_depth_cap(reach_index).min(6);
             let ascending: Vec<_> = (0..=cap)
-                .map(|depth| shallow_first.river_path(reach_index, depth))
+                .map(|depth| materialize_path(&shallow_first, reach_index, depth))
                 .collect();
             let mut descending: Vec<_> = (0..=cap)
                 .rev()
-                .map(|depth| deep_first.river_path(reach_index, depth))
+                .map(|depth| materialize_path(&deep_first, reach_index, depth))
                 .collect();
             descending.reverse();
             for (left, right) in ascending.iter().zip(&descending) {
@@ -1136,13 +1704,19 @@ mod tests {
         let reach_index = 1_u32;
         let reach = &reaches[reach_index as usize];
         let depth = smooth_depth_cap(&evaluator, reach_index);
-        let path = evaluator.river_path(reach_index, depth);
+        let path = materialize_path(&evaluator, reach_index, depth);
         let wall_slope = TerrainAmplifier::carve_wall_slope(0.0);
         let mut previous = f64::INFINITY;
         for point in &path {
-            let (lateral_m, fraction) =
-                nearest_on_path(&evaluator, reach_index, reach, depth, point.components())
-                    .expect("a path point projects onto its own path");
+            let (lateral_m, fraction) = nearest_on_path(
+                &evaluator,
+                reach_index,
+                reach,
+                depth,
+                None,
+                point.components(),
+            )
+            .expect("a path point projects onto its own path");
             let bed = reach.bed_from_m + fraction * (reach.bed_to_m - reach.bed_from_m);
             let own = bed + (lateral_m - reach.half_width_m()).max(0.0) * wall_slope;
             assert!(

@@ -473,7 +473,18 @@ impl<'surface> SurfaceWaterReconstruction<'surface> {
     }
 }
 
-fn reconstruct_vertex_elevations(
+/// The P1 sub-cell geometry's shared-vertex elevations (transient
+/// co-evolution spec §4.1): Shepard (1968) inverse-squared-central-angle
+/// weighting of the incident cell values, one value per canonical vertex.
+///
+/// Also the T1 L1 boundary-vertex anchors (LOD-1 spec §3.1 D1), so the
+/// derived shoreline and P5's published water geometry share one source.
+///
+/// # Errors
+///
+/// Returns [`WaterVolumeSolveError::Cancelled`] on cancellation and
+/// [`WaterVolumeSolveError::NonFiniteSolution`] for a non-finite vertex.
+pub(in crate::generators::natural) fn reconstruct_vertex_elevations(
     surface: &SphericalSurfaceSnapshot,
     elevation_m: &[f64],
     cancellation: &BuildCancellation,

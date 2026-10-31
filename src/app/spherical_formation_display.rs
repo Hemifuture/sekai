@@ -398,22 +398,20 @@ impl SphericalFormationFieldDocument {
         let areas = surface.snapshot().cells();
         let total_area = surface.snapshot().total_cell_area().get();
         let crust_kinds = compatibility.crust_kinds().raw_values();
-        let land = terrain.land_ocean().raw_values();
         let mut continental_area = 0.0_f64;
-        let mut land_area = 0.0_f64;
         for (index, cell) in areas.iter().enumerate() {
             if crust_kinds[index] == 1 {
                 continental_area += cell.area.get();
             }
-            if land[index] == 1 {
-                land_area += cell.area.get();
-            }
         }
+        let actual_land_fraction = terrain
+            .surface_water_geometry()
+            .global_land_area_fraction(surface.snapshot())?;
         let area_summary = FormationAreaSummary::new(
             resolved_tectonic.input().spec().continental_crust_fraction,
             continental_area / total_area,
             relief_spec.spec().target_land_fraction,
-            land_area / total_area,
+            f64::from(actual_land_fraction),
             terrain.sea_level_m(),
             relief_spec.spec().sea_level_policy,
             bundle.primary_relief().water_inventory_ratio(total_area)?,
@@ -783,6 +781,8 @@ fn formation_preferred_range(
 /// Errors returned while composing a complete formation-product document.
 #[derive(Debug, Error)]
 pub enum SphericalFormationDisplayError {
+    #[error(transparent)]
+    SurfaceWaterGeometry(#[from] crate::world::natural::SurfaceWaterGeometryValidationError),
     #[error(transparent)]
     Artifact(#[from] ArtifactError),
     #[error(transparent)]

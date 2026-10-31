@@ -50,9 +50,10 @@ use crate::{
             P4_WATER_FLUX_UNIT,
         },
         spherical::{
-            apply_spherical_canvas_action, interact_spherical_canvas,
-            queue_spherical_canvas_callback, show_spherical_controls, show_spherical_inspector,
-            SphericalCanvasAction, SphericalInspectorCache,
+            apply_spherical_canvas_action, derived_pick_rows, interact_spherical_canvas,
+            queue_spherical_canvas_callback, show_spherical_controls, show_spherical_derived_pick,
+            show_spherical_inspector, SphericalCanvasAction, SphericalCanvasState,
+            SphericalDerivedPick, SphericalInspectorCache,
         },
     },
     view::{DisplayRevisionClock, VectorGlyphLod},
@@ -77,6 +78,7 @@ const FORMATION_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 演化板块 → 基底/初级地形 → 全球环流 → 耦合地貌（P5）";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
 const INITIAL_PLATE_COUNT_LABEL: &str = "初始板块数";
+const PROCEDURAL_COAST_DRAFT_ONLY_TEXT: &str = "程序化海岸（实验）目前仅支持完整生成链的草稿档";
 /// The default quality tier for interactive formation builds.
 fn default_formation_quality_profile() -> crate::world::natural::NaturalQualityProfile {
     crate::world::natural::NaturalQualityProfile::Draft
@@ -183,6 +185,8 @@ struct AmplifiedDisplayBundle {
     river_radius_m: f64,
     detail: std::sync::Arc<amplified_mesh::AmplifiedDetailContext>,
     initial_hash: u64,
+    /// The initial selection's exact batch coverage (what a pick reads).
+    pick_batches: Vec<amplified_mesh::DetailBatch>,
 }
 
 /// One camera snapshot deciding whether the detail selection reruns.
@@ -245,6 +249,8 @@ struct AmplifiedDetailPayload {
     /// The built selection's hash; the UI records it as installed only
     /// after the GPU upload actually ran.
     selection_hash: u64,
+    /// The built selection's exact batch coverage (what a pick reads).
+    pick_batches: Vec<amplified_mesh::DetailBatch>,
 }
 
 /// The camera-driven incremental rebuild worker of the amplified display
@@ -354,6 +360,7 @@ fn spawn_amplified_detail_engine(
                     map_indices,
                     rivers: amplified_mesh::build_river_polylines(&context, &selection),
                     selection_hash: selection.hash,
+                    pick_batches: selection.into_pick_batches(),
                     mesh,
                 })
             }));
@@ -432,6 +439,7 @@ mod amplified_detail_engine_tests {
                 map_indices: Vec::new(),
                 rivers: Vec::new(),
                 selection_hash,
+                pick_batches: Vec::new(),
             }),
             serial,
         }
@@ -508,6 +516,47 @@ struct WorldBuildCompletion {
     stage_cache: MemoryStageCache,
     formation_surface: Option<FormationSurfaceCacheEntry>,
     amplified: Option<AmplifiedDisplayBundle>,
+}
+
+/// Assembles the LOD-1 spec §3.5 D5 reading of the inspected point: the
+/// leaf the installed detail selection draws there, read from the same
+/// engine the mesh is built from, plus P5's sub-cell ocean fraction. Only
+/// while the amplified terrain stands in for the cell fill (every other
+/// field is drawn per cell and already reads back exactly).
+fn derived_pick(
+    state: &SphericalCanvasState,
+    context: Option<&amplified_mesh::AmplifiedDetailContext>,
+    pick_batches: Option<&[amplified_mesh::DetailBatch]>,
+    presentation: &crate::app::PublishedSphericalPresentation,
+) -> Option<SphericalDerivedPick> {
+    if !state.field_state().layer_visibility().amplified {
+        return None;
+    }
+    let Some(crate::view::SelectedSurfaceEntity::Cell(cell)) =
+        state.field_state().selected_entity()
+    else {
+        return None;
+    };
+    let (level, reading) =
+        amplified_mesh::picked_reading(context?, pick_batches?, state.picked_direction()?)?;
+    if reading.cell != cell {
+        return None;
+    }
+    let ocean_area_fraction = *presentation
+        .document()
+        .formation()?
+        .formation_snapshot()
+        .terrain_fields()
+        .surface_water_geometry()
+        .ocean_area_fraction()
+        .get(cell.raw() as usize)?;
+    Some(SphericalDerivedPick {
+        cell,
+        level,
+        elevation_m: reading.value.elevation_m,
+        water: reading.water,
+        ocean_area_fraction,
+    })
 }
 
 /// Starts one worker attempt while keeping P5 cache writes private until publication.
@@ -596,6 +645,13 @@ pub struct TemplateApp {
     formation_surface: Option<FormationSurfaceCacheEntry>,
     #[serde(skip)]
     amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
+    /// The installed amplified mesh's per-cell leaf levels and the world's
+    /// detail context, kept with it so a pick reads the selection on
+    /// screen from the engine the mesh is built from (LOD-1 spec §3.5 D5).
+    #[serde(skip)]
+    amplified_pick_batches: Option<Vec<amplified_mesh::DetailBatch>>,
+    #[serde(skip)]
+    amplified_context: Option<std::sync::Arc<amplified_mesh::AmplifiedDetailContext>>,
     #[serde(skip)]
     amplified_detail: Option<AmplifiedDetailEngine>,
     #[serde(skip)]
@@ -643,6 +699,8 @@ impl Default for TemplateApp {
             geologic_spec: GeologicSpec::default(),
             world_pipeline: WorldPipeline::default(),
             amplified_mesh: None,
+            amplified_pick_batches: None,
+            amplified_context: None,
             amplified_map_projected: None,
             amplified_detail: None,
             river_polylines: None,
@@ -875,6 +933,8 @@ impl TemplateApp {
         match amplified {
             Some(bundle) => {
                 self.amplified_mesh = Some(std::sync::Arc::new(bundle.mesh));
+                self.amplified_pick_batches = Some(bundle.pick_batches);
+                self.amplified_context = Some(std::sync::Arc::clone(&bundle.detail));
                 self.amplified_map_projected = None;
                 self.river_polylines = Some(std::sync::Arc::new(bundle.rivers));
                 self.river_radius_m = Some(bundle.river_radius_m);
@@ -885,6 +945,8 @@ impl TemplateApp {
             }
             None => {
                 self.amplified_mesh = None;
+                self.amplified_pick_batches = None;
+                self.amplified_context = None;
                 self.amplified_map_projected = None;
                 self.amplified_detail = None;
                 self.river_polylines = None;
@@ -912,6 +974,7 @@ impl TemplateApp {
         if let Some(payload) = poll.install {
             let selection_hash = payload.selection_hash;
             self.amplified_mesh = Some(std::sync::Arc::new(payload.mesh));
+            self.amplified_pick_batches = Some(payload.pick_batches);
             self.amplified_map_projected = Some(std::sync::Arc::new((
                 payload.map_vertices,
                 payload.map_indices,
@@ -1183,6 +1246,14 @@ impl TemplateApp {
         if self.world_build.is_some() {
             return;
         }
+        if procedural_coast_unsupported(
+            self.formation_spec.preset,
+            self.world_pipeline,
+            self.formation_quality_profile,
+        ) {
+            self.spherical_runtime_error = Some(PROCEDURAL_COAST_DRAFT_ONLY_TEXT.to_owned());
+            return;
+        }
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancellation = crate::engine::BuildCancellation::new();
         let worker_cancellation = cancellation.clone();
@@ -1322,7 +1393,6 @@ impl TemplateApp {
                                 hydrology.drainage_area_km2()[segment.from().raw() as usize]
                             })
                             .collect(),
-                        surface_water: hydrology.surface_water().clone(),
                     });
                     let selection = amplified_mesh::initial_selection(&detail);
                     let mut cache = amplified_mesh::BatchCache::default();
@@ -1334,6 +1404,7 @@ impl TemplateApp {
                         river_radius_m: detail.evaluator.radius_m(),
                         detail,
                         initial_hash: selection.hash,
+                        pick_batches: selection.into_pick_batches(),
                     })
                 })
             };
@@ -1889,10 +1960,6 @@ impl eframe::App for TemplateApp {
                         ui.label("根种子");
                         ui.add(egui::DragValue::new(&mut self.world_seed).range(0..=u64::MAX));
                     });
-                    if ui.button("新种子并重建").clicked() {
-                        new_seed = true;
-                    }
-
                     ui.add_space(8.0);
                     let previous_preset = self.formation_spec.preset;
                     egui::ComboBox::from_label("世界形态")
@@ -1901,11 +1968,19 @@ impl eframe::App for TemplateApp {
                             for preset in [
                                 WorldFormationPreset::Random,
                                 WorldFormationPreset::Continents,
+                                WorldFormationPreset::ProceduralContinents,
                                 WorldFormationPreset::Archipelago,
                                 WorldFormationPreset::Supercontinent,
                                 WorldFormationPreset::GreatIsland,
                                 WorldFormationPreset::VolcanicIslands,
                             ] {
+                                if procedural_coast_unsupported(
+                                    preset,
+                                    self.world_pipeline,
+                                    self.formation_quality_profile,
+                                ) {
+                                    continue;
+                                }
                                 ui.selectable_value(
                                     &mut self.formation_spec.preset,
                                     preset,
@@ -2020,8 +2095,31 @@ impl eframe::App for TemplateApp {
                             });
                     }
                     ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效");
-                    if ui.button("按当前参数重建").clicked() {
+                    // Both actions must see this pass's edited preset and quality profile.
+                    let rebuild_blocked = procedural_coast_unsupported(
+                        self.formation_spec.preset,
+                        self.world_pipeline,
+                        self.formation_quality_profile,
+                    );
+                    if ui
+                        .add_enabled(!rebuild_blocked, egui::Button::new("新种子并重建"))
+                        .on_disabled_hover_text(PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
+                        .clicked()
+                    {
+                        new_seed = true;
+                    }
+                    if ui
+                        .add_enabled(!rebuild_blocked, egui::Button::new("按当前参数重建"))
+                        .on_disabled_hover_text(PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
+                        .clicked()
+                    {
                         rebuild = true;
+                    }
+                    if rebuild_blocked {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            PROCEDURAL_COAST_DRAFT_ONLY_TEXT,
+                        );
                     }
                     let _ = self.show_pending_world_build_status(ui);
 
@@ -2057,7 +2155,25 @@ impl eframe::App for TemplateApp {
                             self.spherical_canvas_state.field_state(),
                             self.spherical_canvas_state.view_mode(),
                         ) {
-                            Ok(model) => show_spherical_inspector(ui, model),
+                            Ok(model) => {
+                                show_spherical_inspector(ui, model);
+                                if let Some(pick) = derived_pick(
+                                    &self.spherical_canvas_state,
+                                    self.amplified_context.as_deref(),
+                                    self.amplified_pick_batches.as_deref(),
+                                    presentation,
+                                ) {
+                                    match derived_pick_rows(presentation, &pick) {
+                                        Ok(rows) => show_spherical_derived_pick(ui, &rows),
+                                        Err(error) => {
+                                            ui.colored_label(
+                                                egui::Color32::LIGHT_RED,
+                                                error.to_string(),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                             Err(error) => {
                                 ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
                             }
@@ -2257,10 +2373,22 @@ fn show_formation_area_summary(
     });
 }
 
+/// Applies the production profile domain plus the app's formation-only restriction.
+/// Hiding the menu entry alone leaves an earlier or persisted selection standing.
+fn procedural_coast_unsupported(
+    preset: WorldFormationPreset,
+    pipeline: WorldPipeline,
+    profile: crate::world::natural::NaturalQualityProfile,
+) -> bool {
+    preset == WorldFormationPreset::ProceduralContinents
+        && (pipeline != WorldPipeline::Formation || !profile.supports_procedural_coast())
+}
+
 fn formation_preset_label(preset: WorldFormationPreset) -> &'static str {
     match preset {
         WorldFormationPreset::Random => "随机（按种子）",
         WorldFormationPreset::Continents => "多大陆",
+        WorldFormationPreset::ProceduralContinents => "程序化海岸（实验）",
         WorldFormationPreset::Archipelago => "群岛",
         WorldFormationPreset::Supercontinent => "超级大陆",
         WorldFormationPreset::GreatIsland => "大岛与卫星岛",
@@ -2278,6 +2406,9 @@ fn apply_formation_preset_selection(
     let resolved = match selected {
         WorldFormationPreset::Random => None,
         WorldFormationPreset::Continents => Some(ResolvedWorldFormationPreset::Continents),
+        WorldFormationPreset::ProceduralContinents => {
+            Some(ResolvedWorldFormationPreset::ProceduralContinents)
+        }
         WorldFormationPreset::Archipelago => Some(ResolvedWorldFormationPreset::Archipelago),
         WorldFormationPreset::Supercontinent => Some(ResolvedWorldFormationPreset::Supercontinent),
         WorldFormationPreset::GreatIsland => Some(ResolvedWorldFormationPreset::GreatIsland),
@@ -2314,12 +2445,12 @@ mod natural_app_tests {
     use super::{
         apply_formation_preset_selection, build_spherical_presentation_candidate_for_view,
         configure_frame_stats_scenario, formation_authoring_control_state,
-        prepare_pending_world_build, settle_world_build_stage_cache, show_formation_area_summary,
-        show_spherical_area_summary, AppRuntimeGraph, FormationAreaSummary, MigrationFailurePoint,
-        P4WaterEnergySummary, PendingWorldBuild, PersistedWorldOrigin,
-        PublishedSphericalPresentation, SphericalPresentationCandidate, SphericalWorldAreaSummary,
-        TemplateApp, WorldBuildCompletion, WorldPipeline, CURRENT_SLICE_STATUS_TEXT,
-        CURRENT_SLICE_SUBTITLE, INITIAL_PLATE_COUNT_LABEL,
+        prepare_pending_world_build, procedural_coast_unsupported, settle_world_build_stage_cache,
+        show_formation_area_summary, show_spherical_area_summary, AppRuntimeGraph,
+        FormationAreaSummary, MigrationFailurePoint, P4WaterEnergySummary, PendingWorldBuild,
+        PersistedWorldOrigin, PublishedSphericalPresentation, SphericalPresentationCandidate,
+        SphericalWorldAreaSummary, TemplateApp, WorldBuildCompletion, WorldPipeline,
+        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, INITIAL_PLATE_COUNT_LABEL,
     };
     use crate::engine::{BuildCancellation, MemoryStageCache};
     use crate::ui::spherical::{
@@ -2395,6 +2526,151 @@ mod natural_app_tests {
     #[test]
     fn spherical_authoring_names_the_parameter_as_an_initial_plate_count() {
         assert_eq!(INITIAL_PLATE_COUNT_LABEL, "初始板块数");
+    }
+
+    #[test]
+    fn a_kept_procedural_coast_selection_blocks_non_draft_rebuilds() {
+        use crate::world::natural::NaturalQualityProfile::{Draft, High, Standard};
+        assert!(Draft.supports_procedural_coast());
+        for profile in [Draft, Standard, High] {
+            assert_eq!(
+                procedural_coast_unsupported(
+                    WorldFormationPreset::ProceduralContinents,
+                    WorldPipeline::Formation,
+                    profile,
+                ),
+                !profile.supports_procedural_coast(),
+            );
+            assert!(procedural_coast_unsupported(
+                WorldFormationPreset::ProceduralContinents,
+                WorldPipeline::LegacyFoundation,
+                profile,
+            ));
+            assert!(!procedural_coast_unsupported(
+                WorldFormationPreset::Continents,
+                WorldPipeline::Formation,
+                profile,
+            ));
+        }
+    }
+
+    #[test]
+    fn procedural_rebuild_buttons_follow_quality_changes_in_the_same_pass() {
+        use crate::world::natural::NaturalQualityProfile::{Draft, Standard};
+
+        // Headless egui input exercises actual control ordering without a GPU or OS input.
+        let context = egui::Context::default();
+        context.enable_accesskit();
+        let mut app = TemplateApp {
+            world_pipeline: WorldPipeline::Formation,
+            formation_quality_profile: Draft,
+            formation_spec: WorldFormationSpec {
+                preset: WorldFormationPreset::ProceduralContinents,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let render = |app: &mut TemplateApp, events| {
+            context.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000.0, 1200.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |context| {
+                    eframe::App::update(app, context, &mut eframe::Frame::_new_kittest());
+                },
+            )
+        };
+        let click = |output: &egui::FullOutput, label: &str| {
+            let bounds = output
+                .platform_output
+                .accesskit_update
+                .as_ref()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .and_then(|(_, node)| node.bounds())
+                .unwrap_or_else(|| panic!("control {label} must be visible"));
+            let pos = egui::pos2(
+                ((bounds.x0 + bounds.x1) / 2.0) as f32,
+                ((bounds.y0 + bounds.y1) / 2.0) as f32,
+            );
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        let _ = render(&mut app, Vec::new());
+        let mut output = render(&mut app, Vec::new());
+        for to in [Standard, Draft] {
+            let _ = render(&mut app, click(&output, "质量档位"));
+            // Popup geometry becomes interactive on the next pass.
+            output = render(&mut app, Vec::new());
+            output = render(&mut app, click(&output, super::quality_tier_label(to)));
+            assert_eq!(app.formation_quality_profile, to);
+            for label in ["新种子并重建", "按当前参数重建"] {
+                let node = &output
+                    .platform_output
+                    .accesskit_update
+                    .as_ref()
+                    .unwrap()
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.label() == Some(label))
+                    .expect("both rebuild actions are visible")
+                    .1;
+                assert_eq!(node.is_disabled(), !to.supports_procedural_coast());
+            }
+        }
+        assert!(app.world_build.is_none());
+    }
+
+    #[test]
+    fn unsupported_procedural_startup_does_not_spawn_a_build() {
+        use crate::world::natural::NaturalQualityProfile::{High, Standard};
+
+        // The startup path and explicit regeneration both call this request method.
+        // No surface generation or GPU fixture is needed to prove preflight rejection.
+        for (pipeline, profile) in [
+            (WorldPipeline::Formation, Standard),
+            (WorldPipeline::Formation, High),
+            (WorldPipeline::LegacyFoundation, Standard),
+        ] {
+            let mut app = TemplateApp {
+                world_pipeline: pipeline,
+                formation_quality_profile: profile,
+                formation_spec: WorldFormationSpec {
+                    preset: WorldFormationPreset::ProceduralContinents,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            app.request_spherical_world_build();
+            assert!(
+                app.world_build.is_none(),
+                "unsupported startup must not spawn a worker"
+            );
+            assert_eq!(
+                app.spherical_runtime_error.as_deref(),
+                Some(super::PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
+            );
+        }
     }
 
     #[derive(Default)]
@@ -2935,11 +3211,9 @@ mod natural_app_tests {
                 river_cells: Vec::new(),
                 river_orders: Vec::new(),
                 river_drainage_area_km2: Vec::new(),
-                surface_water: crate::world::natural::SurfaceWaterField::from_kinds(vec![
-                    crate::world::natural::SurfaceWaterKind::DryLand; count
-                ]),
             }),
             initial_hash: 0,
+            pick_batches: Vec::new(),
         }
     }
 

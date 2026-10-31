@@ -1167,6 +1167,184 @@ pub(super) mod formation_tests {
     }
 
     #[test]
+    #[cfg(not(debug_assertions))]
+    #[ignore = "offline procedural initial-condition comparison; run in Release"]
+    fn procedural_coast_initial_condition_probe() {
+        use std::time::Instant;
+
+        use noise::{NoiseFn, OpenSimplex};
+        use serde_json::json;
+
+        use crate::generators::natural::water_volume_at_sea_level_m3;
+        use crate::world::natural::water_volume_relative_error;
+
+        // Experimental authoring inputs, not physical coefficients or production defaults.
+        // The two cases isolate a boundary-band shape change at a fixed water inventory.
+        let seed = 42;
+        let height_scale_m = 4_000.0;
+        let boundary_offset = 0.3;
+        let band_width = 0.35;
+        let amplitude = 0.2;
+        let frequencies = [3.0, 6.0];
+        let weights = [1.0, 0.5];
+        let profile = NaturalQualityProfile::Draft;
+        let surface = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
+            radius: Meters::new(crate::world::natural::EARTH_WATER_REFERENCE_RADIUS_M).unwrap(),
+            target_cell_count: profile.authoritative_target_cell_count(),
+        })
+        .unwrap();
+        let cancellation = BuildCancellation::new();
+        let domain = ClimateWorkDomainBuilder::build(&surface, profile, &cancellation).unwrap();
+        let noise = OpenSimplex::new(seed);
+        let make_elevation = |perturbed: bool| {
+            surface
+                .cells()
+                .iter()
+                .map(|cell| {
+                    let p = cell.site.components();
+                    let distance = p[0] - boundary_offset;
+                    let perturbation = if perturbed {
+                        let band = (1.0 - distance.abs() / band_width).max(0.0);
+                        amplitude
+                            * band
+                            * frequencies
+                                .iter()
+                                .zip(weights)
+                                .map(|(&frequency, weight)| {
+                                    weight * noise.get(p.map(|value| value * frequency))
+                                })
+                                .sum::<f64>()
+                    } else {
+                        0.0
+                    };
+                    ((distance + perturbation) * height_scale_m) as f32
+                })
+                .collect::<Vec<_>>()
+        };
+        let baseline_elevation = make_elevation(false);
+        let inventory = water_volume_at_sea_level_m3(&surface, &baseline_elevation, 0.0).unwrap();
+        let terrains = [
+            terrain_from_primary(&surface, baseline_elevation, inventory),
+            terrain_from_primary(&surface, make_elevation(true), inventory),
+        ];
+        let permeability = vec![0.5; surface.cells().len()];
+        let build_forcing = |terrain: &FormationTerrainFields| {
+            GlobalClimateForcingBuilder::build_for_formation_terrain(
+                &surface,
+                terrain,
+                &permeability,
+                &ClimateSpec::default(),
+                &domain,
+                &cancellation,
+            )
+            .unwrap()
+        };
+        let forcings = [build_forcing(&terrains[0]), build_forcing(&terrains[1])];
+        assert_eq!(forcings[1], build_forcing(&terrains[1]));
+        assert_ne!(forcings[0].fingerprint(), forcings[1].fingerprint());
+        assert!(forcings[0]
+            .validate_formation_terrain_identity(&terrains[1])
+            .is_err());
+        assert_ne!(
+            forcings[0].source_land_fraction(),
+            forcings[1].source_land_fraction()
+        );
+
+        let mut reports = Vec::with_capacity(2);
+        let mut climates = Vec::with_capacity(2);
+        for (terrain, forcing) in terrains.iter().zip(&forcings) {
+            terrain.validate_against_surface(&surface).unwrap();
+            forcing.validate_against(&domain).unwrap();
+            forcing
+                .validate_formation_terrain_identity(terrain)
+                .unwrap();
+            let start = Instant::now();
+            let climate = GlobalCirculationGenerator::generate(
+                &surface,
+                &domain,
+                forcing,
+                ClimateModelProfile::C2LayeredV1,
+                &cancellation,
+            )
+            .unwrap();
+            let elapsed_ms = start.elapsed().as_secs_f64() * 1_000.0;
+            climate.validate_against(&surface).unwrap();
+            assert_eq!(
+                climate.checkpoint().forcing_fingerprint(),
+                forcing.fingerprint()
+            );
+            let geometry = terrain.surface_water_geometry();
+            reports.push(json!({
+                "sea_level_m": geometry.sea_level_m(),
+                "land_fraction": geometry.global_land_area_fraction(&surface).unwrap(),
+                "water_relative_error": water_volume_relative_error(
+                    geometry.total_water_volume_m3(), inventory),
+                "climate_elapsed_ms": elapsed_ms,
+                "budget": climate.budget_report(),
+                "solve": climate.solve_report(),
+            }));
+            climates.push(climate);
+        }
+        let area_sum = surface
+            .cells()
+            .iter()
+            .map(|cell| cell.area.get())
+            .sum::<f64>();
+        let mean_difference =
+            |left: &crate::world::natural::MonthlyScalarField,
+             right: &crate::world::natural::MonthlyScalarField| {
+                surface
+                    .cells()
+                    .iter()
+                    .zip(left.values())
+                    .zip(right.values())
+                    .map(|((cell, left), right)| {
+                        cell.area.get()
+                            * left
+                                .iter()
+                                .zip(right)
+                                .map(|(&a, &b)| (f64::from(a) - f64::from(b)).abs())
+                                .sum::<f64>()
+                            / left.len() as f64
+                    })
+                    .sum::<f64>()
+                    / area_sum
+            };
+        let first = climates[0].fields();
+        let second = climates[1].fields();
+        let temperature_difference = mean_difference(
+            first.monthly_air_temperature_c(),
+            second.monthly_air_temperature_c(),
+        );
+        let precipitation_difference = mean_difference(
+            first.monthly_precipitation_mm_day(),
+            second.monthly_precipitation_mm_day(),
+        );
+        assert!(temperature_difference > 0.0 || precipitation_difference > 0.0);
+        let report = json!({
+            "scope": "input coupling only; no geomorphic feedback, skill or UI claim",
+            "seed": seed,
+            "initial_condition": {"height_scale_m": height_scale_m,
+                "boundary_offset": boundary_offset, "band_width": band_width,
+                "amplitude": amplitude, "frequencies": frequencies, "weights": weights},
+            "source_cells": surface.cells().len(),
+            "profile": profile,
+            "water_inventory_m3": inventory,
+            "cases": reports,
+            "temperature_area_month_mean_absolute_difference_c": temperature_difference,
+            "precipitation_area_month_mean_absolute_difference_mm_day": precipitation_difference,
+        });
+        let output =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/coast-climate-spike");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(
+            output.join("probe.json"),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn formation_terrain_forcing_rejects_wrong_allocation_and_cancellation() {
         let fixture = fixture();
         let other = GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
