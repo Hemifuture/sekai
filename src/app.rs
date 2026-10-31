@@ -78,6 +78,7 @@ const FORMATION_SLICE_STATUS_TEXT: &str =
     "当前切片：空间 → 演化板块 → 基底/初级地形 → 全球环流 → 耦合地貌（P5）";
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
 const INITIAL_PLATE_COUNT_LABEL: &str = "初始板块数";
+const PROCEDURAL_COAST_DRAFT_ONLY_TEXT: &str = "程序化海岸（实验）目前仅支持草稿档";
 /// The default quality tier for interactive formation builds.
 fn default_formation_quality_profile() -> crate::world::natural::NaturalQualityProfile {
     crate::world::natural::NaturalQualityProfile::Draft
@@ -1943,6 +1944,11 @@ impl eframe::App for TemplateApp {
             .default_width(320.0)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    let rebuild_blocked = procedural_coast_unsupported(
+                        self.formation_spec.preset,
+                        self.world_pipeline,
+                        self.formation_quality_profile,
+                    );
                     ui.heading("自然世界");
                     ui.label(CURRENT_SLICE_SUBTITLE);
                     ui.separator();
@@ -1951,7 +1957,11 @@ impl eframe::App for TemplateApp {
                         ui.label("根种子");
                         ui.add(egui::DragValue::new(&mut self.world_seed).range(0..=u64::MAX));
                     });
-                    if ui.button("新种子并重建").clicked() {
+                    if ui
+                        .add_enabled(!rebuild_blocked, egui::Button::new("新种子并重建"))
+                        .on_disabled_hover_text(PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
+                        .clicked()
+                    {
                         new_seed = true;
                     }
 
@@ -1969,11 +1979,11 @@ impl eframe::App for TemplateApp {
                                 WorldFormationPreset::GreatIsland,
                                 WorldFormationPreset::VolcanicIslands,
                             ] {
-                                if preset == WorldFormationPreset::ProceduralContinents
-                                    && (self.world_pipeline != WorldPipeline::Formation
-                                        || self.formation_quality_profile
-                                            != crate::world::natural::NaturalQualityProfile::Draft)
-                                {
+                                if procedural_coast_unsupported(
+                                    preset,
+                                    self.world_pipeline,
+                                    self.formation_quality_profile,
+                                ) {
                                     continue;
                                 }
                                 ui.selectable_value(
@@ -2090,8 +2100,18 @@ impl eframe::App for TemplateApp {
                             });
                     }
                     ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效");
-                    if ui.button("按当前参数重建").clicked() {
+                    if ui
+                        .add_enabled(!rebuild_blocked, egui::Button::new("按当前参数重建"))
+                        .on_disabled_hover_text(PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
+                        .clicked()
+                    {
                         rebuild = true;
+                    }
+                    if rebuild_blocked {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            PROCEDURAL_COAST_DRAFT_ONLY_TEXT,
+                        );
                     }
                     let _ = self.show_pending_world_build_status(ui);
 
@@ -2345,6 +2365,19 @@ fn show_formation_area_summary(
     });
 }
 
+/// True when the formation stage would reject this request: the
+/// experimental procedural coast runs only on the Draft formation chain.
+/// Hiding the menu entry alone leaves an earlier selection standing.
+fn procedural_coast_unsupported(
+    preset: WorldFormationPreset,
+    pipeline: WorldPipeline,
+    profile: crate::world::natural::NaturalQualityProfile,
+) -> bool {
+    preset == WorldFormationPreset::ProceduralContinents
+        && (pipeline != WorldPipeline::Formation
+            || profile != crate::world::natural::NaturalQualityProfile::Draft)
+}
+
 fn formation_preset_label(preset: WorldFormationPreset) -> &'static str {
     match preset {
         WorldFormationPreset::Random => "随机（按种子）",
@@ -2406,12 +2439,12 @@ mod natural_app_tests {
     use super::{
         apply_formation_preset_selection, build_spherical_presentation_candidate_for_view,
         configure_frame_stats_scenario, formation_authoring_control_state,
-        prepare_pending_world_build, settle_world_build_stage_cache, show_formation_area_summary,
-        show_spherical_area_summary, AppRuntimeGraph, FormationAreaSummary, MigrationFailurePoint,
-        P4WaterEnergySummary, PendingWorldBuild, PersistedWorldOrigin,
-        PublishedSphericalPresentation, SphericalPresentationCandidate, SphericalWorldAreaSummary,
-        TemplateApp, WorldBuildCompletion, WorldPipeline, CURRENT_SLICE_STATUS_TEXT,
-        CURRENT_SLICE_SUBTITLE, INITIAL_PLATE_COUNT_LABEL,
+        prepare_pending_world_build, procedural_coast_unsupported, settle_world_build_stage_cache,
+        show_formation_area_summary, show_spherical_area_summary, AppRuntimeGraph,
+        FormationAreaSummary, MigrationFailurePoint, P4WaterEnergySummary, PendingWorldBuild,
+        PersistedWorldOrigin, PublishedSphericalPresentation, SphericalPresentationCandidate,
+        SphericalWorldAreaSummary, TemplateApp, WorldBuildCompletion, WorldPipeline,
+        CURRENT_SLICE_STATUS_TEXT, CURRENT_SLICE_SUBTITLE, INITIAL_PLATE_COUNT_LABEL,
     };
     use crate::engine::{BuildCancellation, MemoryStageCache};
     use crate::ui::spherical::{
@@ -2487,6 +2520,27 @@ mod natural_app_tests {
     #[test]
     fn spherical_authoring_names_the_parameter_as_an_initial_plate_count() {
         assert_eq!(INITIAL_PLATE_COUNT_LABEL, "初始板块数");
+    }
+
+    #[test]
+    fn a_kept_procedural_coast_selection_blocks_non_draft_rebuilds() {
+        use crate::world::natural::NaturalQualityProfile::{Draft, Standard};
+        let procedural = WorldFormationPreset::ProceduralContinents;
+        assert!(!procedural_coast_unsupported(
+            procedural,
+            WorldPipeline::Formation,
+            Draft
+        ));
+        assert!(procedural_coast_unsupported(
+            procedural,
+            WorldPipeline::Formation,
+            Standard
+        ));
+        assert!(!procedural_coast_unsupported(
+            WorldFormationPreset::Continents,
+            WorldPipeline::Formation,
+            Standard
+        ));
     }
 
     #[derive(Default)]
