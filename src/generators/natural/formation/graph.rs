@@ -1,5 +1,9 @@
 //! Atomic engine publication for one final P2/P3/P4/P5 formation bundle.
 
+#[cfg(all(test, not(debug_assertions)))]
+#[path = "coast_support_probe.rs"]
+mod coast_support_probe;
+
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};

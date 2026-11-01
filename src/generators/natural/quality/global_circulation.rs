@@ -1281,11 +1281,28 @@ fn tangent_direction(origin: [f64; 3], target: [f64; 3]) -> [f64; 3] {
     tangent.map(|component| component / length)
 }
 
+// Only offline unit-build probes observe the argmax; published quality and production
+// builds retain the same scalar operator and no diagnostic state.
+#[cfg(all(test, not(debug_assertions)))]
+std::thread_local! {
+    static WIND_JUMP_LOCATION: std::cell::Cell<Option<(usize, usize, f64)>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+/// Takes the latest production metric's edge index, zero-based month and RMS wind.
+#[cfg(all(test, not(debug_assertions)))]
+pub(in crate::generators::natural) fn take_wind_jump_location() -> Option<(usize, usize, f64)> {
+    WIND_JUMP_LOCATION.with(std::cell::Cell::take)
+}
+
 fn neighbor_speed_jump_ratio(
     surface: &SphericalSurfaceSnapshot,
     wind: &[[[f32; 3]; 12]],
     cancellation: Option<&BuildCancellation>,
 ) -> Result<f64, QualityBuildError> {
+    #[cfg(all(test, not(debug_assertions)))]
+    WIND_JUMP_LOCATION.with(|location| location.set(None));
     let mut square_sum = 0.0_f64;
     for (cell, months) in wind.iter().enumerate() {
         if cell % 256 == 0 {
@@ -1310,7 +1327,16 @@ fn neighbor_speed_jump_ratio(
             let difference = std::array::from_fn(|component| {
                 f64::from(first_month[component] - second_month[component])
             });
-            maximum = maximum.max(norm(difference) / rms);
+            let ratio = norm(difference) / rms;
+            #[cfg(all(test, not(debug_assertions)))]
+            if ratio > maximum {
+                let month = wind[first]
+                    .iter()
+                    .position(|value| std::ptr::eq(value, first_month))
+                    .expect("the observed month belongs to this cell");
+                WIND_JUMP_LOCATION.with(|location| location.set(Some((edge_index, month, rms))));
+            }
+            maximum = maximum.max(ratio);
         }
     }
     Ok(maximum)

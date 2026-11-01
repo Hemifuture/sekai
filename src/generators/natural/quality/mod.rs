@@ -1,5 +1,7 @@
 mod evolved_tectonics;
 mod global_circulation;
+#[cfg(all(test, not(debug_assertions)))]
+pub(in crate::generators::natural) use global_circulation::take_wind_jump_location;
 mod primary_relief;
 mod spatial;
 mod spherical;
