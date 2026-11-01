@@ -12,7 +12,7 @@ use crate::world::natural::{
     FORMATION_HILLSLOPE_WEATHERING_BASE, FORMATION_HILLSLOPE_WEATHERING_RANGE,
     SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
+use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
 use super::sediment::split_mass_by_weights;
@@ -178,7 +178,6 @@ impl NonlinearHillslopeTransport {
         cancellation: &BuildCancellation,
     ) -> Result<HillslopeTransportStep, HillslopeGenerationError> {
         check_cancelled(cancellation)?;
-        surface.validate()?;
         Self::advance_from_validated_surface(surface, inputs, step_years, workspace, cancellation)
     }
 
@@ -600,8 +599,6 @@ fn check_cancelled(cancellation: &BuildCancellation) -> Result<(), HillslopeGene
 pub enum HillslopeGenerationError {
     #[error("hillslope transport cancelled")]
     Cancelled,
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("hillslope field {field} has length {found}; expected {expected}")]
     CellCountMismatch {
         field: &'static str,

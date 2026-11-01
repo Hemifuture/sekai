@@ -11,8 +11,7 @@ use super::{
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceGeometryKind, SurfaceRef,
-    SurfaceRefError,
+    SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef, SurfaceRefError,
 };
 use crate::world::{
     CellId, DrainageBasinId, LakeId, RiverSegmentId, MAX_SPHERICAL_CELL_COUNT,
@@ -415,7 +414,6 @@ impl SphericalHydrologySnapshot {
         &self,
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), SphericalHydrologyValidationError> {
-        surface.validate()?;
         self.validate_against_validated_surface(surface)
     }
 
@@ -424,7 +422,7 @@ impl SphericalHydrologySnapshot {
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), SphericalHydrologyValidationError> {
         self.validate()?;
-        let authoritative = SurfaceRef::from_validated_spherical(surface)?;
+        let authoritative = SurfaceRef::try_for_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalHydrologyValidationError::SurfaceMismatch {
                 snapshot: self.surface_ref,
@@ -682,9 +680,6 @@ pub enum SphericalHydrologyValidationError {
         stored: f64,
         expected: f64,
     },
-    /// The authoritative surface itself is invalid.
-    #[error("invalid spherical surface input: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The shared hydrology semantics are invalid.
     #[error("invalid hydrology semantics: {0}")]
     InvalidHydrology(#[from] HydrologyValidationError),

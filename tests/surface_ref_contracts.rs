@@ -1,7 +1,8 @@
 use sekai::generators::spatial::GeodesicVoronoiBuilder;
 use sekai::world::spatial::{
-    SpatialCell, SpatialEdge, SpatialSnapshot, SphericalSurfaceSnapshot, SurfaceGeometryKind,
-    SurfaceRef, SurfaceRefError, Topology, SPATIAL_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V1,
+    SpatialCell, SpatialEdge, SpatialSnapshot, SphericalSurfaceSnapshot,
+    SphericalSurfaceValidationError, SurfaceGeometryKind, SurfaceRef, SurfaceRefError, Topology,
+    SPATIAL_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V1,
 };
 use sekai::world::{
     BoundaryCondition, CellId, EdgeId, Meters, SphericalSpaceSpec, SquareMeters, WorldPoint,
@@ -176,15 +177,20 @@ fn public_planar_identity_factory_rejects_invalid_deserialized_geometry() {
     assert!(SurfaceRef::try_for_planar(&malformed).is_err());
 }
 
+/// The constant-time spherical identity trusts the stored fingerprint, so a
+/// stale one must be rejected at the snapshot's deserialization boundary,
+/// before any identity can be derived from it.
 #[test]
-fn public_spherical_identity_factory_rejects_a_stale_stored_fingerprint() {
+fn spherical_surface_boundary_rejects_a_stale_stored_fingerprint() {
     let mut value = serde_json::to_value(spherical_fixture(6_371_000.0)).unwrap();
     let original = value["fingerprint"][0].as_u64().unwrap() as u8;
     value["fingerprint"][0] = json!(original.wrapping_add(1));
-    let malformed: SphericalSurfaceSnapshot = serde_json::from_value(value).unwrap();
 
-    assert!(malformed.validate().is_err());
-    assert!(SurfaceRef::try_for_spherical(&malformed).is_err());
+    let error = serde_json::from_value::<SphericalSurfaceSnapshot>(value).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        SphericalSurfaceValidationError::FingerprintMismatch.to_string()
+    );
 }
 
 #[test]

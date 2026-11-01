@@ -56,7 +56,7 @@ pub(crate) fn evaluate_spherical_foundation_quality_from_validated(
     relief: &SphericalReliefSnapshot,
     hydro_erosion: &SphericalHydroErosionSnapshot,
 ) -> Result<NaturalQualityReport, QualityBuildError> {
-    let surface_ref = SurfaceRef::from_validated_spherical(surface)
+    let surface_ref = SurfaceRef::try_for_spherical(surface)
         .map_err(|error| invalid_input("surface identity", error))?;
     let areas = surface
         .cells()
@@ -195,7 +195,6 @@ fn validate_inputs(
     relief: &SphericalReliefSnapshot,
     hydro_erosion: &SphericalHydroErosionSnapshot,
 ) -> Result<(), QualityBuildError> {
-    validate_input("surface", surface.validate())?;
     validate_input("formation", formation.validate())?;
     validate_input("relief spec", relief_spec.validate())?;
     validate_input("tectonics", tectonic.validate_against(surface))?;
@@ -231,7 +230,7 @@ pub(crate) fn validate_spherical_quality_input_identities(
 ) -> Result<(), QualityBuildError> {
     validate_input("formation", formation.validate())?;
     validate_input("relief spec", relief_spec.validate())?;
-    let authoritative = SurfaceRef::from_validated_spherical(surface)
+    let authoritative = SurfaceRef::try_for_spherical(surface)
         .map_err(|error| invalid_input("surface identity", error))?;
     for (input, found) in [
         ("tectonics", tectonic.surface_ref()),

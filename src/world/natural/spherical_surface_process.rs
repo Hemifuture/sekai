@@ -13,8 +13,7 @@ use super::{
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceGeometryKind, SurfaceRef,
-    SurfaceRefError,
+    SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef, SurfaceRefError,
 };
 use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT};
 
@@ -183,7 +182,6 @@ impl SphericalSurfaceProcessSnapshot {
         surface: &SphericalSurfaceSnapshot,
         relief: &SphericalReliefSnapshot,
     ) -> Result<(), SphericalSurfaceProcessValidationError> {
-        surface.validate()?;
         relief.validate_against_validated_surface(surface)?;
         self.validate_against_validated_surface(surface, relief)
     }
@@ -194,7 +192,7 @@ impl SphericalSurfaceProcessSnapshot {
         relief: &SphericalReliefSnapshot,
     ) -> Result<(), SphericalSurfaceProcessValidationError> {
         self.validate()?;
-        let authoritative = SurfaceRef::from_validated_spherical(surface)?;
+        let authoritative = SurfaceRef::try_for_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalSurfaceProcessValidationError::SurfaceMismatch {
                 snapshot: self.surface_ref,
@@ -357,9 +355,6 @@ pub enum SphericalSurfaceProcessValidationError {
         relief: SurfaceRef,
         authoritative: SurfaceRef,
     },
-    /// The authoritative surface is invalid.
-    #[error("invalid spherical surface input: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The constructional relief is invalid or incompatible.
     #[error("invalid spherical relief input: {0}")]
     InvalidRelief(#[from] SphericalReliefValidationError),

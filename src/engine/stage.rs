@@ -1,7 +1,8 @@
 use thiserror::Error;
 
 use crate::engine::artifact::{
-    Artifact, ArtifactError, ArtifactKey, ArtifactType, BuildArtifacts, StoredArtifact,
+    Artifact, ArtifactError, ArtifactKey, ArtifactType, BuildArtifacts, PreparedArtifact,
+    StoredArtifact,
 };
 use crate::engine::diagnostics::{is_valid_identifier, Diagnostic};
 use crate::engine::random::StageRng;
@@ -145,6 +146,15 @@ pub trait Stage: Send + Sync + 'static {
         rng: &mut StageRng,
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Self::Output, StageError>;
+
+    /// Returns the output for `inputs` when the stage already holds it prepared.
+    ///
+    /// The engine then publishes that value and hash instead of calling [`Stage::run`]. A
+    /// stage may only return a value it would have produced for exactly these inputs; the
+    /// default holds nothing.
+    fn prepared_output(&self, _inputs: &Self::Inputs) -> Option<&PreparedArtifact<Self::Output>> {
+        None
+    }
 }
 
 #[derive(Debug, Error)]
@@ -191,6 +201,13 @@ impl<S: Stage> ErasedStage for ErasedStageAdapter<S> {
             .dependency_view(&self.dependencies)
             .map_err(ErasedStageError::Inputs)?;
         let inputs = S::Inputs::load(&dependency_view).map_err(ErasedStageError::Inputs)?;
+        if let Some(prepared) = self.stage.prepared_output(&inputs) {
+            let stored = prepared.stored().clone();
+            self.output_type
+                .publish_into(stored.clone(), artifacts)
+                .map_err(ErasedStageError::Publication)?;
+            return Ok(stored);
+        }
         let output = self
             .stage
             .run(inputs, rng, diagnostics)

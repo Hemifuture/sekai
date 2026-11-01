@@ -13,8 +13,7 @@ use crate::world::natural::{
     SURFACE_PROCESS_SCHEMA_V2,
 };
 use crate::world::spatial::{
-    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRef, SurfaceRefError,
+    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError,
 };
 
 impl FluvialErosionGenerator {
@@ -27,7 +26,6 @@ impl FluvialErosionGenerator {
         spec: &HydroErosionSpec,
     ) -> Result<SphericalSurfaceProcessSnapshot, SphericalFluvialErosionError> {
         spec.validate()?;
-        surface.validate()?;
         relief.validate_against_validated_surface(surface)?;
         geology.validate()?;
         hydrology.validate_against_validated_surface(surface)?;
@@ -100,9 +98,6 @@ pub enum SphericalFluvialErosionError {
     /// The shared controls are invalid.
     #[error("invalid hydro-erosion specification: {0}")]
     InvalidSpec(#[from] HydroErosionSpecError),
-    /// The authoritative sphere is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The exact surface identity could not be derived.
     #[error("invalid spherical surface identity: {0}")]
     InvalidSurfaceIdentity(#[from] SurfaceRefError),

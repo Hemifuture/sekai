@@ -10,8 +10,7 @@ use crate::world::natural::{
     WorldFormationSpecError, TECTONIC_SNAPSHOT_SCHEMA_V3,
 };
 use crate::world::spatial::{
-    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRefError,
+    NaturalSurface, SphericalNaturalSurface, SphericalSurfaceSnapshot, SurfaceRefError,
 };
 
 mod boundaries;
@@ -55,7 +54,6 @@ impl TectonicGenerator {
     ) -> Result<SphericalTectonicSnapshot, SphericalTectonicGenerationError> {
         spec.validate()?;
         formation.validate()?;
-        surface.validate()?;
         if spec.plate_count as usize > surface.cells().len() {
             return Err(SphericalTectonicGenerationError::PlateCountExceedsCells {
                 plates: spec.plate_count,
@@ -170,9 +168,6 @@ pub enum SphericalTectonicGenerationError {
     /// The supplied resolved formation selection is invalid.
     #[error("invalid resolved world formation: {0}")]
     InvalidFormation(#[from] WorldFormationSpecError),
-    /// The authoritative spherical surface is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The authoritative spherical surface identity could not be derived.
     #[error("invalid spherical surface identity: {0}")]
     InvalidSurfaceIdentity(#[from] SurfaceRefError),

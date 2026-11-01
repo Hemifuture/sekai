@@ -76,14 +76,6 @@ fn validate_inputs(
         .validate()
         .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
     bundle
-        .authoritative_surface()
-        .validate()
-        .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
-    bundle
-        .tectonic_control_surface()
-        .validate()
-        .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;
-    bundle
         .control_to_authoritative_map()
         .validate()
         .map_err(|error| EvolvedTectonicGenerationError::InvalidBundle(error.to_string()))?;

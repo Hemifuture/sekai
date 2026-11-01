@@ -62,24 +62,12 @@ struct NaturalFormationBundleWire {
 }
 
 impl NaturalFormationBundle {
-    /// Constructs a bundle only after every local and cross-sibling invariant holds.
+    /// Constructs a bundle only after its schema and every cross-sibling identity hold.
     pub(crate) fn new(
         parts: NaturalFormationBundleParts,
     ) -> Result<Self, NaturalFormationBundleValidationError> {
         let bundle = Self::assemble(parts);
         bundle.validate()?;
-        Ok(bundle)
-    }
-
-    /// Constructs a bundle from siblings whose producers already validated
-    /// them against the authoritative surface, checking only the bundle's
-    /// own schema and cross-sibling identities.
-    pub(crate) fn from_validated_siblings(
-        parts: NaturalFormationBundleParts,
-    ) -> Result<Self, NaturalFormationBundleValidationError> {
-        let bundle = Self::assemble(parts);
-        bundle.validate_header()?;
-        bundle.validate_bindings()?;
         Ok(bundle)
     }
 
@@ -101,23 +89,12 @@ impl NaturalFormationBundle {
     }
 
     /// Revalidates the current-state schema and every cross-sibling identity.
+    ///
+    /// Every sibling snapshot is valid by construction: its constructor and its deserializer
+    /// run its full check, and its fields cannot change afterwards. Only what the bundle adds,
+    /// its header and the identities binding the siblings to each other, is checked here.
     pub fn validate(&self) -> Result<(), NaturalFormationBundleValidationError> {
         self.validate_header()?;
-        self.tectonics.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("tectonics", error)
-        })?;
-        self.substrate.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("substrate", error)
-        })?;
-        self.primary_relief.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("primary_relief", error)
-        })?;
-        self.climate.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("climate", error)
-        })?;
-        self.surface_formation.validate().map_err(|error| {
-            NaturalFormationBundleValidationError::invalid_domain("surface_formation", error)
-        })?;
         self.validate_bindings()
     }
 
@@ -329,13 +306,4 @@ pub enum NaturalFormationBundleValidationError {
     /// Two final siblings disagree on a required content identity.
     #[error("natural formation identity mismatch for {field}")]
     IdentityMismatch { field: &'static str },
-}
-
-impl NaturalFormationBundleValidationError {
-    fn invalid_domain(role: &'static str, error: impl ToString) -> Self {
-        Self::InvalidNested {
-            role,
-            reason: error.to_string(),
-        }
-    }
 }

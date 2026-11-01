@@ -207,13 +207,16 @@ pub enum SphericalSurfaceValidationError {
 }
 
 impl SphericalSurfaceSnapshot {
-    /// Validates a constructed or deserialized closed spherical surface in deterministic order.
-    pub fn validate(&self) -> Result<(), SphericalSurfaceValidationError> {
+    /// Validates a closed spherical surface in deterministic order.
+    ///
+    /// Only the construction and deserialization boundaries call this; every
+    /// snapshot that exists outside them has already passed it.
+    pub(super) fn validate(&self) -> Result<(), SphericalSurfaceValidationError> {
         self.validate_impl(None)
     }
 
     /// Validates the complete topology and geometry while polling long scans.
-    pub fn validate_cancellable(
+    pub(super) fn validate_cancellable(
         &self,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<(), SphericalSurfaceValidationError> {

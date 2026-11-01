@@ -142,7 +142,7 @@ fn evaluate_impl(
     snapshot: &NaturalSurfaceFormationSnapshot,
     cancellation: Option<&BuildCancellation>,
 ) -> Result<NaturalQualityReport, QualityBuildError> {
-    let surface_ref = SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+    let surface_ref = SurfaceRef::try_for_spherical(surface).map_err(|error| {
         QualityBuildError::InvalidInput {
             input: "authoritative_surface",
             reason: error.to_string(),

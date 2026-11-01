@@ -5,7 +5,9 @@ use std::time::Instant as StageTimer;
 
 use thiserror::Error;
 
-use crate::engine::artifact::{Artifact, ArtifactError, ArtifactKey, BuildArtifacts, ContentHash};
+use crate::engine::artifact::{
+    Artifact, ArtifactError, ArtifactKey, BuildArtifacts, ContentHash, PreparedArtifact,
+};
 use crate::engine::cache::{MemoryStageCache, StageCacheKey};
 use crate::engine::cancellation::BuildCancellation;
 use crate::engine::diagnostics::{
@@ -56,6 +58,18 @@ impl ExternalArtifacts {
     /// Validates, stream-hashes, and inserts one typed external artifact.
     pub fn insert<T: Artifact>(&mut self, value: T) -> Result<(), ArtifactError> {
         self.artifacts.insert(value)
+    }
+
+    /// Inserts one already validated and hashed external artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ArtifactError::Duplicate`] when the key was already supplied.
+    pub fn insert_prepared<T: Artifact>(
+        &mut self,
+        prepared: &PreparedArtifact<T>,
+    ) -> Result<(), ArtifactError> {
+        self.artifacts.insert_prepared(prepared)
     }
 
     /// Returns the checked semantic hash of a typed external artifact.
@@ -578,6 +592,87 @@ mod tests {
         engine
             .build(root_seed, external, &mut MemoryStageCache::new())
             .unwrap()
+    }
+
+    /// Holds the output it would compute for one external value, prepared ahead of the build.
+    struct PreparedOutputStage(crate::engine::artifact::PreparedArtifact<Output>);
+
+    impl Stage for PreparedOutputStage {
+        type Inputs = Inputs;
+        type Output = Output;
+
+        fn id(&self) -> StageId {
+            OutputStage.id()
+        }
+
+        fn version(&self) -> u32 {
+            OutputStage.version()
+        }
+
+        fn namespace(&self) -> &'static str {
+            OutputStage.namespace()
+        }
+
+        fn prepared_output(
+            &self,
+            inputs: &Self::Inputs,
+        ) -> Option<&crate::engine::artifact::PreparedArtifact<Self::Output>> {
+            (inputs.0.as_ref().0 == self.0.get().0).then_some(&self.0)
+        }
+
+        fn run(
+            &self,
+            inputs: Self::Inputs,
+            _rng: &mut StageRng,
+            _diagnostics: &mut Vec<Diagnostic>,
+        ) -> Result<Self::Output, StageError> {
+            Ok(Output(inputs.0.as_ref().0 + 1_000))
+        }
+    }
+
+    /// A prepared stage output and a prepared external enter the build with exactly the hashes
+    /// a fresh build computes, and the stage does not run for the inputs it was prepared for.
+    #[test]
+    fn prepared_artifacts_publish_the_hashes_of_a_fresh_build() {
+        let root_seed = RootSeed::new(42);
+        let fresh = successful_outcome(root_seed, 7);
+        let cancellation = crate::engine::BuildCancellation::new();
+        let engine = BuildEngine::new(
+            StageGraphBuilder::new()
+                .external::<External>()
+                .stage(PreparedOutputStage(
+                    crate::engine::artifact::PreparedArtifact::new_cancellable(
+                        Output(7),
+                        &cancellation,
+                    )
+                    .unwrap(),
+                ))
+                .build()
+                .unwrap(),
+        );
+        let prepared_external =
+            crate::engine::artifact::PreparedArtifact::new_cancellable(External(7), &cancellation)
+                .unwrap();
+        let mut external = ExternalArtifacts::new();
+        external.insert_prepared(&prepared_external).unwrap();
+
+        let prepared = engine
+            .build(root_seed, external, &mut MemoryStageCache::new())
+            .unwrap();
+
+        assert_eq!(prepared.artifacts.get::<Output>().unwrap().0, 7);
+        assert_eq!(prepared.report.result_hash(), fresh.report.result_hash());
+        assert_eq!(
+            prepared.artifacts.semantic_binding_hash(),
+            fresh.artifacts.semantic_binding_hash()
+        );
+
+        let mut other = ExternalArtifacts::new();
+        other.insert(External(8)).unwrap();
+        let unprepared = engine
+            .build(root_seed, other, &mut MemoryStageCache::new())
+            .unwrap();
+        assert_eq!(unprepared.artifacts.get::<Output>().unwrap().0, 1_008);
     }
 
     #[test]

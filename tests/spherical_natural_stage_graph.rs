@@ -314,7 +314,6 @@ fn whole_graph_cross_validates_and_has_frozen_semantic_hashes() {
         .unwrap();
     let quality = first.artifacts.get::<NaturalQualityArtifact>().unwrap();
 
-    surface.snapshot().validate().unwrap();
     formation.formation().validate().unwrap();
     tectonic
         .snapshot()

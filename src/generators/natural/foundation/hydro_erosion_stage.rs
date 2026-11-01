@@ -138,7 +138,6 @@ impl Stage for SphericalHydroErosionStage {
 fn generation_failure(error: SphericalHydroErosionGenerationError) -> StageError {
     match error {
         SphericalHydroErosionGenerationError::InvalidSpec(_)
-        | SphericalHydroErosionGenerationError::InvalidSurface(_)
         | SphericalHydroErosionGenerationError::InvalidSurfaceIdentity(_)
         | SphericalHydroErosionGenerationError::InvalidRelief(_)
         | SphericalHydroErosionGenerationError::InvalidGeology(_)

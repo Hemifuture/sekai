@@ -115,7 +115,6 @@ fn closed_surface_science_holds_from_small_refinements_through_the_production_pr
             .map(|vertex| vertex.position.components().map(f64::to_bits))
             .collect::<BTreeSet<_>>();
         assert_eq!(unique_positions.len(), snapshot.vertices().len());
-        snapshot.validate().unwrap();
         println!(
             "frequency={expected_frequency} cells={} area_relative_error={relative_area_error:e} elapsed={:?}",
             snapshot.cells().len(),
@@ -161,7 +160,6 @@ fn supported_cell_budget_endpoints_resolve_without_building_the_maximum_surface(
     assert_eq!(minimum.resolved_cell_count(), 42);
     let minimum_snapshot = GeodesicVoronoiBuilder::build(&minimum).unwrap();
     assert_eq!(minimum_snapshot.cells().len(), 42);
-    minimum_snapshot.validate().unwrap();
 
     let maximum = spherical_spec_with_radius(MAX_SPHERICAL_CELL_COUNT, RADIUS);
     maximum.validate().unwrap();
@@ -209,8 +207,6 @@ fn production_scale_measurement() {
     let started = Instant::now();
     let snapshot = GeodesicVoronoiBuilder::build(&spec).unwrap();
     let elapsed = started.elapsed();
-    let validation_result = snapshot.validate();
-    validation_result.as_ref().unwrap();
     let json = serde_json::to_vec(&snapshot).unwrap();
     let resolved_count = snapshot.cells().len();
     let bytes_per_cell = json.len() as f64 / resolved_count as f64;
@@ -233,10 +229,8 @@ fn maximum_supported_surface_measurement() {
 
     let build_started = Instant::now();
     let snapshot = GeodesicVoronoiBuilder::build(&spec).unwrap();
+    // Construction ends with the surface's single full validation.
     let build_elapsed = build_started.elapsed();
-    let validation_started = Instant::now();
-    snapshot.validate().unwrap();
-    let validation_elapsed = validation_started.elapsed();
     let snapshot_heap_bytes = std::mem::size_of_val(snapshot.vertices())
         + std::mem::size_of_val(snapshot.cells())
         + std::mem::size_of_val(snapshot.edges())
@@ -251,7 +245,7 @@ fn maximum_supported_surface_measurement() {
             .sum::<usize>();
 
     println!(
-        "maximum_supported_surface_measurement frequency={} cells={} build_elapsed={build_elapsed:?} validation_elapsed={validation_elapsed:?} snapshot_heap_bytes={snapshot_heap_bytes} validation=ok",
+        "maximum_supported_surface_measurement frequency={} cells={} build_and_validation_elapsed={build_elapsed:?} snapshot_heap_bytes={snapshot_heap_bytes} validation=ok",
         spec.resolved_frequency(),
         snapshot.cells().len(),
     );
@@ -279,7 +273,6 @@ fn assert_canonical_serialization_case(frequency: u32, radius: f64) {
     drop(first);
 
     let decoded: SphericalSurfaceSnapshot = serde_json::from_slice(&first_json).unwrap();
-    decoded.validate().unwrap();
     assert_eq!(decoded.fingerprint(), first_fingerprint);
     let reserialized_json = serde_json::to_vec(&decoded).unwrap();
     drop(decoded);

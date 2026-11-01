@@ -105,9 +105,6 @@ impl Stage for SphericalPreliminaryClimateStage {
         resolved
             .validate()
             .map_err(|error| invalid_input(error.to_string()))?;
-        surface
-            .validate()
-            .map_err(|error| invalid_input(error.to_string()))?;
         relief
             .validate_against_validated_surface(surface)
             .map_err(|error| invalid_input(error.to_string()))?;
@@ -128,7 +125,6 @@ impl Stage for SphericalPreliminaryClimateStage {
 fn generation_failure(error: SphericalClimateGenerationError) -> StageError {
     match error {
         SphericalClimateGenerationError::InvalidSpec(_)
-        | SphericalClimateGenerationError::InvalidSurface(_)
         | SphericalClimateGenerationError::InvalidRelief(_)
         | SphericalClimateGenerationError::InvalidSurfaceRef(_) => invalid_input(error.to_string()),
         SphericalClimateGenerationError::InvalidSnapshot(_) => invalid_climate(error.to_string()),

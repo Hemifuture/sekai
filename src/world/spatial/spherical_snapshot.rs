@@ -77,18 +77,57 @@ pub struct SphericalSurfaceEdge {
 }
 
 /// The immutable, versioned, authoritative geometry of a closed spherical surface.
+///
+/// Every value has passed the complete topology, geometry and fingerprint
+/// validation exactly once, at its trust boundary: [`Self::new`], the crate's
+/// cancellable constructor and deserialization are the only ways to obtain
+/// one, each validates, and the fields are never mutated afterwards. Holding a
+/// `SphericalSurfaceSnapshot` is therefore the proof of validity; consumers
+/// bind to it through its stored [`Self::fingerprint`] instead of re-auditing
+/// the whole surface ("parse, don't validate", King 2019).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "SphericalSurfaceSnapshotWire")]
 pub struct SphericalSurfaceSnapshot {
     pub(super) schema_version: u16,
     pub(super) radius: Meters,
-    #[serde(deserialize_with = "deserialize_surface_vertices")]
     pub(super) vertices: Vec<SphericalSurfaceVertex>,
-    #[serde(deserialize_with = "deserialize_surface_cells")]
     pub(super) cells: Vec<SphericalSurfaceCell>,
-    #[serde(deserialize_with = "deserialize_surface_edges")]
     pub(super) edges: Vec<SphericalSurfaceEdge>,
     pub(super) fingerprint: [u8; 32],
+}
+
+/// The untrusted serialized form, accepted only after full validation.
+#[derive(Deserialize)]
+#[serde(rename = "SphericalSurfaceSnapshot", deny_unknown_fields)]
+struct SphericalSurfaceSnapshotWire {
+    schema_version: u16,
+    radius: Meters,
+    #[serde(deserialize_with = "deserialize_surface_vertices")]
+    vertices: Vec<SphericalSurfaceVertex>,
+    #[serde(deserialize_with = "deserialize_surface_cells")]
+    cells: Vec<SphericalSurfaceCell>,
+    #[serde(deserialize_with = "deserialize_surface_edges")]
+    edges: Vec<SphericalSurfaceEdge>,
+    fingerprint: [u8; 32],
+}
+
+impl TryFrom<SphericalSurfaceSnapshotWire> for SphericalSurfaceSnapshot {
+    type Error = SphericalSurfaceValidationError;
+
+    /// Admits stored records verbatim (no re-sorting or re-hashing), so a
+    /// tampered order, geometry or fingerprint is rejected rather than repaired.
+    fn try_from(wire: SphericalSurfaceSnapshotWire) -> Result<Self, Self::Error> {
+        let snapshot = Self {
+            schema_version: wire.schema_version,
+            radius: wire.radius,
+            vertices: wire.vertices,
+            cells: wire.cells,
+            edges: wire.edges,
+            fingerprint: wire.fingerprint,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
 }
 
 fn deserialize_surface_vertices<'de, D>(
@@ -285,16 +324,15 @@ impl SphericalSurfaceSnapshot {
     ///
     /// # Panics
     ///
-    /// Panics if the snapshot has not passed [`Self::validate`] and its stored
-    /// area sum is non-finite. Use [`Self::try_total_cell_area`] for untrusted
-    /// or otherwise unvalidated snapshots.
+    /// Never panics for a constructed snapshot: validation bounds the stored
+    /// areas to a finite sphere total.
     pub fn total_cell_area(&self) -> SquareMeters {
         self.try_total_cell_area()
             .expect("validated spherical cell areas have a finite sum")
     }
 
     /// Tries to return the compensated sum of stored spherical cell areas.
-    pub fn try_total_cell_area(&self) -> Result<SquareMeters, UnitError> {
+    pub(super) fn try_total_cell_area(&self) -> Result<SquareMeters, UnitError> {
         let total = compensated_sum(self.cells.iter().map(|cell| cell.area.get()));
         SquareMeters::new(total)
     }

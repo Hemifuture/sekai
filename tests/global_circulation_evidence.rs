@@ -245,7 +245,6 @@ fn write_global_circulation_evidence() {
 
     let mut seeds = Vec::new();
     for (seed, world) in SEEDS.into_iter().zip(&worlds) {
-        world.snapshot.validate().unwrap();
         world.report.validate().unwrap();
         let bytes = serde_json::to_vec(&world.snapshot).unwrap();
         let solve = world.snapshot.solve_report();

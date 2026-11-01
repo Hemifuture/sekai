@@ -5,7 +5,7 @@ use crate::world::natural::{
     formation_elevation_from_components, ELEVATION_MAX_M, ELEVATION_MIN_M,
     FORMATION_AIRY_MANTLE_DENSITY_KG_M3,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
+use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
 const CANCELLATION_POLL_MASK: usize = 255;
@@ -46,9 +46,6 @@ impl LocalAiryIsostasy {
         cancellation: &BuildCancellation,
     ) -> Result<IsostaticAdjustmentStep, IsostasyGenerationError> {
         check_cancelled(cancellation)?;
-        surface
-            .validate_cancellable(&|| cancellation.is_cancelled())
-            .map_err(|error| map_surface_error(error, cancellation))?;
         Self::apply_from_validated_surface(
             surface,
             elevation_m,
@@ -193,23 +190,10 @@ fn check_cancelled(cancellation: &BuildCancellation) -> Result<(), IsostasyGener
     }
 }
 
-fn map_surface_error(
-    error: SphericalSurfaceValidationError,
-    cancellation: &BuildCancellation,
-) -> IsostasyGenerationError {
-    if cancellation.is_cancelled() {
-        IsostasyGenerationError::Cancelled
-    } else {
-        IsostasyGenerationError::InvalidSurface(error)
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum IsostasyGenerationError {
     #[error("surface-formation isostasy solve cancelled")]
     Cancelled,
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("isostasy field {field} has length {found}; expected {expected}")]
     CellCountMismatch {
         field: &'static str,

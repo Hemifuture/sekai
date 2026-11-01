@@ -11,7 +11,7 @@ use crate::world::natural::{
     FORMATION_SEDIMENT_DEPOSITION_COEFFICIENT, FORMATION_SHELF_BREAK_DEPTH_M,
     SEDIMENT_BUDGET_RELATIVE_ERROR_MAX, SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
-use crate::world::spatial::{SphericalSurfaceSnapshot, SphericalSurfaceValidationError};
+use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
 use super::state::{FormationStateError, SedimentStockState};
@@ -158,9 +158,6 @@ impl ProvenanceSedimentRouter {
         cancellation: &BuildCancellation,
     ) -> Result<SedimentTransportStep, SedimentGenerationError> {
         check_cancelled(cancellation)?;
-        surface
-            .validate_cancellable(&|| cancellation.is_cancelled())
-            .map_err(|error| map_surface_error(error, cancellation))?;
         Self::route_from_validated_surface(surface, inputs, step_years, cancellation)
     }
 
@@ -724,23 +721,10 @@ fn check_cancelled(cancellation: &BuildCancellation) -> Result<(), SedimentGener
     }
 }
 
-fn map_surface_error(
-    error: SphericalSurfaceValidationError,
-    cancellation: &BuildCancellation,
-) -> SedimentGenerationError {
-    if cancellation.is_cancelled() {
-        SedimentGenerationError::Cancelled
-    } else {
-        SedimentGenerationError::InvalidSurface(error)
-    }
-}
-
 #[derive(Debug, Error)]
 pub enum SedimentGenerationError {
     #[error("sediment routing cancelled")]
     Cancelled,
-    #[error("invalid authoritative surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     #[error("sediment field {field} has length {found}; expected {expected}")]
     CellCountMismatch {
         field: &'static str,

@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use super::super::primary_relief::PrimaryReliefWorkingState;
 use crate::engine::BuildCancellation;
+use crate::generators::natural::surface_water_geometry::SurfaceWaterStencil;
 use crate::generators::natural::surface_water_geometry::SurfaceWaterWorkingGeometry;
 use crate::world::natural::{
     formation_elevation_from_components, FormationElevationComponents, FormationSedimentFields,
@@ -9,7 +10,6 @@ use crate::world::natural::{
     ELEVATION_MAX_M, ELEVATION_MIN_M, FORMATION_TERRAIN_FIELDS_SCHEMA_V4,
     SEDIMENT_PROVENANCE_SOURCE_COUNT,
 };
-use crate::world::spatial::SphericalSurfaceSnapshot;
 use crate::world::CellId;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -526,14 +526,14 @@ impl FormationState {
     /// inventory within the solve's closure tolerance.
     pub(in crate::generators::natural) fn project_final_terrain(
         &self,
-        surface: &SphericalSurfaceSnapshot,
+        surface_water: &SurfaceWaterStencil<'_>,
         sediment: FormationSedimentFields,
         water_inventory_m3: f64,
         cancellation: &BuildCancellation,
     ) -> Result<FormationTerrainFields, FormationStateError> {
         let components = self.wire_components()?;
         let water = self.surface_water_geometry.to_wire(
-            surface,
+            surface_water,
             components.final_elevation_m(),
             cancellation,
         )?;
@@ -715,7 +715,8 @@ pub(super) fn formation_state_for_value(value_m: f64) -> FormationState {
     .expect("the production small-sphere fixture is valid");
     let primary_elevation_m = vec![value_m; surface.cells().len()];
     let surface_water_geometry = solve_physical_sea_level_exact(
-        &surface,
+        &SurfaceWaterStencil::new(&surface, &BuildCancellation::new())
+            .expect("the fixture surface has positive fans"),
         &primary_elevation_m,
         0.0,
         &BuildCancellation::new(),

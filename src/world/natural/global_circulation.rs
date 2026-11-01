@@ -6,6 +6,7 @@ use super::{
     MonthlyScalarField, MonthlyVector3Field, NaturalQualityProfile, CLIMATE_MONTH_COUNT,
     CLIMATOLOGICAL_YEAR_SECONDS, MEAN_SOLAR_DAY_SECONDS, SECONDS_PER_CLIMATOLOGICAL_MONTH,
 };
+use crate::world::fingerprint::update_f32_le;
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
     ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot,
@@ -3500,11 +3501,24 @@ impl GlobalCirculationFields {
             .expect("non-cancellable field hashing cannot be cancelled")
     }
 
-    pub fn fingerprint_cancellable(
-        &self,
+    /// Hashes the fields once and binds them to that fingerprint for one snapshot construction.
+    ///
+    /// The generator needs the state fingerprint for its checkpoint before it can construct
+    /// the snapshot; sealing hands the same value to [`GlobalCirculationSnapshot::new_cancellable`]
+    /// so the constructor compares instead of hashing the fields a second time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GlobalCirculationValidationError::Cancelled`] when `cancelled` fires.
+    pub(crate) fn seal_cancellable(
+        self,
         cancelled: &dyn Fn() -> bool,
-    ) -> Result<[u8; 32], GlobalCirculationValidationError> {
-        self.fingerprint_impl(Some(cancelled))
+    ) -> Result<SealedGlobalCirculationFields, GlobalCirculationValidationError> {
+        let state_fingerprint = self.fingerprint_impl(Some(cancelled))?;
+        Ok(SealedGlobalCirculationFields {
+            fields: self,
+            state_fingerprint,
+        })
     }
 
     fn fingerprint_impl(
@@ -3858,16 +3872,17 @@ fn validate_orographic_precipitation_identity(
     Ok(())
 }
 
+/// Cells hashed between two cancellation polls, matching the field scans.
+const FINGERPRINT_POLL_CELLS: usize = 256;
+
 fn hash_scalar_values(
     hasher: &mut blake3::Hasher,
     values: &[f32],
     cancellation: CancellationCheck<'_>,
 ) -> Result<(), GlobalCirculationValidationError> {
-    for (index, value) in values.iter().enumerate() {
-        if index % 256 == 0 {
-            check_global_circulation_cancelled(cancellation)?;
-        }
-        hasher.update(&value.to_bits().to_le_bytes());
+    for chunk in values.chunks(FINGERPRINT_POLL_CELLS) {
+        check_global_circulation_cancelled(cancellation)?;
+        update_f32_le(hasher, chunk);
     }
     Ok(())
 }
@@ -3877,13 +3892,9 @@ fn hash_monthly_scalars(
     values: &[[f32; CLIMATE_MONTH_COUNT]],
     cancellation: CancellationCheck<'_>,
 ) -> Result<(), GlobalCirculationValidationError> {
-    for (cell, months) in values.iter().enumerate() {
-        if cell % 256 == 0 {
-            check_global_circulation_cancelled(cancellation)?;
-        }
-        for value in months {
-            hasher.update(&value.to_bits().to_le_bytes());
-        }
+    for chunk in values.chunks(FINGERPRINT_POLL_CELLS) {
+        check_global_circulation_cancelled(cancellation)?;
+        update_f32_le(hasher, chunk.as_flattened());
     }
     Ok(())
 }
@@ -3893,15 +3904,9 @@ fn hash_monthly_vectors(
     values: &[[[f32; 3]; CLIMATE_MONTH_COUNT]],
     cancellation: CancellationCheck<'_>,
 ) -> Result<(), GlobalCirculationValidationError> {
-    for (cell, months) in values.iter().enumerate() {
-        if cell % 256 == 0 {
-            check_global_circulation_cancelled(cancellation)?;
-        }
-        for vector in months {
-            for value in vector {
-                hasher.update(&value.to_bits().to_le_bytes());
-            }
-        }
+    for chunk in values.chunks(FINGERPRINT_POLL_CELLS) {
+        check_global_circulation_cancelled(cancellation)?;
+        update_f32_le(hasher, chunk.as_flattened().as_flattened());
     }
     Ok(())
 }
@@ -3928,6 +3933,23 @@ fn hash_optional_monthly_vectors(
         hash_monthly_vectors(hasher, field.values(), cancellation)?;
     }
     Ok(())
+}
+
+/// Fields moved together with the state fingerprint computed from them exactly once.
+///
+/// Only [`GlobalCirculationFields::seal_cancellable`] creates one, and the fields cannot be
+/// changed afterwards, so the fingerprint always describes these fields.
+#[derive(Debug)]
+pub(crate) struct SealedGlobalCirculationFields {
+    fields: GlobalCirculationFields,
+    state_fingerprint: [u8; 32],
+}
+
+impl SealedGlobalCirculationFields {
+    /// Returns the checkpoint state identity of the sealed fields.
+    pub(crate) const fn state_fingerprint(&self) -> &[u8; 32] {
+        &self.state_fingerprint
+    }
 }
 
 /// Immutable P4 seasonal atmosphere-ocean facts on the authoritative sphere.
@@ -3987,11 +4009,16 @@ impl GlobalCirculationSnapshot {
             remap_report,
             fields,
             None,
+            None,
         )
     }
 
+    /// Constructs the generator's snapshot from fields sealed with their state fingerprint.
+    ///
+    /// Every invariant [`Self::new`] checks is checked here too; the checkpoint's state
+    /// fingerprint is compared with the sealed one instead of hashing the fields again.
     #[allow(clippy::too_many_arguments)]
-    pub fn new_cancellable(
+    pub(crate) fn new_cancellable(
         schema_version: u16,
         surface_ref: SurfaceRef,
         layout: ClimateLayerLayout,
@@ -4001,7 +4028,7 @@ impl GlobalCirculationSnapshot {
         solve_report: ClimateSolveReport,
         budget_report: ClimateBudgetReport,
         remap_report: ClimateRemapReport,
-        fields: GlobalCirculationFields,
+        fields: SealedGlobalCirculationFields,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Self, GlobalCirculationValidationError> {
         Self::new_impl(
@@ -4014,7 +4041,8 @@ impl GlobalCirculationSnapshot {
             solve_report,
             budget_report,
             remap_report,
-            fields,
+            fields.fields,
+            Some(fields.state_fingerprint),
             Some(cancelled),
         )
     }
@@ -4031,6 +4059,7 @@ impl GlobalCirculationSnapshot {
         budget_report: ClimateBudgetReport,
         remap_report: ClimateRemapReport,
         fields: GlobalCirculationFields,
+        sealed_state_fingerprint: Option<[u8; 32]>,
         cancellation: CancellationCheck<'_>,
     ) -> Result<Self, GlobalCirculationValidationError> {
         let snapshot = Self {
@@ -4045,24 +4074,19 @@ impl GlobalCirculationSnapshot {
             remap_report,
             fields,
         };
-        snapshot.validate_impl(cancellation)?;
+        snapshot.validate_impl(sealed_state_fingerprint.as_ref(), cancellation)?;
         Ok(snapshot)
     }
 
-    /// Rechecks invariants that require only serialized identities and fields.
-    pub fn validate(&self) -> Result<(), GlobalCirculationValidationError> {
-        self.validate_impl(None)
-    }
-
-    pub fn validate_cancellable(
-        &self,
-        cancelled: &dyn Fn() -> bool,
-    ) -> Result<(), GlobalCirculationValidationError> {
-        self.validate_impl(Some(cancelled))
-    }
-
+    /// Checks every invariant that requires only serialized identities and
+    /// fields, including the state fingerprint. Only the construction and
+    /// deserialization boundaries call it; every existing snapshot has passed it.
+    ///
+    /// `sealed_state_fingerprint` is the fields' fingerprint when the caller sealed them
+    /// (see [`GlobalCirculationFields::seal_cancellable`]); otherwise it is computed here.
     fn validate_impl(
         &self,
+        sealed_state_fingerprint: Option<&[u8; 32]>,
         cancellation: CancellationCheck<'_>,
     ) -> Result<(), GlobalCirculationValidationError> {
         check_global_circulation_cancelled(cancellation)?;
@@ -4200,7 +4224,11 @@ impl GlobalCirculationSnapshot {
             cancellation,
         )?;
         validate_positive_layer_depths(&self.layout, &self.fields, cancellation)?;
-        if self.checkpoint.state_fingerprint() != &self.fields.fingerprint_impl(cancellation)? {
+        let state_fingerprint = match sealed_state_fingerprint {
+            Some(sealed) => *sealed,
+            None => self.fields.fingerprint_impl(cancellation)?,
+        };
+        if self.checkpoint.state_fingerprint() != &state_fingerprint {
             return Err(
                 GlobalCirculationValidationError::CheckpointIdentityMismatch {
                     field: "state_fingerprint",
@@ -4231,22 +4259,12 @@ impl GlobalCirculationSnapshot {
         surface: &SphericalSurfaceSnapshot,
         cancellation: CancellationCheck<'_>,
     ) -> Result<(), GlobalCirculationValidationError> {
-        self.validate_impl(cancellation)?;
         check_global_circulation_cancelled(cancellation)?;
-        // Safe Rust can only supply an immutable typed surface that was
-        // validated by construction or deserialization. Preserve the full
-        // standalone audit for the non-cancellable API, while the production
-        // path checks identity and polls all snapshot/tangent scans.
-        if cancellation.is_none() {
-            surface.validate().map_err(|error| {
-                GlobalCirculationValidationError::InvalidNested {
-                    role: "authoritative_surface",
-                    reason: error.to_string(),
-                }
-            })?;
-        }
-        check_global_circulation_cancelled(cancellation)?;
-        let authoritative = SurfaceRef::from_validated_spherical(surface).map_err(|error| {
+        // Both snapshots are immutable and valid by construction (`new`,
+        // `new_cancellable` and deserialization each run `validate_impl`
+        // once), so only the cross-object facts are checked here: the surface
+        // identity binding, the checkpoint grid, and vector tangency.
+        let authoritative = SurfaceRef::try_for_spherical(surface).map_err(|error| {
             GlobalCirculationValidationError::InvalidNested {
                 role: "authoritative_surface_identity",
                 reason: error.to_string(),
@@ -4725,19 +4743,6 @@ impl ClimateWorkDomainSnapshot {
         if self.climate_grid_fingerprint == [0; 32] {
             return Err(ClimateWorkDomainValidationError::ZeroGridFingerprint);
         }
-        match cancellation {
-            Some(cancelled) => self.climate_surface.validate_cancellable(cancelled),
-            None => self.climate_surface.validate(),
-        }
-        .map_err(|error| {
-            if error == crate::world::spatial::SphericalSurfaceValidationError::Cancelled {
-                ClimateWorkDomainValidationError::Cancelled
-            } else {
-                ClimateWorkDomainValidationError::InvalidClimateSurface {
-                    reason: error.to_string(),
-                }
-            }
-        })?;
 
         let resolution = u32::from(self.face_resolution);
         let expected_cells = 6_u32 * resolution * resolution;
@@ -4762,7 +4767,7 @@ impl ClimateWorkDomainSnapshot {
         validate_work_domain_map("source_to_climate", &self.source_to_climate, cancellation)?;
         validate_work_domain_map("climate_to_source", &self.climate_to_source, cancellation)?;
         let climate_ref =
-            SurfaceRef::from_validated_spherical(&self.climate_surface).map_err(|error| {
+            SurfaceRef::try_for_spherical(&self.climate_surface).map_err(|error| {
                 ClimateWorkDomainValidationError::InvalidClimateSurface {
                     reason: error.to_string(),
                 }
@@ -4829,20 +4834,7 @@ impl ClimateWorkDomainSnapshot {
         cancellation: WorkDomainCancellation<'_>,
     ) -> Result<(), ClimateWorkDomainValidationError> {
         self.validate_impl(cancellation)?;
-        match cancellation {
-            Some(cancelled) => source.validate_cancellable(cancelled),
-            None => source.validate(),
-        }
-        .map_err(|error| {
-            if error == crate::world::spatial::SphericalSurfaceValidationError::Cancelled {
-                ClimateWorkDomainValidationError::Cancelled
-            } else {
-                ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
-                    reason: error.to_string(),
-                }
-            }
-        })?;
-        let found_ref = SurfaceRef::from_validated_spherical(source).map_err(|error| {
+        let found_ref = SurfaceRef::try_for_spherical(source).map_err(|error| {
             ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
                 reason: error.to_string(),
             }
@@ -4954,7 +4946,7 @@ impl ClimateWorkDomainSnapshot {
         &self,
         source: &SphericalSurfaceSnapshot,
     ) -> Result<(), ClimateWorkDomainValidationError> {
-        let found_ref = SurfaceRef::from_validated_spherical(source).map_err(|error| {
+        let found_ref = SurfaceRef::try_for_spherical(source).map_err(|error| {
             ClimateWorkDomainValidationError::InvalidAuthoritativeSurface {
                 reason: error.to_string(),
             }

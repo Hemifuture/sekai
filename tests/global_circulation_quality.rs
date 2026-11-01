@@ -307,6 +307,5 @@ fn zero_axial_tilt_marks_seasonal_phase_not_applicable_without_rejecting_product
         assert_eq!(metric.sample_count(), 0);
         assert!(metric.reason().unwrap().contains("below 0.5 C"));
     }
-    snapshot.validate().unwrap();
     report.validate().unwrap();
 }

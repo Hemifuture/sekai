@@ -122,11 +122,6 @@ impl Stage for SphericalTectonicStage {
             .formation()
             .validate()
             .map_err(|error| invalid_input(error.to_string()))?;
-        inputs
-            .surface
-            .snapshot()
-            .validate()
-            .map_err(|error| invalid_input(error.to_string()))?;
 
         let snapshot = match inputs.resolved_input.input().model() {
             TectonicModel::CurrentSliceV1 => TectonicGenerator::generate_spherical(
@@ -228,11 +223,6 @@ impl Stage for SphericalReliefStage {
         diagnostics: &mut Vec<Diagnostic>,
     ) -> Result<Self::Output, StageError> {
         inputs
-            .surface
-            .snapshot()
-            .validate()
-            .map_err(|error| invalid_relief_input(error.to_string()))?;
-        inputs
             .tectonic
             .snapshot()
             .validate_against(inputs.surface.snapshot())
@@ -313,7 +303,6 @@ fn generation_failure(error: SphericalTectonicGenerationError) -> StageError {
     match error {
         SphericalTectonicGenerationError::InvalidSpec(_)
         | SphericalTectonicGenerationError::InvalidFormation(_)
-        | SphericalTectonicGenerationError::InvalidSurface(_)
         | SphericalTectonicGenerationError::InvalidSurfaceIdentity(_)
         | SphericalTectonicGenerationError::PlateCountExceedsCells { .. } => {
             invalid_input(error.to_string())
@@ -337,8 +326,7 @@ fn invalid_relief_input(message: String) -> StageError {
 
 fn relief_generation_failure(error: SphericalReliefGenerationError) -> StageError {
     match error {
-        SphericalReliefGenerationError::InvalidSurface(_)
-        | SphericalReliefGenerationError::InvalidSurfaceIdentity(_)
+        SphericalReliefGenerationError::InvalidSurfaceIdentity(_)
         | SphericalReliefGenerationError::InvalidTectonics(_)
         | SphericalReliefGenerationError::InvalidMantle(_)
         | SphericalReliefGenerationError::InvalidSpec(_)

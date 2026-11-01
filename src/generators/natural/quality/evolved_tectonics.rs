@@ -39,9 +39,6 @@ pub fn evaluate_evolved_tectonic_quality(
     surface: &SphericalSurfaceSnapshot,
     snapshot: &EvolvedTectonicSnapshot,
 ) -> Result<NaturalQualityReport, QualityBuildError> {
-    surface
-        .validate()
-        .map_err(|error| invalid_input("surface", error.to_string()))?;
     snapshot
         .validate_against(surface)
         .map_err(|error| invalid_input("evolved-tectonics", error.to_string()))?;
@@ -163,9 +160,6 @@ pub fn evaluate_evolved_tectonic_corpus_quality(
     surface: &SphericalSurfaceSnapshot,
     snapshots: &[&EvolvedTectonicSnapshot],
 ) -> Result<NaturalQualityReport, QualityBuildError> {
-    surface
-        .validate()
-        .map_err(|error| invalid_input("surface", error.to_string()))?;
     if snapshots.is_empty() {
         return Err(invalid_input(
             "evolved-tectonic-corpus",

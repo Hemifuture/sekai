@@ -16,7 +16,9 @@ use crate::generators::natural::formation::global_circulation::{
     GlobalCirculationGenerationError, GlobalCirculationGenerator, GlobalClimateForcing,
     GlobalClimateForcingBuilder, GlobalClimateForcingError, StartAtmosphereFasCorrection,
 };
-use crate::generators::natural::surface_water_geometry::solve_physical_sea_level_exact;
+use crate::generators::natural::surface_water_geometry::{
+    solve_physical_sea_level_exact, SurfaceWaterStencil,
+};
 use crate::world::natural::water_volume_relative_error;
 use crate::world::natural::{
     expected_surface_formation_dense_state_bytes, formation_annual_precipitation_mm,
@@ -108,8 +110,10 @@ impl SurfaceFormationGenerator {
         cancellation: &BuildCancellation,
     ) -> Result<SurfaceFormationClosureOutput, SurfaceFormationGenerationError> {
         let surface = inputs.surface;
+        // Every P5 water solve and wire projection shares this one surface stencil.
+        let surface_water = SurfaceWaterStencil::new(surface, cancellation)?;
         let start_process_inputs =
-            SurfaceProcessInputs::from_generation(inputs, inputs.initial_climate);
+            SurfaceProcessInputs::from_generation(inputs, inputs.initial_climate, &surface_water);
         let advance_report = advance_surface_processes(
             &mut state,
             start_process_inputs,
@@ -118,7 +122,7 @@ impl SurfaceFormationGenerator {
         )?;
         let (advance_summary, final_sediment_fields) = advance_report.into_parts();
         let final_terrain = state.project_final_terrain(
-            surface,
+            &surface_water,
             final_sediment_fields,
             inputs.relief.water_inventory_m3(),
             cancellation,
@@ -141,7 +145,7 @@ impl SurfaceFormationGenerator {
         )?;
         let terminal_diagnostics = recompute_surface_diagnostics(
             &state,
-            SurfaceProcessInputs::from_generation(inputs, &endpoint_climate),
+            SurfaceProcessInputs::from_generation(inputs, &endpoint_climate, &surface_water),
             cancellation,
         )?;
         let evolution_report = build_evolution_report(
@@ -177,6 +181,8 @@ impl SurfaceFormationGenerator {
 /// Borrowed physical inputs held fixed during one P5 advance window.
 pub(in crate::generators::natural) struct SurfaceProcessInputs<'a> {
     pub surface: &'a SphericalSurfaceSnapshot,
+    /// Water-reconstruction stencil of `surface`, shared by every solve of the window.
+    pub surface_water: &'a SurfaceWaterStencil<'a>,
     pub tectonics: &'a EvolvedTectonicSnapshot,
     pub substrate: &'a GeologicSubstrateSnapshot,
     pub climate: &'a GlobalCirculationSnapshot,
@@ -188,9 +194,11 @@ impl<'a> SurfaceProcessInputs<'a> {
     fn from_generation(
         inputs: SurfaceFormationInputs<'a>,
         climate: &'a GlobalCirculationSnapshot,
+        surface_water: &'a SurfaceWaterStencil<'a>,
     ) -> Self {
         Self {
             surface: inputs.surface,
+            surface_water,
             tectonics: inputs.tectonics,
             substrate: inputs.substrate,
             climate,
@@ -975,7 +983,7 @@ fn advance_surface_window(
         )?;
 
     let coast_water = solve_physical_sea_level_exact(
-        surface,
+        inputs.surface_water,
         state.current_elevation_exact_m(),
         inputs.water_inventory_m3,
         cancellation,
@@ -1070,7 +1078,7 @@ fn advance_surface_window(
     )?;
 
     let water = solve_physical_sea_level_exact(
-        surface,
+        inputs.surface_water,
         state.current_elevation_exact_m(),
         inputs.water_inventory_m3,
         cancellation,
@@ -1279,11 +1287,7 @@ fn validate_inputs(
     cancellation: &BuildCancellation,
 ) -> Result<SurfaceRef, SurfaceFormationGenerationError> {
     check_cancelled(cancellation)?;
-    inputs
-        .surface
-        .validate_cancellable(&|| cancellation.is_cancelled())
-        .map_err(|error| map_upstream(cancellation, "authoritative_surface", error))?;
-    let surface_ref = SurfaceRef::from_validated_spherical(inputs.surface)?;
+    let surface_ref = SurfaceRef::try_for_spherical(inputs.surface)?;
     check_cancelled(cancellation)?;
     inputs
         .formation_spec
@@ -1410,14 +1414,21 @@ fn input_fingerprint<T: Serialize>(
 ) -> Result<[u8; 32], SurfaceFormationGenerationError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain);
-    let mut writer = CancellableHashWriter {
-        hasher: &mut hasher,
-        cancellation,
-        pending: 0,
-        cancelled: false,
-    };
-    let result = serde_json::to_writer(&mut writer, value);
-    let cancelled = writer.cancelled;
+    // serde_json writes one token at a time; batching them keeps BLAKE3 on its bulk path
+    // (the digest only depends on the byte stream, not on how it is split).
+    let mut writer = io::BufWriter::with_capacity(
+        FINGERPRINT_POLL_BYTES,
+        CancellableHashWriter {
+            hasher: &mut hasher,
+            cancellation,
+            pending: 0,
+            cancelled: false,
+        },
+    );
+    let result = serde_json::to_writer(&mut writer, value)
+        .and_then(|()| writer.flush().map_err(serde_json::Error::io));
+    let cancelled = writer.get_ref().cancelled;
+    drop(writer);
     result.map_err(|error| {
         if cancelled {
             SurfaceFormationGenerationError::Cancelled

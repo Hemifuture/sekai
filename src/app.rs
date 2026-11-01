@@ -85,12 +85,12 @@ fn default_formation_quality_profile() -> crate::world::natural::NaturalQualityP
 }
 
 /// The authored combo label per quality tier (single source for the selector).
-fn quality_tier_label(profile: crate::world::natural::NaturalQualityProfile) -> &'static str {
-    match profile {
-        crate::world::natural::NaturalQualityProfile::Draft => "草稿 · 约 2 万格 · 1–2 分钟",
-        crate::world::natural::NaturalQualityProfile::Standard => "标准 · 约 8 万格 · 3–6 分钟",
-        crate::world::natural::NaturalQualityProfile::High => "高 · 约 20 万格 · 实验性离线级",
-    }
+fn quality_tier_label(profile: crate::world::natural::NaturalQualityProfile) -> String {
+    format!(
+        "{} · 约 {} 万格",
+        quality_tier_short_label(profile),
+        profile.authoritative_target_cell_count() / 10_000,
+    )
 }
 
 /// The short tier name shown on the published-world status line.
@@ -100,15 +100,6 @@ fn quality_tier_short_label(profile: crate::world::natural::NaturalQualityProfil
         crate::world::natural::NaturalQualityProfile::Standard => "标准档",
         crate::world::natural::NaturalQualityProfile::High => "高档（实验性）",
     }
-}
-
-/// True when the cached formation profile surface no longer serves a request.
-fn formation_surface_key_is_stale(
-    cached: Option<(crate::world::natural::NaturalQualityProfile, f64)>,
-    profile: crate::world::natural::NaturalQualityProfile,
-    radius_m: f64,
-) -> bool {
-    cached != Some((profile, radius_m))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -153,11 +144,101 @@ fn formation_authoring_control_state(
     }
 }
 
-/// One cached formation profile surface keyed by tier and authored radius.
-struct FormationSurfaceCacheEntry {
-    profile: crate::world::natural::NaturalQualityProfile,
-    radius_m: f64,
-    surface: crate::world::spatial::SphericalSurfaceSnapshot,
+/// How often a world build waiting for a prewarm thread checks its cancellation.
+const FORMATION_GEOMETRY_WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Seed-independent formation geometry of the selected profile and radius, kept in process
+/// memory only: either built, or still being built by a background prewarm thread.
+enum FormationGeometrySlot {
+    Ready(std::sync::Arc<crate::generators::natural::FormationGeometry>),
+    Warming(FormationGeometryPrewarm),
+}
+
+/// One background geometry build; dropping it cancels the build.
+struct FormationGeometryPrewarm {
+    key: crate::generators::natural::FormationGeometryKey,
+    receiver: std::sync::mpsc::Receiver<
+        Option<std::sync::Arc<crate::generators::natural::FormationGeometry>>,
+    >,
+    cancellation: crate::engine::BuildCancellation,
+}
+
+impl Drop for FormationGeometryPrewarm {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
+}
+
+impl FormationGeometrySlot {
+    /// Starts building the geometry for `key` on a background thread.
+    fn prewarm(key: crate::generators::natural::FormationGeometryKey) -> Self {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cancellation = crate::engine::BuildCancellation::new();
+        let prewarm_cancellation = cancellation.clone();
+        std::thread::spawn(move || {
+            let geometry =
+                crate::generators::natural::FormationGeometry::build(key, &prewarm_cancellation)
+                    .ok()
+                    .map(std::sync::Arc::new);
+            // The receiver is gone once the selection moved on; the result is then unused.
+            let _ = sender.send(geometry);
+        });
+        Self::Warming(FormationGeometryPrewarm {
+            key,
+            receiver,
+            cancellation,
+        })
+    }
+
+    fn key(&self) -> crate::generators::natural::FormationGeometryKey {
+        match self {
+            Self::Ready(geometry) => geometry.key(),
+            Self::Warming(prewarm) => prewarm.key,
+        }
+    }
+}
+
+/// Returns the geometry for `key`, reusing a ready slot, waiting for a matching prewarm, or
+/// building it here, together with the slot to keep afterwards.
+///
+/// `None` means the geometry is unavailable (the build failed or was cancelled). The caller
+/// then takes the plain path, whose stages report that failure exactly as before; a matching
+/// prewarm interrupted by cancellation is handed back untouched.
+fn take_formation_geometry(
+    slot: Option<FormationGeometrySlot>,
+    key: crate::generators::natural::FormationGeometryKey,
+    cancellation: &crate::engine::BuildCancellation,
+) -> (
+    Option<std::sync::Arc<crate::generators::natural::FormationGeometry>>,
+    Option<FormationGeometrySlot>,
+) {
+    let ready = |geometry: std::sync::Arc<crate::generators::natural::FormationGeometry>| {
+        (
+            Some(std::sync::Arc::clone(&geometry)),
+            Some(FormationGeometrySlot::Ready(geometry)),
+        )
+    };
+    match slot {
+        Some(FormationGeometrySlot::Ready(geometry)) if geometry.key() == key => {
+            return ready(geometry)
+        }
+        Some(FormationGeometrySlot::Warming(prewarm)) if prewarm.key == key => loop {
+            if cancellation.is_cancelled() {
+                return (None, Some(FormationGeometrySlot::Warming(prewarm)));
+            }
+            match prewarm.receiver.recv_timeout(FORMATION_GEOMETRY_WAIT_POLL) {
+                Ok(Some(geometry)) => return ready(geometry),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                // A failed prewarm is rebuilt here so its error surfaces in this build.
+                Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        },
+        _ => {}
+    }
+    match crate::generators::natural::FormationGeometry::build(key, cancellation) {
+        Ok(geometry) => ready(std::sync::Arc::new(geometry)),
+        Err(_) => (None, None),
+    }
 }
 
 /// A spherical world build running on a worker thread.
@@ -514,7 +595,7 @@ mod amplified_detail_engine_tests {
 struct WorldBuildCompletion {
     result: Result<SphericalPresentationCandidate, String>,
     stage_cache: MemoryStageCache,
-    formation_surface: Option<FormationSurfaceCacheEntry>,
+    formation_geometry: Option<FormationGeometrySlot>,
     amplified: Option<AmplifiedDisplayBundle>,
 }
 
@@ -642,7 +723,7 @@ pub struct TemplateApp {
     #[serde(default = "default_formation_quality_profile")]
     formation_quality_profile: crate::world::natural::NaturalQualityProfile,
     #[serde(skip)]
-    formation_surface: Option<FormationSurfaceCacheEntry>,
+    formation_geometry: Option<FormationGeometrySlot>,
     #[serde(skip)]
     amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
     /// The installed amplified mesh's per-cell leaf levels and the world's
@@ -706,7 +787,7 @@ impl Default for TemplateApp {
             river_polylines: None,
             river_radius_m: None,
             formation_quality_profile: default_formation_quality_profile(),
-            formation_surface: None,
+            formation_geometry: None,
             world_build: None,
             render_state: None,
             spherical_presentation: SphericalPresentationResource::default(),
@@ -818,6 +899,7 @@ impl TemplateApp {
                 #[cfg(not(test))]
                 {
                     let _ = render_state;
+                    app.prewarm_formation_geometry();
                     app.request_spherical_world_build();
                 }
             }
@@ -838,7 +920,7 @@ impl TemplateApp {
         let requested_state = self.spherical_canvas_state.field_state().clone();
         let candidate = match self.world_pipeline {
             WorldPipeline::Formation => {
-                let surface = self.formation_profile_surface()?.clone();
+                let surface = self.formation_profile_surface()?;
                 build_spherical_formation_candidate_for_view(
                     RootSeed::new(self.world_seed),
                     self.formation_quality_profile,
@@ -1200,41 +1282,59 @@ impl TemplateApp {
         renderer.set_river_segments(&render_state.device, &render_state.queue, &map, &globe);
     }
 
-    /// Returns the cached formation profile surface, rebuilding it when the
-    /// authored radius changed.
+    /// Returns the formation profile surface of the selected tier and radius, from the
+    /// ready geometry when it matches and otherwise built here.
     ///
     /// The formation chain is bound to the fixed quality-profile resolutions,
     /// so the authored `target_cell_count` does not apply here; only the
     /// radius participates in the surface identity.
     fn formation_profile_surface(
-        &mut self,
-    ) -> Result<&crate::world::spatial::SphericalSurfaceSnapshot, AppRuntimeError> {
-        let radius_m = self.spherical_space_spec.radius.get();
-        let profile = self.formation_quality_profile;
-        let stale = formation_surface_key_is_stale(
-            self.formation_surface
-                .as_ref()
-                .map(|entry| (entry.profile, entry.radius_m)),
-            profile,
-            radius_m,
-        );
-        if stale {
-            let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
-                profile,
-                self.spherical_space_spec.radius,
-                &crate::engine::BuildCancellation::new(),
-            )?;
-            self.formation_surface = Some(FormationSurfaceCacheEntry {
-                profile,
-                radius_m,
-                surface: bundle.authoritative_surface().clone(),
-            });
+        &self,
+    ) -> Result<crate::world::spatial::SphericalSurfaceSnapshot, AppRuntimeError> {
+        if let Some(FormationGeometrySlot::Ready(geometry)) = &self.formation_geometry {
+            if geometry.key() == self.formation_geometry_key() {
+                return Ok(geometry.authoritative_surface().clone());
+            }
         }
-        Ok(&self
-            .formation_surface
+        let (_, surface) = crate::generators::spatial::ProfileSurfaceBuilder::build_authoritative(
+            self.formation_quality_profile,
+            self.spherical_space_spec.radius,
+            &crate::engine::BuildCancellation::new(),
+        )?;
+        Ok(surface)
+    }
+
+    fn formation_geometry_key(&self) -> crate::generators::natural::FormationGeometryKey {
+        crate::generators::natural::FormationGeometryKey::new(
+            self.formation_quality_profile,
+            self.spherical_space_spec.radius,
+        )
+    }
+
+    /// Starts building the selected tier's seed-independent geometry in the background unless
+    /// it is already built or being built, so the next world build skips that work.
+    ///
+    /// Only geometry that every seed and authored parameter shares is prewarmed, and only in
+    /// memory; a stale slot is dropped, which cancels its build.
+    fn prewarm_formation_geometry(&mut self) {
+        if self.world_pipeline != WorldPipeline::Formation
+            || procedural_coast_unsupported(
+                self.formation_spec.preset,
+                self.world_pipeline,
+                self.formation_quality_profile,
+            )
+        {
+            return;
+        }
+        let key = self.formation_geometry_key();
+        if self
+            .formation_geometry
             .as_ref()
-            .expect("the formation surface cache was just filled")
-            .surface)
+            .is_some_and(|slot| slot.key() == key)
+        {
+            return;
+        }
+        self.formation_geometry = Some(FormationGeometrySlot::prewarm(key));
     }
 
     /// Starts one spherical world build on a worker thread.
@@ -1259,7 +1359,8 @@ impl TemplateApp {
         let worker_cancellation = cancellation.clone();
         let pipeline = self.world_pipeline;
         let stage_cache = std::mem::take(&mut self.stage_cache);
-        let formation_surface = self.formation_surface.take();
+        let formation_geometry = self.formation_geometry.take();
+        let geometry_key = self.formation_geometry_key();
         let quality_profile = self.formation_quality_profile;
         let root_seed = RootSeed::new(self.world_seed);
         let space = self.spherical_space_spec.clone();
@@ -1282,38 +1383,34 @@ impl TemplateApp {
         );
         std::thread::spawn(move || {
             let mut stage_cache = stage_cache;
-            let mut formation_surface = formation_surface;
+            let mut formation_geometry = formation_geometry;
             let result = (|| -> Result<SphericalPresentationCandidate, String> {
                 let target = match pipeline {
                     WorldPipeline::Formation => {
-                        let radius_m = space.radius.get();
-                        let stale = formation_surface_key_is_stale(
-                            formation_surface
-                                .as_ref()
-                                .map(|entry| (entry.profile, entry.radius_m)),
-                            quality_profile,
-                            radius_m,
+                        let (geometry, slot) = take_formation_geometry(
+                            formation_geometry.take(),
+                            geometry_key,
+                            &worker_cancellation,
                         );
-                        if stale {
-                            let bundle = crate::generators::spatial::ProfileSurfaceBuilder::build(
-                                quality_profile,
-                                space.radius,
-                                &worker_cancellation,
-                            )
-                            .map_err(|error| error.to_string())?;
-                            formation_surface = Some(FormationSurfaceCacheEntry {
-                                profile: quality_profile,
-                                radius_m,
-                                surface: bundle.authoritative_surface().clone(),
-                            });
-                        }
-                        crate::app::SphericalWorldBuildTarget::Formation {
-                            quality_profile,
-                            surface: formation_surface
-                                .as_ref()
-                                .expect("the worker just filled the surface cache")
-                                .surface
-                                .clone(),
+                        formation_geometry = slot;
+                        match geometry {
+                            Some(geometry) => {
+                                crate::app::SphericalWorldBuildTarget::PreparedFormation {
+                                    geometry,
+                                }
+                            }
+                            None => {
+                                let (_, surface) = crate::generators::spatial::ProfileSurfaceBuilder::build_authoritative(
+                                    quality_profile,
+                                    space.radius,
+                                    &worker_cancellation,
+                                )
+                                .map_err(|error| error.to_string())?;
+                                crate::app::SphericalWorldBuildTarget::Formation {
+                                    quality_profile,
+                                    surface,
+                                }
+                            }
                         }
                     }
                     WorldPipeline::LegacyFoundation => {
@@ -1411,7 +1508,7 @@ impl TemplateApp {
             let _ = sender.send(WorldBuildCompletion {
                 result,
                 stage_cache,
-                formation_surface,
+                formation_geometry,
                 amplified,
             });
         });
@@ -1535,11 +1632,12 @@ impl TemplateApp {
         let WorldBuildCompletion {
             result,
             stage_cache,
-            formation_surface,
+            formation_geometry,
             amplified,
         } = completion;
-        if formation_surface.is_some() {
-            self.formation_surface = formation_surface;
+        // A slot started while the build ran belongs to a newer selection and is kept.
+        if self.formation_geometry.is_none() {
+            self.formation_geometry = formation_geometry;
         }
         match result {
             Ok(candidate) => {
@@ -1612,7 +1710,7 @@ impl TemplateApp {
     ) -> Result<(), AppRuntimeError> {
         let candidate = match self.world_pipeline {
             WorldPipeline::Formation => {
-                let surface = self.formation_profile_surface()?.clone();
+                let surface = self.formation_profile_surface()?;
                 self.spherical_presentation.read_resource(|current| {
                     current
                         .as_ref()
@@ -2086,13 +2184,22 @@ impl eframe::App for TemplateApp {
                                     crate::world::natural::NaturalQualityProfile::Standard,
                                     crate::world::natural::NaturalQualityProfile::High,
                                 ] {
-                                    ui.selectable_value(
-                                        &mut self.formation_quality_profile,
-                                        profile,
-                                        quality_tier_label(profile),
-                                    );
+                                    if ui
+                                        .selectable_value(
+                                            &mut self.formation_quality_profile,
+                                            profile,
+                                            quality_tier_label(profile),
+                                        )
+                                        .changed()
+                                    {
+                                        self.prewarm_formation_geometry();
+                                    }
                                 }
-                            });
+                            })
+                            .response
+                            .on_hover_text(
+                                "草稿与标准共用气候工作尺度；标准档提供更细的地形与地图。",
+                            );
                     }
                     ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效");
                     // Both actions must see this pass's edited preset and quality profile.
@@ -2622,7 +2729,7 @@ mod natural_app_tests {
             let _ = render(&mut app, click(&output, "质量档位"));
             // Popup geometry becomes interactive on the next pass.
             output = render(&mut app, Vec::new());
-            output = render(&mut app, click(&output, super::quality_tier_label(to)));
+            output = render(&mut app, click(&output, &super::quality_tier_label(to)));
             assert_eq!(app.formation_quality_profile, to);
             for label in ["新种子并重建", "按当前参数重建"] {
                 let node = &output
@@ -2661,7 +2768,12 @@ mod natural_app_tests {
                 },
                 ..Default::default()
             };
+            app.prewarm_formation_geometry();
             app.request_spherical_world_build();
+            assert!(
+                app.formation_geometry.is_none(),
+                "unsupported startup must not prewarm geometry"
+            );
             assert!(
                 app.world_build.is_none(),
                 "unsupported startup must not spawn a worker"
@@ -3275,7 +3387,7 @@ mod natural_app_tests {
             .send(WorldBuildCompletion {
                 result: Ok(candidate),
                 stage_cache: working_cache,
-                formation_surface: None,
+                formation_geometry: None,
                 amplified: Some(test_amplified_bundle()),
             })
             .unwrap();
@@ -3334,7 +3446,7 @@ mod natural_app_tests {
             .send(WorldBuildCompletion {
                 result: Ok(candidate),
                 stage_cache: working_cache,
-                formation_surface: None,
+                formation_geometry: None,
                 amplified: None,
             })
             .unwrap();
@@ -3405,7 +3517,7 @@ mod natural_app_tests {
             .send(WorldBuildCompletion {
                 result: Ok(candidate),
                 stage_cache: working_cache,
-                formation_surface: None,
+                formation_geometry: None,
                 amplified: None,
             })
             .unwrap();
@@ -3567,7 +3679,7 @@ mod natural_app_tests {
             .send(WorldBuildCompletion {
                 result: Ok(candidate),
                 stage_cache: working_cache,
-                formation_surface: None,
+                formation_geometry: None,
                 amplified: Some(test_amplified_bundle()),
             })
             .unwrap();
@@ -3625,7 +3737,7 @@ mod natural_app_tests {
             .send(WorldBuildCompletion {
                 result: Ok(candidate),
                 stage_cache: working_cache,
-                formation_surface: None,
+                formation_geometry: None,
                 amplified: None,
             })
             .unwrap();
@@ -3717,7 +3829,7 @@ mod natural_app_tests {
             .send(WorldBuildCompletion {
                 result: Ok(candidate),
                 stage_cache: working_cache,
-                formation_surface: None,
+                formation_geometry: None,
                 amplified: None,
             })
             .unwrap();
@@ -3879,7 +3991,7 @@ mod natural_app_tests {
             .send(WorldBuildCompletion {
                 result: Err("surface formation did not converge".to_owned()),
                 stage_cache: working_cache,
-                formation_surface: None,
+                formation_geometry: None,
                 amplified: None,
             })
             .unwrap();
@@ -3963,7 +4075,7 @@ mod natural_app_tests {
             .send(WorldBuildCompletion {
                 result: Ok(candidate),
                 stage_cache: working_cache,
-                formation_surface: None,
+                formation_geometry: None,
                 amplified: None,
             })
             .unwrap();
@@ -4125,7 +4237,7 @@ mod natural_app_tests {
                 .send(WorldBuildCompletion {
                     result: Ok(candidate),
                     stage_cache: working_cache,
-                    formation_surface: None,
+                    formation_geometry: None,
                     amplified: None,
                 })
                 .unwrap();
@@ -5094,33 +5206,6 @@ mod natural_app_tests {
             restored.formation_quality_profile,
             crate::world::natural::NaturalQualityProfile::Standard
         );
-    }
-
-    #[test]
-    fn formation_surface_cache_is_keyed_by_tier_and_radius() {
-        use super::formation_surface_key_is_stale;
-        use crate::world::natural::NaturalQualityProfile;
-        let key = Some((NaturalQualityProfile::Draft, 6_371_000.0));
-        assert!(!formation_surface_key_is_stale(
-            key,
-            NaturalQualityProfile::Draft,
-            6_371_000.0
-        ));
-        assert!(formation_surface_key_is_stale(
-            key,
-            NaturalQualityProfile::Standard,
-            6_371_000.0
-        ));
-        assert!(formation_surface_key_is_stale(
-            key,
-            NaturalQualityProfile::Draft,
-            3_000_000.0
-        ));
-        assert!(formation_surface_key_is_stale(
-            None,
-            NaturalQualityProfile::Draft,
-            6_371_000.0
-        ));
     }
 
     #[test]

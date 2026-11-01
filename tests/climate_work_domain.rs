@@ -6,6 +6,15 @@ use sekai::world::natural::{NaturalQualityProfile, CLIMATE_WORK_DOMAIN_SCHEMA_V1
 use sekai::world::spatial::{SurfaceGeometryKind, SurfaceRef, SPHERICAL_SURFACE_SCHEMA_V2};
 use sekai::world::{Meters, SphericalSpaceSpec};
 
+#[test]
+fn work_scale_change_invalidates_the_domain_stage_cache() {
+    use sekai::engine::Stage;
+    use sekai::generators::natural::ClimateWorkDomainStage;
+
+    // The profile artifact serializes its enum, not the resolved work scale.
+    assert_eq!(ClimateWorkDomainStage::default().version(), 2);
+}
+
 fn source_surface() -> sekai::world::spatial::SphericalSurfaceSnapshot {
     GeodesicVoronoiBuilder::build(&SphericalSpaceSpec {
         radius: Meters::new(6_371_000.0).unwrap(),
@@ -20,7 +29,6 @@ fn cubed_sphere_converts_losslessly_to_a_valid_spherical_surface() {
     let first = grid.to_surface_snapshot().unwrap();
     let second = grid.to_surface_snapshot().unwrap();
 
-    first.validate().unwrap();
     assert_eq!(first, second);
     assert_eq!(first.schema_version(), SPHERICAL_SURFACE_SCHEMA_V2);
     assert_eq!(
@@ -54,7 +62,10 @@ fn work_domain_builds_exact_forward_and_reverse_conservative_maps() {
     domain.validate_against(&source).unwrap();
     assert_eq!(domain.schema_version(), CLIMATE_WORK_DOMAIN_SCHEMA_V1);
     assert_eq!(domain.profile(), NaturalQualityProfile::Draft);
-    assert_eq!(domain.face_resolution(), 24);
+    assert_eq!(
+        domain.face_resolution(),
+        NaturalQualityProfile::Draft.climate_face_resolution()
+    );
     assert_eq!(domain.source_ref(), SurfaceRef::for_spherical(&source));
     assert_eq!(
         domain.source_to_climate().source_ref(),

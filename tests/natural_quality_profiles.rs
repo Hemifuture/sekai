@@ -30,7 +30,7 @@ fn profiles_resolve_the_exact_locked_product_counts() {
             20_252,
             4_842,
             4_842,
-            24,
+            20,
         ),
         (
             NaturalQualityProfile::Standard,
@@ -38,7 +38,7 @@ fn profiles_resolve_the_exact_locked_product_counts() {
             79_212,
             20_000,
             20_252,
-            32,
+            20,
         ),
         (
             NaturalQualityProfile::High,

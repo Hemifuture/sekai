@@ -11,8 +11,7 @@ use crate::world::natural::{
     QualityMetricStatus,
 };
 use crate::world::spatial::{
-    ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot,
-    SphericalSurfaceValidationError, SurfaceRef,
+    ConservativeSurfaceMap, ConservativeSurfaceMapError, SphericalSurfaceSnapshot, SurfaceRef,
 };
 use crate::world::{Meters, SphericalSpaceSpec};
 
@@ -64,6 +63,21 @@ impl ProfileSurfaceBuilder {
         radius: Meters,
         cancellation: &BuildCancellation,
     ) -> Result<ProfileSurfaceBundle, ProfileSurfaceBuildError> {
+        let (resolution_plan, authoritative_surface) =
+            Self::build_authoritative(profile, radius, cancellation)?;
+        Self::complete_with_plan(resolution_plan, authoritative_surface, cancellation)
+    }
+
+    /// Builds only the authority needed by the UI's formation request.
+    ///
+    /// Returns its resolved profile plan and surface for `profile` and `radius`.
+    /// Propagates cancellation, profile and authoritative-geometry errors.
+    /// The generation stage still owns the control grid, map and P1 quality gate.
+    pub(crate) fn build_authoritative(
+        profile: NaturalQualityProfile,
+        radius: Meters,
+        cancellation: &BuildCancellation,
+    ) -> Result<(NaturalResolutionPlan, SphericalSurfaceSnapshot), ProfileSurfaceBuildError> {
         check_cancelled(cancellation)?;
         let authoritative_space = SphericalSpaceSpec {
             radius,
@@ -78,7 +92,7 @@ impl ProfileSurfaceBuilder {
         )
         .map_err(map_authoritative_error)?;
         check_cancelled(cancellation)?;
-        Self::complete_with_plan(resolution_plan, authoritative_surface, cancellation)
+        Ok((resolution_plan, authoritative_surface))
     }
 
     /// Completes one already-published authoritative surface with the exact
@@ -93,9 +107,6 @@ impl ProfileSurfaceBuilder {
         cancellation: &BuildCancellation,
     ) -> Result<ProfileSurfaceBundle, ProfileSurfaceBuildError> {
         check_cancelled(cancellation)?;
-        authoritative_surface
-            .validate()
-            .map_err(ProfileSurfaceBuildError::InvalidAuthoritativeSurface)?;
         let resolution_plan = profile.resolve(&crate::world::SphericalSpaceSpec {
             radius: authoritative_surface.radius(),
             target_cell_count: profile.authoritative_target_cell_count(),
@@ -160,12 +171,6 @@ fn validate_bundle(
     quality: &NaturalQualityReport,
 ) -> Result<(), ProfileSurfaceBuildError> {
     plan.validate()?;
-    authoritative
-        .validate()
-        .map_err(ProfileSurfaceBuildError::InvalidAuthoritativeSurface)?;
-    control
-        .validate()
-        .map_err(ProfileSurfaceBuildError::InvalidControlSurface)?;
     map.validate()
         .map_err(ProfileSurfaceBuildError::InvalidConservativeMap)?;
     quality
@@ -302,10 +307,6 @@ pub enum ProfileSurfaceBuildError {
     ConservativeRemap(ConservativeRemapError),
     #[error("P1 spatial quality evaluation failed: {0}")]
     Quality(#[from] QualityBuildError),
-    #[error("constructed authoritative surface is invalid: {0}")]
-    InvalidAuthoritativeSurface(SphericalSurfaceValidationError),
-    #[error("constructed tectonic-control surface is invalid: {0}")]
-    InvalidControlSurface(SphericalSurfaceValidationError),
     #[error("constructed conservative map is invalid: {0}")]
     InvalidConservativeMap(ConservativeSurfaceMapError),
     #[error("constructed P1 quality report is invalid: {0}")]
@@ -335,4 +336,31 @@ pub enum ProfileSurfaceBuildError {
         metric: String,
         status: QualityMetricStatus,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authority_only_then_complete_matches_a_full_profile_build_and_cancels() {
+        // P1 identity is the affected contract. A full natural-world solve
+        // would only repeat its downstream validation at much greater cost.
+        let profile = NaturalQualityProfile::Draft;
+        let radius = Meters::new(6_371_000.0).unwrap();
+        let cancellation = BuildCancellation::new();
+        let (plan, authority) =
+            ProfileSurfaceBuilder::build_authoritative(profile, radius, &cancellation).unwrap();
+        let complete = ProfileSurfaceBuilder::complete(profile, &authority, &cancellation).unwrap();
+        assert_eq!(&plan, complete.resolution_plan());
+        assert_eq!(
+            complete,
+            ProfileSurfaceBuilder::build(profile, radius, &cancellation).unwrap()
+        );
+        cancellation.cancel();
+        assert_eq!(
+            ProfileSurfaceBuilder::build_authoritative(profile, radius, &cancellation),
+            Err(ProfileSurfaceBuildError::Cancelled),
+        );
+    }
 }

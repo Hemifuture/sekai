@@ -46,10 +46,14 @@ impl NaturalQualityProfile {
     }
 
     /// Returns the cubed-sphere face resolution reserved for production climate.
+    ///
+    /// Draft and Standard share the measured work scale from the 2026-10-14
+    /// resolution-bounded optimization design, amendment 10. The production
+    /// finite-volume and conservative-remap operators are unchanged; displayed
+    /// terrain resolution does not imply an equally fine climate solve.
     pub const fn climate_face_resolution(self) -> u16 {
         match self {
-            Self::Draft => 24,
-            Self::Standard => 32,
+            Self::Draft | Self::Standard => 20,
             Self::High => 48,
         }
     }

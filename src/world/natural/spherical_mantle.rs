@@ -10,8 +10,7 @@ use super::{
 };
 use crate::world::serde_bounded::deserialize_bounded_vec;
 use crate::world::spatial::{
-    SphericalSurfaceSnapshot, SphericalSurfaceValidationError, SurfaceGeometryKind, SurfaceRef,
-    SurfaceRefError,
+    SphericalSurfaceSnapshot, SurfaceGeometryKind, SurfaceRef, SurfaceRefError,
 };
 use crate::world::{CellId, HotspotId, Meters, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT};
 
@@ -197,7 +196,6 @@ impl SphericalMantleSnapshot {
         &self,
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), SphericalMantleValidationError> {
-        surface.validate()?;
         self.validate_against_validated_surface(surface)
     }
 
@@ -206,7 +204,7 @@ impl SphericalMantleSnapshot {
         surface: &SphericalSurfaceSnapshot,
     ) -> Result<(), SphericalMantleValidationError> {
         self.validate()?;
-        let authoritative = SurfaceRef::from_validated_spherical(surface)?;
+        let authoritative = SurfaceRef::try_for_spherical(surface)?;
         if self.surface_ref != authoritative {
             return Err(SphericalMantleValidationError::SurfaceMismatch {
                 snapshot: self.surface_ref,
@@ -400,9 +398,6 @@ pub enum SphericalMantleValidationError {
         /// The rejected value.
         found: f32,
     },
-    /// The authoritative spherical surface is invalid.
-    #[error("invalid spherical surface: {0}")]
-    InvalidSurface(#[from] SphericalSurfaceValidationError),
     /// The exact surface identity differs from the authoritative snapshot.
     #[error("mantle surface identity {snapshot:?} does not match {authoritative:?}")]
     SurfaceMismatch {

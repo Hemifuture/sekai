@@ -113,11 +113,6 @@ impl Stage for SphericalMantleStage {
             .formation()
             .validate()
             .map_err(|error| invalid_input(error.to_string()))?;
-        inputs
-            .surface
-            .snapshot()
-            .validate()
-            .map_err(|error| invalid_input(error.to_string()))?;
 
         let snapshot = match inputs.resolved_input.input().model() {
             GeologicModel::CurrentSliceV1 => MantleGenerator::generate_spherical(
@@ -227,9 +222,6 @@ impl Stage for SphericalGeologicStage {
         let relief = inputs.relief.snapshot();
         let resolved = inputs.resolved_input.input();
 
-        surface
-            .validate()
-            .map_err(|error| invalid_geologic_input(error.to_string()))?;
         resolved
             .validate()
             .map_err(|error| invalid_geologic_input(error.to_string()))?;
@@ -268,7 +260,6 @@ fn invalid_input(message: String) -> StageError {
 fn generation_failure(error: SphericalMantleGenerationError) -> StageError {
     match error {
         SphericalMantleGenerationError::InvalidSpec(_)
-        | SphericalMantleGenerationError::InvalidSurface(_)
         | SphericalMantleGenerationError::InvalidSurfaceIdentity(_)
         | SphericalMantleGenerationError::HotspotCountExceedsCells { .. } => {
             invalid_input(error.to_string())
@@ -291,7 +282,6 @@ fn invalid_geologic_input(message: String) -> StageError {
 fn geologic_generation_failure(error: SphericalGeologicGenerationError) -> StageError {
     match error {
         SphericalGeologicGenerationError::InvalidSpec(_)
-        | SphericalGeologicGenerationError::InvalidSurface(_)
         | SphericalGeologicGenerationError::InvalidSurfaceIdentity(_)
         | SphericalGeologicGenerationError::InvalidTectonics(_)
         | SphericalGeologicGenerationError::InvalidMantle(_)

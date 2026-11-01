@@ -298,16 +298,19 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
 
     /// Advances one production macro step from the exact full tendency that
     /// the generation driver already retained for its conservation ledger.
-    #[allow(clippy::too_many_arguments)]
+    /// The caller retains scratch storage across steps on this same grid;
+    /// every state-dependent tendency is still recomputed for each endpoint.
     pub(crate) fn advance_with_declared_tendency_and_phase_observer<F>(
         &self,
         state: &LayeredClimateState,
-        forcing: &PlanetForcing,
-        ocean_edge_permeability: &[f32],
+        (forcing, ocean_edge_permeability): (&PlanetForcing, &[f32]),
         macro_step_seconds: f64,
         declared_full: &LayeredClimateTendency,
-        cancellation: &BuildCancellation,
-        observer: &mut F,
+        (cancellation, observer, fast_workspace): (
+            &BuildCancellation,
+            &mut F,
+            &mut LayeredTendencyWorkspace,
+        ),
     ) -> Result<ClimateStepResult, ClimateIntegratorError>
     where
         F: FnMut(GlobalCirculationPhase),
@@ -318,7 +321,6 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
                 found: macro_step_seconds,
             });
         }
-        let mut fast_workspace = LayeredTendencyWorkspace::for_grid(self.grid);
         self.advance_single_slow_step_with_phase_observer(
             state,
             forcing,
@@ -327,7 +329,7 @@ impl<'grid> SplitExplicitRk3Integrator<'grid> {
             cancellation,
             observer,
             declared_full,
-            &mut fast_workspace,
+            fast_workspace,
         )
     }
 

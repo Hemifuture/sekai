@@ -24,8 +24,6 @@ pub fn evaluate_profile_surface_quality(
     control: &SphericalSurfaceSnapshot,
     map: &ConservativeSurfaceMap,
 ) -> Result<NaturalQualityReport, QualityBuildError> {
-    validate_input("authoritative surface", authoritative.validate())?;
-    validate_input("tectonic-control surface", control.validate())?;
     validate_input("control-to-authoritative map", map.validate())?;
     let authoritative_ref = SurfaceRef::try_for_spherical(authoritative)
         .map_err(|error| invalid_input("authoritative surface identity", error))?;
