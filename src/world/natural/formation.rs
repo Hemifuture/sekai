@@ -240,6 +240,7 @@ impl WorldFormationSpec {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct WorldFormationSpecWire {
     schema_version: u16,
     preset: WorldFormationPreset,

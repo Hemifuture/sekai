@@ -25,6 +25,7 @@ pub enum TectonicActivity {
 
 /// A versioned, deterministic description of the current tectonic state to generate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TectonicSpec {
     /// The schema version used to interpret this specification.
     pub schema_version: u16,

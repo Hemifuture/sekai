@@ -22,3 +22,6 @@ screenshots/*.ppm
 
 # Chrome/crashpad noise from accessibility-driven screenshot runs
 debug.log
+
+# Per-plan agent execution scratch
+.superpowers/sdd/

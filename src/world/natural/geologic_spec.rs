@@ -60,6 +60,7 @@ impl GeologicSpec {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GeologicSpecWire {
     schema_version: u16,
     hotspot_count: u16,

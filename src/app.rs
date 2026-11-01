@@ -4,10 +4,17 @@ use eframe::egui_wgpu::RenderState;
 use thiserror::Error;
 
 mod amplified_mesh;
+mod authoring;
+mod build_metrics;
 mod field_document;
 mod frame_stats;
 mod natural_field_payloads;
 mod pipeline;
+mod project_file;
+#[cfg(not(target_arch = "wasm32"))]
+mod project_io;
+#[cfg(not(target_arch = "wasm32"))]
+mod project_ui;
 mod spherical_formation_display;
 #[cfg_attr(not(test), allow(dead_code))]
 mod spherical_natural_display;
@@ -35,6 +42,8 @@ pub use spherical_presentation::{
     SphericalWorldFieldDocument,
 };
 
+use authoring::{AuthorInputs, AuthoringSession, BuildToken, RecipeId};
+use build_metrics::{BuildObservation, BuildOutcome, BuildPhase};
 use frame_stats::{emit_runtime_line, FrameSampler};
 
 use crate::{
@@ -79,11 +88,6 @@ const FORMATION_SLICE_STATUS_TEXT: &str =
 const CURRENT_SLICE_SUBTITLE: &str = "前工业·中世纪幻想｜当前时间切片（含水文与地表塑形）";
 const INITIAL_PLATE_COUNT_LABEL: &str = "初始板块数";
 const PROCEDURAL_COAST_DRAFT_ONLY_TEXT: &str = "程序化海岸（实验）目前仅支持完整生成链的草稿档";
-/// The default quality tier for interactive formation builds.
-fn default_formation_quality_profile() -> crate::world::natural::NaturalQualityProfile {
-    crate::world::natural::NaturalQualityProfile::Draft
-}
-
 /// The authored combo label per quality tier (single source for the selector).
 fn quality_tier_label(profile: crate::world::natural::NaturalQualityProfile) -> String {
     format!(
@@ -241,8 +245,37 @@ fn take_formation_geometry(
     }
 }
 
+/// Current coarse operation of one request; never persisted or a solver progress estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorldBuildPhase {
+    Surface,
+    Graph,
+    Presentation,
+}
+
+impl WorldBuildPhase {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Surface => "地表准备",
+            Self::Graph => "自然世界构建",
+            Self::Presentation => "显示准备/发布",
+        }
+    }
+
+    fn enter(self, current: Option<&std::sync::Mutex<Self>>) {
+        if let Some(current) = current {
+            *current
+                .lock()
+                .expect("phase lock is never held during work") = self;
+        }
+    }
+}
+
 /// A spherical world build running on a worker thread.
 struct PendingWorldBuild {
+    token: BuildToken,
+    phase: Arc<std::sync::Mutex<WorldBuildPhase>>,
+    worker: Option<std::thread::JoinHandle<()>>,
     receiver: std::sync::mpsc::Receiver<WorldBuildCompletion>,
     cancellation: crate::engine::BuildCancellation,
     started_at: std::time::Instant,
@@ -279,6 +312,7 @@ struct AmplifiedDetailProbe {
 
 /// One coalesced camera snapshot for the detail worker.
 struct DetailRebuildRequest {
+    world_identity: (u64, Option<BuildToken>),
     view: crate::view::SphericalPresentationViewState,
     canvas_size: [f64; 2],
     serial: u64,
@@ -303,6 +337,7 @@ enum DetailRebuildAnswer {
 }
 
 struct DetailRebuildResult {
+    world_identity: (u64, Option<BuildToken>),
     answer: DetailRebuildAnswer,
     serial: u64,
 }
@@ -339,6 +374,7 @@ struct AmplifiedDetailPayload {
 /// assembly both run off the UI thread against the per-batch cache, and
 /// finished meshes swap in whole.
 struct AmplifiedDetailEngine {
+    world_identity: (u64, Option<BuildToken>),
     request: std::sync::mpsc::Sender<DetailRebuildRequest>,
     results: std::sync::mpsc::Receiver<DetailRebuildResult>,
     sent_serial: u64,
@@ -360,6 +396,9 @@ impl AmplifiedDetailEngine {
         let mut newest: Option<DetailRebuildResult> = None;
         let mut error = None;
         while let Ok(result) = self.results.try_recv() {
+            if result.world_identity != self.world_identity {
+                continue;
+            }
             self.answered_serial = self.answered_serial.max(result.serial);
             if let DetailRebuildAnswer::Failed(message) = &result.answer {
                 error = Some(message.clone());
@@ -390,6 +429,7 @@ impl AmplifiedDetailEngine {
 fn spawn_amplified_detail_engine(
     context: std::sync::Arc<amplified_mesh::AmplifiedDetailContext>,
     installed_hash: u64,
+    world_identity: (u64, Option<BuildToken>),
 ) -> AmplifiedDetailEngine {
     let (request, request_receiver) = std::sync::mpsc::channel::<DetailRebuildRequest>();
     let (result_sender, results) = std::sync::mpsc::channel();
@@ -455,6 +495,7 @@ fn spawn_amplified_detail_engine(
             });
             if result_sender
                 .send(DetailRebuildResult {
+                    world_identity: request.world_identity,
                     answer,
                     serial: request.serial,
                 })
@@ -465,6 +506,7 @@ fn spawn_amplified_detail_engine(
         }
     });
     AmplifiedDetailEngine {
+        world_identity,
         request,
         results,
         sent_serial: 0,
@@ -484,7 +526,7 @@ mod amplified_detail_engine_tests {
     const ZOOMED: u64 = 0xB;
 
     /// A detached engine: the test plays the worker through `answers`.
-    fn detached_engine(
+    pub(super) fn detached_engine(
         installed_hash: u64,
         sent_serial: u64,
     ) -> (
@@ -495,6 +537,7 @@ mod amplified_detail_engine_tests {
         let (answers, results) = std::sync::mpsc::channel();
         (
             AmplifiedDetailEngine {
+                world_identity: (0, None),
                 request,
                 results,
                 sent_serial,
@@ -506,7 +549,7 @@ mod amplified_detail_engine_tests {
         )
     }
 
-    fn refreshed(serial: u64, selection_hash: u64) -> DetailRebuildResult {
+    pub(super) fn refreshed(serial: u64, selection_hash: u64) -> DetailRebuildResult {
         let mesh = crate::view::AmplifiedSurfaceMesh::new(
             vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             vec![[0; 4]; 3],
@@ -514,6 +557,7 @@ mod amplified_detail_engine_tests {
         )
         .expect("one triangle is a valid amplified mesh");
         DetailRebuildResult {
+            world_identity: (0, None),
             answer: DetailRebuildAnswer::Refreshed(AmplifiedDetailPayload {
                 mesh,
                 map_vertices: Vec::new(),
@@ -528,6 +572,7 @@ mod amplified_detail_engine_tests {
 
     fn already_installed(serial: u64, hash: u64) -> DetailRebuildResult {
         DetailRebuildResult {
+            world_identity: (0, None),
             answer: DetailRebuildAnswer::AlreadyInstalled(hash),
             serial,
         }
@@ -572,6 +617,7 @@ mod amplified_detail_engine_tests {
         let (mut engine, answers) = detached_engine(INSTALLED, 3);
         answers
             .send(DetailRebuildResult {
+                world_identity: (0, None),
                 answer: DetailRebuildAnswer::Failed("boom".to_owned()),
                 serial: 1,
             })
@@ -593,6 +639,7 @@ mod amplified_detail_engine_tests {
 
 /// Everything one finished worker build hands back to the UI thread.
 struct WorldBuildCompletion {
+    token: BuildToken,
     result: Result<SphericalPresentationCandidate, String>,
     stage_cache: MemoryStageCache,
     formation_geometry: Option<FormationGeometrySlot>,
@@ -640,14 +687,37 @@ fn derived_pick(
     })
 }
 
+/// One successful open's one-shot rebuild intent; never persisted.
+#[derive(Debug, Clone, Copy)]
+struct PendingOpenBuild {
+    timing: Option<build_metrics::OpenTiming>,
+    epoch: u64,
+    recipe_id: RecipeId,
+}
+
+/// All disposable resources for one guarded world publication.
+struct PreparedWorldPublication {
+    token: BuildToken,
+    cancellation: crate::engine::BuildCancellation,
+    published: PublishedSphericalPresentation,
+    renderer: crate::gpu::spherical::SphericalFieldRenderer,
+    expected_packet: Option<Arc<crate::gpu::spherical::SphericalGpuPacket>>,
+    stage_cache: MemoryStageCache,
+    amplified: Option<AmplifiedDisplayBundle>,
+    projected: Option<Arc<(Vec<crate::view::AmplifiedMapVertex>, Vec<u32>)>>,
+    graph: AppRuntimeGraph,
+    stage_ids: Vec<String>,
+}
+
 /// Starts one worker attempt while keeping P5 cache writes private until publication.
 fn prepare_pending_world_build(
     pipeline: WorldPipeline,
     published_stage_cache: MemoryStageCache,
     receiver: std::sync::mpsc::Receiver<WorldBuildCompletion>,
-    cancellation: crate::engine::BuildCancellation,
+    request: (BuildToken, crate::engine::BuildCancellation),
     replacement: bool,
 ) -> (MemoryStageCache, PendingWorldBuild) {
+    let (token, cancellation) = request;
     let (working_stage_cache, retained_stage_cache) = if pipeline == WorldPipeline::Formation {
         (published_stage_cache.clone(), Some(published_stage_cache))
     } else {
@@ -656,6 +726,9 @@ fn prepare_pending_world_build(
     (
         working_stage_cache,
         PendingWorldBuild {
+            token,
+            phase: Arc::new(std::sync::Mutex::new(WorldBuildPhase::Surface)),
+            worker: None,
             receiver,
             cancellation,
             started_at: std::time::Instant::now(),
@@ -697,88 +770,192 @@ fn configure_frame_stats_scenario(canvas: &mut crate::ui::spherical::SphericalCa
     canvas.replace_field_state(state);
 }
 
-/// Persisted UI state plus skipped runtime resources for the current natural slice.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(default)]
+/// Rejected text keeps its numeric-editor ID when Slider returns its track ID after blur.
+#[derive(Debug, Clone)]
+struct RejectedAuthorInput {
+    field: &'static str,
+    widget_id: egui::Id,
+    text: String,
+}
+
+/// A committed authoring session and the current in-memory display resources.
 pub struct TemplateApp {
-    #[serde(default = "pipeline::missing_world_origin_is_spherical")]
     world_origin: PersistedWorldOrigin,
-    #[serde(
-        default = "default_spherical_space_spec",
-        with = "pipeline::spherical_space_spec_serde"
-    )]
-    spherical_space_spec: crate::world::SphericalSpaceSpec,
-    #[serde(default)]
+    authoring: AuthoringSession,
+    input_edit: Option<AuthorInputs>,
+    author_input_error: Option<RejectedAuthorInput>,
+    #[cfg(not(target_arch = "wasm32"))]
+    project_ui: project_ui::ProjectUiState,
     spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
-    #[serde(default)]
     reduce_loading_motion: bool,
-    world_seed: u64,
-    formation_spec: WorldFormationSpec,
-    tectonic_spec: TectonicSpec,
-    #[serde(default)]
-    relief_spec: ReliefSpec,
-    geologic_spec: GeologicSpec,
-    #[serde(default)]
-    world_pipeline: WorldPipeline,
-    #[serde(default = "default_formation_quality_profile")]
-    formation_quality_profile: crate::world::natural::NaturalQualityProfile,
-    #[serde(skip)]
     formation_geometry: Option<FormationGeometrySlot>,
-    #[serde(skip)]
     amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
-    /// The installed amplified mesh's per-cell leaf levels and the world's
-    /// detail context, kept with it so a pick reads the selection on
-    /// screen from the engine the mesh is built from (LOD-1 spec §3.5 D5).
-    #[serde(skip)]
+    /// Picking must use the installed mesh's batches, not the newest requested LOD.
     amplified_pick_batches: Option<Vec<amplified_mesh::DetailBatch>>,
-    #[serde(skip)]
     amplified_context: Option<std::sync::Arc<amplified_mesh::AmplifiedDetailContext>>,
-    #[serde(skip)]
     amplified_detail: Option<AmplifiedDetailEngine>,
-    #[serde(skip)]
     river_polylines: Option<std::sync::Arc<Vec<crate::view::RiverPolylineSegment>>>,
-    #[serde(skip)]
     river_radius_m: Option<f64>,
     /// The active mesh's pre-projected map geometry (worker-produced;
     /// recomputed on the UI thread only when the projection changes).
-    #[serde(skip)]
     amplified_map_projected:
         Option<std::sync::Arc<(Vec<crate::view::AmplifiedMapVertex>, Vec<u32>)>>,
-    #[serde(skip)]
     world_build: Option<PendingWorldBuild>,
-    #[serde(skip)]
+    pending_open_build: Option<PendingOpenBuild>,
+    published_world_token: Option<BuildToken>,
     render_state: Option<RenderState>,
-    #[serde(skip)]
     spherical_presentation: SphericalPresentationResource,
-    #[serde(skip)]
     active_runtime_graph: Option<AppRuntimeGraph>,
-    #[serde(skip)]
     active_runtime_stage_ids: Vec<String>,
-    #[serde(skip)]
     spherical_runtime_error: Option<String>,
-    #[serde(skip)]
     spherical_inspector_cache: SphericalInspectorCache,
-    #[serde(skip)]
     stage_cache: MemoryStageCache,
-    #[serde(skip, default = "frame_stats::runtime_frame_sampler")]
     frame_sampler: FrameSampler,
-    #[serde(skip)]
+    build_observation: Option<BuildObservation>,
     frame_stats_persisted_canvas_state: Option<crate::ui::spherical::SphericalCanvasState>,
+}
+
+/// Autosave contains only the committed recipe and non-scientific preferences.
+#[derive(serde::Serialize)]
+struct AppPersistenceWire<'a> {
+    schema_version: u16,
+    // Option preserves RON's Some wrapper when the deserialize-only adapter reads it.
+    inputs: Option<&'a AuthorInputs>,
+    spherical_canvas_state: &'a crate::ui::spherical::SphericalCanvasState,
+    reduce_loading_motion: bool,
+}
+
+const APP_AUTOSAVE_SCHEMA_V1: u16 = 1;
+
+/// Reads pre-session autosaves once; these fields never become editable runtime state.
+#[derive(serde::Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+struct LegacyAppInputsWire {
+    schema_version: u16,
+    inputs: Option<AuthorInputs>,
+    #[serde(rename = "world_origin")]
+    #[serde(deserialize_with = "deserialize_present")]
+    _world_origin: Option<PersistedWorldOrigin>,
+    #[serde(deserialize_with = "deserialize_optional_spherical_space_spec")]
+    spherical_space_spec: Option<crate::world::SphericalSpaceSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    world_seed: Option<u64>,
+    #[serde(deserialize_with = "deserialize_present")]
+    formation_spec: Option<WorldFormationSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    tectonic_spec: Option<TectonicSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    relief_spec: Option<ReliefSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    geologic_spec: Option<GeologicSpec>,
+    #[serde(deserialize_with = "deserialize_present")]
+    world_pipeline: Option<WorldPipeline>,
+    #[serde(deserialize_with = "deserialize_present")]
+    formation_quality_profile: Option<crate::world::natural::NaturalQualityProfile>,
+    spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
+    reduce_loading_motion: bool,
+}
+
+fn deserialize_present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+fn deserialize_optional_spherical_space_spec<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::world::SphericalSpaceSpec>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    pipeline::spherical_space_spec_serde::deserialize(deserializer).map(Some)
+}
+
+impl serde::Serialize for TemplateApp {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        AppPersistenceWire {
+            schema_version: APP_AUTOSAVE_SCHEMA_V1,
+            inputs: Some(self.authoring.draft()),
+            spherical_canvas_state: &self.spherical_canvas_state,
+            reduce_loading_motion: self.reduce_loading_motion,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TemplateApp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = LegacyAppInputsWire::deserialize(deserializer)?;
+        let inputs = match (wire.schema_version, wire.inputs) {
+            (schema, Some(inputs)) if schema == APP_AUTOSAVE_SCHEMA_V1 => {
+                if wire.world_seed.is_some()
+                    || wire.spherical_space_spec.is_some()
+                    || wire.formation_spec.is_some()
+                    || wire.tectonic_spec.is_some()
+                    || wire.relief_spec.is_some()
+                    || wire.geologic_spec.is_some()
+                    || wire.world_pipeline.is_some()
+                    || wire.formation_quality_profile.is_some()
+                {
+                    return Err(serde::de::Error::custom("mixed legacy and session inputs"));
+                }
+                inputs
+            }
+            (0, None) => {
+                let defaults = AuthorInputs::default();
+                AuthorInputs {
+                    world_seed: wire.world_seed.unwrap_or(defaults.world_seed),
+                    spherical_space_spec: wire
+                        .spherical_space_spec
+                        .unwrap_or(defaults.spherical_space_spec),
+                    world_pipeline: wire.world_pipeline.unwrap_or(defaults.world_pipeline),
+                    formation_quality_profile: wire
+                        .formation_quality_profile
+                        .unwrap_or(defaults.formation_quality_profile),
+                    formation_spec: wire.formation_spec.unwrap_or(defaults.formation_spec),
+                    tectonic_spec: wire.tectonic_spec.unwrap_or(defaults.tectonic_spec),
+                    relief_spec: wire.relief_spec.unwrap_or(defaults.relief_spec),
+                    geologic_spec: wire.geologic_spec.unwrap_or(defaults.geologic_spec),
+                }
+            }
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "unsupported or incomplete autosave recipe schema",
+                ))
+            }
+        };
+        // Neither autosave layout carries a verified generation identity yet. T3
+        // supplies that compatibility boundary; recovery remains an unsaved import.
+        let authoring = AuthoringSession::new(inputs).map_err(serde::de::Error::custom)?;
+        Ok(Self {
+            authoring,
+            spherical_canvas_state: wire.spherical_canvas_state,
+            reduce_loading_motion: wire.reduce_loading_motion,
+            ..Self::default()
+        })
+    }
 }
 
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
             world_origin: PersistedWorldOrigin::SphericalV1,
-            spherical_space_spec: default_spherical_space_spec(),
+            authoring: AuthoringSession::new(AuthorInputs::default())
+                .expect("default author inputs satisfy domain contracts"),
+            input_edit: None,
+            author_input_error: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            project_ui: project_ui::ProjectUiState::default(),
             spherical_canvas_state: crate::ui::spherical::SphericalCanvasState::default(),
             reduce_loading_motion: false,
-            world_seed: PRODUCT_DEFAULT_WORLD_SEED.raw(),
-            formation_spec: WorldFormationSpec::default(),
-            tectonic_spec: TectonicSpec::default(),
-            relief_spec: ReliefSpec::default(),
-            geologic_spec: GeologicSpec::default(),
-            world_pipeline: WorldPipeline::default(),
             amplified_mesh: None,
             amplified_pick_batches: None,
             amplified_context: None,
@@ -786,9 +963,10 @@ impl Default for TemplateApp {
             amplified_detail: None,
             river_polylines: None,
             river_radius_m: None,
-            formation_quality_profile: default_formation_quality_profile(),
             formation_geometry: None,
             world_build: None,
+            pending_open_build: None,
+            published_world_token: None,
             render_state: None,
             spherical_presentation: SphericalPresentationResource::default(),
             active_runtime_graph: None,
@@ -797,6 +975,7 @@ impl Default for TemplateApp {
             spherical_inspector_cache: SphericalInspectorCache::default(),
             stage_cache: MemoryStageCache::new(),
             frame_sampler: frame_stats::runtime_frame_sampler(),
+            build_observation: None,
             frame_stats_persisted_canvas_state: None,
         }
     }
@@ -809,13 +988,13 @@ impl TemplateApp {
     }
 
     /// Returns the explicit authoring specification for spherical worlds.
-    pub const fn spherical_space_spec(&self) -> &crate::world::SphericalSpaceSpec {
-        &self.spherical_space_spec
+    pub fn spherical_space_spec(&self) -> &crate::world::SphericalSpaceSpec {
+        &self.authoring.draft().spherical_space_spec
     }
 
     /// Returns the runtime graph family for the current pipeline.
-    pub const fn runtime_graph(&self) -> AppRuntimeGraph {
-        match self.world_pipeline {
+    pub fn runtime_graph(&self) -> AppRuntimeGraph {
+        match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         }
@@ -918,17 +1097,17 @@ impl TemplateApp {
         failure: MigrationFailurePoint,
     ) -> Result<(), AppRuntimeError> {
         let requested_state = self.spherical_canvas_state.field_state().clone();
-        let candidate = match self.world_pipeline {
+        let candidate = match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => {
                 let surface = self.formation_profile_surface()?;
                 build_spherical_formation_candidate_for_view(
-                    RootSeed::new(self.world_seed),
-                    self.formation_quality_profile,
+                    RootSeed::new(self.authoring.draft().world_seed),
+                    self.authoring.draft().formation_quality_profile,
                     &surface,
-                    &self.formation_spec,
-                    &self.tectonic_spec,
-                    &self.relief_spec,
-                    &self.geologic_spec,
+                    &self.authoring.draft().formation_spec,
+                    &self.authoring.draft().tectonic_spec,
+                    &self.authoring.draft().relief_spec,
+                    &self.authoring.draft().geologic_spec,
                     &mut self.stage_cache,
                     self.spherical_canvas_state.presentation_view_state(),
                     &requested_state,
@@ -936,12 +1115,12 @@ impl TemplateApp {
                 )?
             }
             WorldPipeline::LegacyFoundation => build_spherical_presentation_candidate_for_view(
-                RootSeed::new(self.world_seed),
-                &self.spherical_space_spec,
-                &self.formation_spec,
-                &self.tectonic_spec,
-                &self.relief_spec,
-                &self.geologic_spec,
+                RootSeed::new(self.authoring.draft().world_seed),
+                &self.authoring.draft().spherical_space_spec,
+                &self.authoring.draft().formation_spec,
+                &self.authoring.draft().tectonic_spec,
+                &self.authoring.draft().relief_spec,
+                &self.authoring.draft().geologic_spec,
                 &mut self.stage_cache,
                 self.spherical_canvas_state.presentation_view_state(),
                 &requested_state,
@@ -1000,7 +1179,7 @@ impl TemplateApp {
         self.spherical_presentation.with_resource(|current| {
             *current = Some(published);
         });
-        self.active_runtime_graph = Some(match self.world_pipeline {
+        self.active_runtime_graph = Some(match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         });
@@ -1023,6 +1202,10 @@ impl TemplateApp {
                 self.amplified_detail = Some(spawn_amplified_detail_engine(
                     bundle.detail,
                     bundle.initial_hash,
+                    (
+                        self.authoring.capture_save().epoch,
+                        self.published_world_token,
+                    ),
                 ));
             }
             None => {
@@ -1039,6 +1222,16 @@ impl TemplateApp {
 
     /// Installs finished camera-driven detail meshes without blocking.
     fn poll_amplified_detail(&mut self, ctx: &egui::Context) {
+        if self.amplified_detail.as_ref().is_some_and(|engine| {
+            engine.world_identity
+                != (
+                    self.authoring.capture_save().epoch,
+                    self.published_world_token,
+                )
+        }) {
+            self.amplified_detail = None;
+            return;
+        }
         let Some(engine) = &mut self.amplified_detail else {
             return;
         };
@@ -1135,6 +1328,7 @@ impl TemplateApp {
         if engine
             .request
             .send(DetailRebuildRequest {
+                world_identity: engine.world_identity,
                 view,
                 canvas_size,
                 serial: engine.sent_serial,
@@ -1230,15 +1424,29 @@ impl TemplateApp {
         renderer: &mut crate::gpu::spherical::SphericalFieldRenderer,
         render_state: &RenderState,
     ) {
-        let (Some(rivers), Some(radius_m)) = (self.river_polylines.as_deref(), self.river_radius_m)
-        else {
+        Self::upload_river_segments_for_view(
+            self.river_polylines
+                .as_deref()
+                .zip(self.river_radius_m)
+                .map(|(rivers, radius)| (rivers.as_slice(), radius)),
+            self.spherical_canvas_state
+                .presentation_view_state()
+                .projection(),
+            renderer,
+            render_state,
+        );
+    }
+
+    fn upload_river_segments_for_view(
+        rivers: Option<(&[crate::view::RiverPolylineSegment], f64)>,
+        projection: crate::view::SphericalProjection,
+        renderer: &mut crate::gpu::spherical::SphericalFieldRenderer,
+        render_state: &RenderState,
+    ) {
+        let Some((rivers, radius_m)) = rivers else {
             renderer.clear_river_segments();
             return;
         };
-        let projection = self
-            .spherical_canvas_state
-            .presentation_view_state()
-            .projection();
         let bounds = projection.bounds();
         let half_width = (bounds.max_x() - bounds.min_x()) * 0.5;
         let mut map = Vec::with_capacity(rivers.len());
@@ -1297,8 +1505,8 @@ impl TemplateApp {
             }
         }
         let (_, surface) = crate::generators::spatial::ProfileSurfaceBuilder::build_authoritative(
-            self.formation_quality_profile,
-            self.spherical_space_spec.radius,
+            self.authoring.draft().formation_quality_profile,
+            self.authoring.draft().spherical_space_spec.radius,
             &crate::engine::BuildCancellation::new(),
         )?;
         Ok(surface)
@@ -1306,8 +1514,8 @@ impl TemplateApp {
 
     fn formation_geometry_key(&self) -> crate::generators::natural::FormationGeometryKey {
         crate::generators::natural::FormationGeometryKey::new(
-            self.formation_quality_profile,
-            self.spherical_space_spec.radius,
+            self.authoring.draft().formation_quality_profile,
+            self.authoring.draft().spherical_space_spec.radius,
         )
     }
 
@@ -1317,11 +1525,12 @@ impl TemplateApp {
     /// Only geometry that every seed and authored parameter shares is prewarmed, and only in
     /// memory; a stale slot is dropped, which cancels its build.
     fn prewarm_formation_geometry(&mut self) {
-        if self.world_pipeline != WorldPipeline::Formation
+        let inputs = self.authoring.draft();
+        if inputs.world_pipeline != WorldPipeline::Formation
             || procedural_coast_unsupported(
-                self.formation_spec.preset,
-                self.world_pipeline,
-                self.formation_quality_profile,
+                inputs.formation_spec.preset,
+                inputs.world_pipeline,
+                inputs.formation_quality_profile,
             )
         {
             return;
@@ -1343,48 +1552,81 @@ impl TemplateApp {
     /// [`Self::poll_world_build`] installs the finished candidate. A second
     /// request while one build is pending is ignored.
     fn request_spherical_world_build(&mut self) {
+        self.request_spherical_world_build_observed(None);
+    }
+
+    fn request_spherical_world_build_observed(
+        &mut self,
+        origin: Option<build_metrics::OpenTiming>,
+    ) {
         if self.world_build.is_some() {
             return;
         }
         if procedural_coast_unsupported(
-            self.formation_spec.preset,
-            self.world_pipeline,
-            self.formation_quality_profile,
+            self.authoring.draft().formation_spec.preset,
+            self.authoring.draft().world_pipeline,
+            self.authoring.draft().formation_quality_profile,
         ) {
             self.spherical_runtime_error = Some(PROCEDURAL_COAST_DRAFT_ONLY_TEXT.to_owned());
             return;
         }
+        let request_started =
+            origin.map_or_else(std::time::Instant::now, |timing| timing.started_at);
         let (sender, receiver) = std::sync::mpsc::channel();
         let cancellation = crate::engine::BuildCancellation::new();
         let worker_cancellation = cancellation.clone();
-        let pipeline = self.world_pipeline;
+        let inputs = self.authoring.draft().clone();
+        let token = self.authoring.begin_build();
+        let pipeline = inputs.world_pipeline;
         let stage_cache = std::mem::take(&mut self.stage_cache);
         let formation_geometry = self.formation_geometry.take();
         let geometry_key = self.formation_geometry_key();
-        let quality_profile = self.formation_quality_profile;
-        let root_seed = RootSeed::new(self.world_seed);
-        let space = self.spherical_space_spec.clone();
-        let formation_spec = self.formation_spec.clone();
-        let tectonic_spec = self.tectonic_spec.clone();
-        let relief_spec = self.relief_spec.clone();
-        let geologic_spec = self.geologic_spec.clone();
         let view_state = self.spherical_canvas_state.presentation_view_state();
         let requested_state = self.spherical_canvas_state.field_state().clone();
         let replacement = self
             .spherical_presentation
             .read_resource(|current| current.as_ref().map(|p| p.replacement_token()));
         let is_replacement = replacement.is_some();
-        let (stage_cache, pending_build) = prepare_pending_world_build(
+        let (stage_cache, mut pending_build) = prepare_pending_world_build(
             pipeline,
             stage_cache,
             receiver,
-            cancellation,
+            (token, cancellation),
             is_replacement,
         );
-        std::thread::spawn(move || {
+        self.build_observation = self
+            .frame_sampler
+            .is_requested_or_enabled()
+            .then(|| BuildObservation::new(token, request_started));
+        let observation = self.build_observation.clone();
+        let worker_phase = pending_build.phase.clone();
+        if observation.is_some() {
+            if let Some(timing) = origin {
+                emit_runtime_line(&format!("SEKAI_BUILD_ORIGIN token={token:?} origin=open read_and_decode_s={:.6} pre_worker_s={:.6} includes_compatibility_confirmation_and_previous_worker_wait=true", timing.read_and_decode.as_secs_f64(), request_started.elapsed().as_secs_f64()));
+            } else {
+                emit_runtime_line(&format!(
+                    "SEKAI_BUILD_ORIGIN token={token:?} origin=build_request"
+                ));
+            }
+        }
+        let worker = std::thread::spawn(move || {
+            let AuthorInputs {
+                world_seed,
+                spherical_space_spec: space,
+                world_pipeline: pipeline,
+                formation_quality_profile: quality_profile,
+                formation_spec,
+                tectonic_spec,
+                relief_spec,
+                geologic_spec,
+            } = inputs;
+            let root_seed = RootSeed::new(world_seed);
             let mut stage_cache = stage_cache;
             let mut formation_geometry = formation_geometry;
             let result = (|| -> Result<SphericalPresentationCandidate, String> {
+                let input_timing = observation
+                    .as_ref()
+                    .map(|o| o.span(BuildPhase::InputAndSurface, Some(1)));
                 let target = match pipeline {
                     WorldPipeline::Formation => {
                         let (geometry, slot) = take_formation_geometry(
@@ -1417,7 +1659,8 @@ impl TemplateApp {
                         crate::app::SphericalWorldBuildTarget::LegacyFoundation { space }
                     }
                 };
-                run_spherical_world_build(
+                drop(input_timing);
+                spherical_presentation::run_spherical_world_build_observed(
                     SphericalWorldBuildRequest {
                         root_seed,
                         target,
@@ -1431,6 +1674,8 @@ impl TemplateApp {
                     },
                     &mut stage_cache,
                     &worker_cancellation,
+                    observation.as_ref(),
+                    Some(&worker_phase),
                 )
                 .map_err(|error| {
                     // Surface the report's error diagnostics: "inspect the
@@ -1452,6 +1697,9 @@ impl TemplateApp {
             // The T1 v2 hierarchical engine is the value source; the bake
             // installs the uniform global selection and the camera-driven
             // detail engine refines it after install (plan M2 Task 3).
+            let amplified_timing = observation
+                .as_ref()
+                .map(|o| o.span(BuildPhase::Presentation, Some(1)));
             let amplified = if worker_cancellation.is_cancelled() {
                 None
             } else {
@@ -1505,24 +1753,56 @@ impl TemplateApp {
                     })
                 })
             };
+            drop(amplified_timing);
+            if observation.is_some() {
+                let report = match &result {
+                    Ok(candidate) => Some(candidate.report()),
+                    Err(_) => None,
+                };
+                if let Some(report) = report {
+                    for stage in report.stages() {
+                        emit_runtime_line(&format!("SEKAI_BUILD_STAGE token={token:?} stage={} duration_s={:.6} cache_hit={} source=build_report", stage.stage_id(), stage.duration().as_secs_f64(), stage.cache_hit()));
+                    }
+                }
+            }
             let _ = sender.send(WorldBuildCompletion {
+                token,
                 result,
                 stage_cache,
                 formation_geometry,
                 amplified,
             });
         });
+        pending_build.worker = Some(worker);
         self.world_build = Some(pending_build);
         self.spherical_runtime_error = None;
     }
 
-    fn show_pending_world_build_status(&self, ui: &mut egui::Ui) -> Option<egui::Rect> {
+    fn show_pending_world_build_status(&mut self, ui: &mut egui::Ui) -> Option<egui::Rect> {
         let pending = self.world_build.as_ref()?;
+        if pending.cancellation.is_cancelled() {
+            if let Some(observation) = &mut self.build_observation {
+                observation
+                    .cancel_feedback_at
+                    .get_or_insert(observation.started_at.elapsed());
+            }
+        }
         let mut cancel_rect = None;
+        let mut cancel_requested = false;
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new());
             ui.label(format!(
-                "正在生成世界…已用 {:.0} 秒",
+                "{} · {}…已用 {:.0} 秒",
+                if pending.cancellation.is_cancelled() {
+                    "正在取消"
+                } else {
+                    "正在生成世界"
+                },
+                pending
+                    .phase
+                    .lock()
+                    .expect("phase lock is never held during work")
+                    .label(),
                 pending.started_at.elapsed().as_secs_f32()
             ));
             let cancel = ui.button("取消");
@@ -1532,9 +1812,15 @@ impl TemplateApp {
             // same pass would be published over. Pointer-down cancels at once;
             // `clicked()` keeps keyboard activation working.
             if cancel.clicked() || cancel.is_pointer_button_down_on() {
-                pending.cancellation.cancel();
+                cancel_requested = true;
             }
         });
+        if cancel_requested {
+            #[cfg(not(target_arch = "wasm32"))]
+            self.dispatch_project_action(project_ui::ProjectAction::CancelBuild, ui.ctx());
+            #[cfg(target_arch = "wasm32")]
+            self.cancel_world_build();
+        }
         cancel_rect
     }
 
@@ -1554,6 +1840,59 @@ impl TemplateApp {
     /// before that press — already present in this pass's `RawInput` — was
     /// ever handed to the button.
     fn poll_world_build(&mut self, ctx: &egui::Context) {
+        let stamp = self.authoring.capture_save();
+        if self.pending_open_build.is_some_and(|intent| {
+            intent.epoch != stamp.epoch || intent.recipe_id != stamp.recipe_id
+        }) {
+            self.pending_open_build = None;
+        }
+        if let Some(pending) = &mut self.world_build {
+            if !self.authoring.accepts(pending.token) || pending.cancellation.is_cancelled() {
+                if let Some(observation) = &mut self.build_observation {
+                    observation
+                        .termination
+                        .get_or_insert(if pending.cancellation.is_cancelled() {
+                            BuildOutcome::Cancelled
+                        } else {
+                            BuildOutcome::Stale
+                        });
+                }
+                pending.cancellation.cancel();
+                if self.authoring.accepts(pending.token) {
+                    self.authoring.invalidate_build();
+                }
+                if self
+                    .pending_open_build
+                    .is_some_and(|intent| intent.epoch == pending.token.epoch)
+                {
+                    self.pending_open_build = None;
+                }
+            }
+            // A send only transfers a payload. Retain the single-worker slot until actual exit.
+            if pending
+                .worker
+                .as_ref()
+                .is_some_and(std::thread::JoinHandle::is_finished)
+            {
+                let worker = pending
+                    .worker
+                    .take()
+                    .expect("the finished worker was present");
+                if let Some(observation) = &self.build_observation {
+                    observation.worker_exited();
+                }
+                if worker.join().is_err() {
+                    if let Some(observation) = &mut self.build_observation {
+                        observation.termination = Some(BuildOutcome::Failed);
+                    }
+                    pending.cancellation.cancel();
+                    self.authoring.invalidate_build();
+                    if let Some((_, completion)) = &mut pending.completion {
+                        completion.result = Err("世界构建线程意外终止".to_owned());
+                    }
+                }
+            }
+        }
         let Some(pending) = self.world_build.as_ref() else {
             return;
         };
@@ -1564,6 +1903,10 @@ impl TemplateApp {
         if *staged_pass_nr == ctx.cumulative_pass_nr() {
             // Same pass as the staging poll: the cancel button has not been
             // drawn since, so publishing here would skip that input.
+            return;
+        }
+        if pending.worker.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(150));
             return;
         }
         self.settle_staged_world_build();
@@ -1585,16 +1928,37 @@ impl TemplateApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(150));
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if self
+                    .world_build
+                    .as_ref()
+                    .is_some_and(|pending| pending.worker.is_some())
+                {
+                    ctx.request_repaint_after(std::time::Duration::from_millis(150));
+                    return;
+                }
                 let pending = self
                     .world_build
                     .take()
                     .expect("the disconnected world build was pending");
+                if self.authoring.accepts(pending.token) {
+                    self.authoring.invalidate_build();
+                }
+                if self
+                    .pending_open_build
+                    .is_some_and(|intent| intent.epoch == pending.token.epoch)
+                {
+                    self.pending_open_build = None;
+                }
                 // The worker died holding the working cache, so only a retained
                 // P5 snapshot can come back; legacy builds keep the remnant.
                 let orphaned = std::mem::take(&mut self.stage_cache);
                 self.stage_cache =
                     settle_world_build_stage_cache(orphaned, pending.retained_stage_cache, false);
                 self.spherical_runtime_error = Some("世界构建线程意外终止".to_owned());
+                if let Some(observation) = self.build_observation.take() {
+                    observation.worker_exited();
+                    observation.emit(observation.termination.unwrap_or(BuildOutcome::Failed));
+                }
                 // The status row of this pass was drawn before this poll, and
                 // the pending build that kept asking for repaints is gone, so
                 // the error needs one requested pass to become visible.
@@ -1612,77 +1976,292 @@ impl TemplateApp {
         }
     }
 
-    /// Commits or rolls back the payload staged by an earlier pass.
-    ///
-    /// That pass drew the cancel button and observed its input, so a cancelled
-    /// build never reaches `install_*` and its private P5 cache writes are
-    /// discarded in favour of the retained publication snapshot.
-    fn settle_staged_world_build(&mut self) {
-        let mut pending = self
+    /// Revokes publication authority immediately; the worker exits cooperatively.
+    fn cancel_world_build(&mut self) {
+        if let (Some(observation), Some(pending)) = (&mut self.build_observation, &self.world_build)
+        {
+            observation
+                .cancel_requested_at
+                .get_or_insert(observation.started_at.elapsed());
+            observation
+                .termination
+                .get_or_insert(if self.authoring.accepts(pending.token) {
+                    BuildOutcome::Cancelled
+                } else {
+                    BuildOutcome::Stale
+                });
+        }
+        self.authoring.invalidate_build();
+        self.pending_open_build = None;
+        if let Some(pending) = &self.world_build {
+            pending.cancellation.cancel();
+        }
+    }
+
+    fn try_start_open_build(&mut self) -> bool {
+        let Some(intent) = self.pending_open_build else {
+            return false;
+        };
+        let stamp = self.authoring.capture_save();
+        if intent.epoch != stamp.epoch || intent.recipe_id != stamp.recipe_id {
+            self.pending_open_build = None;
+            return false;
+        }
+        if self.world_build.is_some() {
+            return false;
+        }
+        self.pending_open_build = None;
+        self.request_spherical_world_build_observed(intent.timing);
+        true
+    }
+
+    fn prepare_world_publication(
+        &self,
+        completion: WorldBuildCompletion,
+        render_state: &RenderState,
+    ) -> Result<PreparedWorldPublication, AppRuntimeError> {
+        self.prepare_world_publication_impl(completion, render_state, MigrationFailurePoint::None)
+    }
+
+    fn prepare_world_publication_impl(
+        &self,
+        completion: WorldBuildCompletion,
+        render_state: &RenderState,
+        failure: MigrationFailurePoint,
+    ) -> Result<PreparedWorldPublication, AppRuntimeError> {
+        let pending = self
             .world_build
-            .take()
-            .expect("the staged world build completion was pending");
-        let (_, completion) = pending
+            .as_ref()
+            .ok_or(AppRuntimeError::StaleWorldBuild)?;
+        if pending.token != completion.token
+            || pending.cancellation.is_cancelled()
+            || !self.authoring.accepts(completion.token)
+        {
+            return Err(AppRuntimeError::StaleWorldBuild);
+        }
+        let candidate = completion.result.map_err(AppRuntimeError::WorldBuild)?;
+        let stage_ids = candidate
+            .report()
+            .stage_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let expected_packet = self.spherical_presentation.read_resource(|current| {
+            if pending.replacement {
+                current
+                    .as_ref()
+                    .map(|current| Arc::clone(current.gpu_packet_arc()))
+                    .ok_or(AppRuntimeError::MissingSphericalPublication)
+                    .map(Some)
+            } else {
+                Ok(None)
+            }
+        })?;
+        if let Some(expected) = &expected_packet {
+            let egui_renderer = render_state.renderer.read();
+            let renderer = egui_renderer
+                .callback_resources
+                .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+                .ok_or(AppRuntimeError::MissingSphericalRenderer)?;
+            renderer
+                .ensure_publication_current(expected)
+                .map_err(SphericalPresentationError::from)?;
+        }
+        let mut renderer = crate::gpu::spherical::SphericalFieldRenderer::new(
+            &render_state.device,
+            render_state.target_format,
+        );
+        let mut gpu = SphericalRendererPreparer::new(
+            &mut renderer,
+            &render_state.device,
+            &render_state.queue,
+        );
+        #[cfg(test)]
+        if failure == MigrationFailurePoint::GpuPrepare {
+            gpu.fail_next_prepare_for_test();
+        }
+        #[cfg(not(test))]
+        let _ = failure;
+        let view = self.spherical_canvas_state.presentation_view_state();
+        let published = self.spherical_presentation.read_resource(|current| {
+            PublishedSphericalPresentation::prepare_detached_world(
+                candidate,
+                if pending.replacement {
+                    current.as_ref()
+                } else {
+                    None
+                },
+                view,
+                self.spherical_canvas_state.field_state(),
+                &mut gpu,
+            )
+        })?;
+        let projected = completion.amplified.as_ref().map(|bundle| {
+            let projected = Arc::new(crate::view::project_amplified_map(
+                &bundle.mesh,
+                view.projection(),
+            ));
+            let (map_origin, globe_anchor) = self.amplified_detail_anchors();
+            renderer.set_amplified_map_mesh(
+                &render_state.device,
+                &render_state.queue,
+                &projected.0,
+                &projected.1,
+                map_origin,
+            );
+            renderer.set_amplified_globe_mesh(
+                &render_state.device,
+                &render_state.queue,
+                &bundle.mesh,
+                globe_anchor,
+            );
+            Self::upload_river_segments_for_view(
+                Some((&bundle.rivers, bundle.river_radius_m)),
+                view.projection(),
+                &mut renderer,
+                render_state,
+            );
+            projected
+        });
+        Ok(PreparedWorldPublication {
+            token: completion.token,
+            cancellation: pending.cancellation.clone(),
+            published,
+            renderer,
+            expected_packet,
+            stage_cache: completion.stage_cache,
+            amplified: completion.amplified,
+            projected,
+            graph: match self.authoring.draft().world_pipeline {
+                WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
+                WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
+            },
+            stage_ids,
+        })
+    }
+
+    fn commit_world_publication(
+        &mut self,
+        prepared: PreparedWorldPublication,
+        render_state: &RenderState,
+    ) -> Result<(), AppRuntimeError> {
+        if prepared.cancellation.is_cancelled() || !self.authoring.accepts(prepared.token) {
+            return Err(AppRuntimeError::StaleWorldBuild);
+        }
+        let mut egui_renderer = render_state.renderer.write();
+        if let Some(expected) = &prepared.expected_packet {
+            self.spherical_presentation.read_resource(|current| {
+                if current
+                    .as_ref()
+                    .is_none_or(|current| !Arc::ptr_eq(current.gpu_packet_arc(), expected))
+                {
+                    Err(AppRuntimeError::StaleWorldBuild)
+                } else {
+                    Ok(())
+                }
+            })?;
+            egui_renderer
+                .callback_resources
+                .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+                .ok_or(AppRuntimeError::MissingSphericalRenderer)?
+                .ensure_publication_current(expected)
+                .map_err(SphericalPresentationError::from)?;
+        }
+        // This is the last guard: all CPU construction and candidate GPU uploads are complete.
+        if prepared.cancellation.is_cancelled() || !self.authoring.accepts(prepared.token) {
+            return Err(AppRuntimeError::StaleWorldBuild);
+        }
+        egui_renderer
+            .callback_resources
+            .insert::<crate::gpu::spherical::SphericalFieldRenderer>(prepared.renderer);
+        self.spherical_canvas_state
+            .replace_field_state(prepared.published.state().clone());
+        self.spherical_presentation
+            .with_resource(|current| *current = Some(prepared.published));
+        self.published_world_token = Some(prepared.token);
+        self.store_amplified_bundle(prepared.amplified);
+        self.amplified_map_projected = prepared.projected;
+        self.stage_cache = prepared.stage_cache;
+        self.spherical_inspector_cache = SphericalInspectorCache::default();
+        self.active_runtime_graph = Some(prepared.graph);
+        self.active_runtime_stage_ids = prepared.stage_ids;
+        self.world_origin = PersistedWorldOrigin::SphericalV1;
+        self.authoring.mark_published(prepared.token);
+        Ok(())
+    }
+
+    /// Commits or rolls back a staged payload after actual worker exit.
+    fn settle_staged_world_build(&mut self) {
+        let pending = self.world_build.as_mut().expect("the build was pending");
+        let (_, mut completion) = pending
             .completion
             .take()
-            .expect("the pending world build completion was staged");
-        let was_replacement = pending.replacement;
-        let cancellation = pending.cancellation;
-        let retained_stage_cache = pending.retained_stage_cache;
-        let WorldBuildCompletion {
-            result,
-            stage_cache,
-            formation_geometry,
-            amplified,
-        } = completion;
-        // A slot started while the build ran belongs to a newer selection and is kept.
+            .expect("the completion was staged");
+        let token = pending.token;
+        let cancellation = pending.cancellation.clone();
+        let working_cache = completion.stage_cache.clone();
+        // Geometry is seed-independent; restore it even after a cancelled world build,
+        // without replacing a newer authored selection's prewarm.
         if self.formation_geometry.is_none() {
-            self.formation_geometry = formation_geometry;
+            self.formation_geometry = completion.formation_geometry.take();
         }
-        match result {
-            Ok(candidate) => {
-                // Cancellation is decided first: a cancelled build is a
-                // cancelled build whether or not a renderer is available.
-                if cancellation.is_cancelled() {
-                    self.stage_cache =
-                        settle_world_build_stage_cache(stage_cache, retained_stage_cache, false);
-                    self.spherical_runtime_error = Some("已取消本次世界构建".to_owned());
-                    return;
-                }
-                let Some(render_state) = self.render_state.clone() else {
-                    self.stage_cache =
-                        settle_world_build_stage_cache(stage_cache, retained_stage_cache, false);
-                    self.spherical_runtime_error =
-                        Some("渲染状态不可用，无法发布新世界".to_owned());
-                    return;
-                };
-                let install = if was_replacement {
-                    self.install_replacement_candidate(candidate, &render_state, amplified)
-                } else {
-                    self.install_initial_spherical_candidate(
-                        candidate,
-                        &render_state,
-                        amplified,
-                        MigrationFailurePoint::None,
-                    )
-                };
-                self.stage_cache = settle_world_build_stage_cache(
-                    stage_cache,
-                    retained_stage_cache,
-                    install.is_ok(),
+        if let Some(observation) = &self.build_observation {
+            observation.worker_exited();
+        }
+        let install = if cancellation.is_cancelled() {
+            Err(AppRuntimeError::WorldBuild("已取消本次世界构建".to_owned()))
+        } else if completion.token != token || !self.authoring.accepts(token) {
+            Err(AppRuntimeError::StaleWorldBuild)
+        } else if let Err(error) = &completion.result {
+            Err(AppRuntimeError::WorldBuild(error.clone()))
+        } else if let Some(render_state) = self.render_state.clone() {
+            let _gpu_timing = self
+                .build_observation
+                .as_ref()
+                .map(|o| o.span(BuildPhase::GpuInstall, None));
+            self.prepare_world_publication(completion, &render_state)
+                .and_then(|prepared| self.commit_world_publication(prepared, &render_state))
+        } else {
+            Err(AppRuntimeError::WorldBuild(
+                "渲染状态不可用，无法发布新世界".to_owned(),
+            ))
+        };
+        let pending = self
+            .world_build
+            .take()
+            .expect("the settled build was pending");
+        if install.is_err() {
+            self.stage_cache =
+                settle_world_build_stage_cache(working_cache, pending.retained_stage_cache, false);
+            if self.authoring.accepts(token) {
+                self.authoring.invalidate_build();
+            }
+            if self.pending_open_build.is_some_and(|intent| {
+                intent.epoch == token.epoch && intent.recipe_id == token.recipe_id
+            }) {
+                self.pending_open_build = None;
+            }
+        }
+        if let Some(observation) = &mut self.build_observation {
+            if install.is_ok() {
+                observation
+                    .metrics
+                    .lock()
+                    .expect("timing lock")
+                    .finish(BuildOutcome::Published);
+            } else {
+                let outcome = observation.termination.unwrap_or(
+                    if matches!(&install, Err(AppRuntimeError::StaleWorldBuild)) {
+                        BuildOutcome::Stale
+                    } else {
+                        BuildOutcome::Failed
+                    },
                 );
-                self.spherical_runtime_error = install.err().map(|error| error.to_string());
-            }
-            Err(error) => {
-                self.stage_cache =
-                    settle_world_build_stage_cache(stage_cache, retained_stage_cache, false);
-                self.spherical_runtime_error = if cancellation.is_cancelled() {
-                    Some("已取消本次世界构建".to_owned())
-                } else {
-                    Some(error)
-                };
+                observation.emit(outcome);
+                self.build_observation = None;
             }
         }
+        self.spherical_runtime_error = install.err().map(|error| error.to_string());
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1708,7 +2287,7 @@ impl TemplateApp {
         &mut self,
         render_state: &RenderState,
     ) -> Result<(), AppRuntimeError> {
-        let candidate = match self.world_pipeline {
+        let candidate = match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => {
                 let surface = self.formation_profile_surface()?;
                 self.spherical_presentation.read_resource(|current| {
@@ -1716,13 +2295,13 @@ impl TemplateApp {
                         .as_ref()
                         .ok_or(AppRuntimeError::MissingSphericalPublication)?
                         .prepare_formation_replacement_candidate_for_view(
-                            RootSeed::new(self.world_seed),
-                            self.formation_quality_profile,
+                            RootSeed::new(self.authoring.draft().world_seed),
+                            self.authoring.draft().formation_quality_profile,
                             &surface,
-                            &self.formation_spec,
-                            &self.tectonic_spec,
-                            &self.relief_spec,
-                            &self.geologic_spec,
+                            &self.authoring.draft().formation_spec,
+                            &self.authoring.draft().tectonic_spec,
+                            &self.authoring.draft().relief_spec,
+                            &self.authoring.draft().geologic_spec,
                             &mut self.stage_cache,
                             self.spherical_canvas_state.presentation_view_state(),
                             self.spherical_canvas_state.field_state(),
@@ -1736,12 +2315,12 @@ impl TemplateApp {
                         .as_ref()
                         .ok_or(AppRuntimeError::MissingSphericalPublication)?
                         .prepare_replacement_candidate_for_view(
-                            RootSeed::new(self.world_seed),
-                            &self.spherical_space_spec,
-                            &self.formation_spec,
-                            &self.tectonic_spec,
-                            &self.relief_spec,
-                            &self.geologic_spec,
+                            RootSeed::new(self.authoring.draft().world_seed),
+                            &self.authoring.draft().spherical_space_spec,
+                            &self.authoring.draft().formation_spec,
+                            &self.authoring.draft().tectonic_spec,
+                            &self.authoring.draft().relief_spec,
+                            &self.authoring.draft().geologic_spec,
                             &mut self.stage_cache,
                             self.spherical_canvas_state.presentation_view_state(),
                             self.spherical_canvas_state.field_state(),
@@ -1788,7 +2367,7 @@ impl TemplateApp {
         drop(egui_renderer);
         self.spherical_canvas_state
             .replace_field_state(reconciled_state);
-        self.active_runtime_graph = Some(match self.world_pipeline {
+        self.active_runtime_graph = Some(match self.authoring.draft().world_pipeline {
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         });
@@ -1876,15 +2455,17 @@ impl TemplateApp {
         if let Some(pending) = &self.world_build {
             let elapsed = pending.started_at.elapsed();
             let cancelling = pending.cancellation.is_cancelled();
-            egui::CentralPanel::default().show(ctx, |ui| {
-                crate::ui::world_loading::show_world_loading(
-                    ui,
-                    elapsed,
-                    self.reduce_loading_motion,
-                    cancelling,
-                );
-            });
-            return;
+            if self.spherical_presentation.read_resource(Option::is_none) {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    crate::ui::world_loading::show_world_loading(
+                        ui,
+                        elapsed,
+                        self.reduce_loading_motion,
+                        cancelling,
+                    );
+                });
+                return;
+            }
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -1916,6 +2497,37 @@ impl TemplateApp {
                     true
                 })
             });
+            if queued
+                && self.build_observation.as_ref().is_some_and(|o| {
+                    let metrics = o.metrics.lock().expect("timing lock");
+                    metrics.outcome == BuildOutcome::Published
+                        && Some(metrics.token) == self.published_world_token
+                })
+            {
+                let observation = self
+                    .build_observation
+                    .take()
+                    .expect("the published observation exists");
+                let start = observation
+                    .metrics
+                    .lock()
+                    .expect("timing lock")
+                    .spans
+                    .iter()
+                    .filter(|span| span.parent.is_none())
+                    .map(|span| span.start + span.duration)
+                    .max()
+                    .unwrap_or_default();
+                observation.metrics.lock().expect("timing lock").record(
+                    build_metrics::TimingSpan {
+                        phase: BuildPhase::FirstSubmittedFrame,
+                        start,
+                        duration: observation.started_at.elapsed().saturating_sub(start),
+                        parent: None,
+                    },
+                );
+                observation.emit(BuildOutcome::Published);
+            }
             if !queued {
                 ui.centered_and_justified(|ui| {
                     ui.label("球面世界尚未发布");
@@ -1960,7 +2572,8 @@ impl eframe::App for TemplateApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_amplified_detail(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut project_actions = Vec::new();
         let update_time_seconds = ctx.input(|input| input.time);
         let toggle_frame_sampler = ctx.input(|input| {
             input.modifiers.ctrl && input.modifiers.alt && input.key_pressed(egui::Key::F)
@@ -1988,10 +2601,14 @@ impl eframe::App for TemplateApp {
         }
         if let Some(stats) = self.frame_sampler.take_unreported_completed() {
             emit_runtime_line(&format!(
-                "SEKAI_FRAME_STATS average_fps={:.3} one_percent_low_fps={:.3} samples={} window=10s",
+                "SEKAI_FRAME_STATS average_fps={:.3} one_percent_low_fps={:.3} samples={} window=10s source=update_interval interval_p50_ms={:.3} interval_p95_ms={:.3} interval_p99_ms={:.3} interval_max_ms={:.3}",
                 stats.average_fps(),
                 stats.one_percent_low_fps(),
-                stats.sample_count()
+                stats.sample_count(),
+                stats.interval_quantiles_seconds()[0] * 1000.0,
+                stats.interval_quantiles_seconds()[1] * 1000.0,
+                stats.interval_quantiles_seconds()[2] * 1000.0,
+                stats.interval_quantiles_seconds()[3] * 1000.0,
             ));
         }
         if self.frame_sampler.is_sampling() {
@@ -2000,12 +2617,9 @@ impl eframe::App for TemplateApp {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
-                if !cfg!(target_arch = "wasm32") {
-                    ui.menu_button("文件", |ui| {
-                        if ui.button("退出").clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                    });
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.show_project_menus(ui, &mut project_actions);
                     ui.add_space(16.0);
                 }
                 egui::widgets::global_theme_preference_buttons(ui);
@@ -2037,6 +2651,12 @@ impl eframe::App for TemplateApp {
             });
         });
 
+        let mut editing = self
+            .input_edit
+            .take()
+            .unwrap_or_else(|| self.authoring.draft().clone());
+        let cancel_input_edit = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+        let mut author_input_focused = false;
         let mut spherical_actions = Vec::new();
         let mut rebuild = false;
         let mut new_seed = false;
@@ -2056,12 +2676,48 @@ impl eframe::App for TemplateApp {
 
                     ui.horizontal(|ui| {
                         ui.label("根种子");
-                        ui.add(egui::DragValue::new(&mut self.world_seed).range(0..=u64::MAX));
+                        let rejected_text = std::cell::RefCell::new(None);
+                        let parsed_seed = std::cell::Cell::new(None);
+                        let exact_seed = editing.world_seed;
+                        let rejected_seed =
+                            rejected_authoring_text(&self.author_input_error, "根种子");
+                        let response = ui.add(
+                            egui::DragValue::new(&mut editing.world_seed)
+                                .range(0..=u64::MAX)
+                                .custom_formatter(move |_, _| {
+                                    rejected_seed
+                                        .clone()
+                                        .unwrap_or_else(|| exact_seed.to_string())
+                                })
+                                .custom_parser(|text| {
+                                    match normalized_authoring_number(text).parse::<u64>() {
+                                        Ok(seed) => {
+                                            parsed_seed.set(Some(seed));
+                                            Some(seed as f64)
+                                        }
+                                        Err(_) => {
+                                            rejected_text.replace(Some(text.to_owned()));
+                                            None
+                                        }
+                                    }
+                                })
+                                .update_while_editing(false),
+                        );
+                        // DragValue's f64 is only a UI bridge; commit the exact u64 text.
+                        if let Some(seed) = parsed_seed.get() {
+                            editing.world_seed = seed;
+                        }
+                        author_input_focused |= authoring_number_stays_pending(
+                            &response,
+                            rejected_text.into_inner(),
+                            &mut self.author_input_error,
+                            "根种子",
+                        );
                     });
                     ui.add_space(8.0);
-                    let previous_preset = self.formation_spec.preset;
+                    let previous_preset = editing.formation_spec.preset;
                     egui::ComboBox::from_label("世界形态")
-                        .selected_text(formation_preset_label(self.formation_spec.preset))
+                        .selected_text(formation_preset_label(editing.formation_spec.preset))
                         .show_ui(ui, |ui| {
                             for preset in [
                                 WorldFormationPreset::Random,
@@ -2074,45 +2730,65 @@ impl eframe::App for TemplateApp {
                             ] {
                                 if procedural_coast_unsupported(
                                     preset,
-                                    self.world_pipeline,
-                                    self.formation_quality_profile,
+                                    editing.world_pipeline,
+                                    editing.formation_quality_profile,
                                 ) {
                                     continue;
                                 }
                                 ui.selectable_value(
-                                    &mut self.formation_spec.preset,
+                                    &mut editing.formation_spec.preset,
                                     preset,
                                     formation_preset_label(preset),
                                 );
                             }
                         });
-                    if self.formation_spec.preset != previous_preset {
-                        let selected = self.formation_spec.preset;
+                    if editing.formation_spec.preset != previous_preset {
+                        let selected = editing.formation_spec.preset;
                         apply_formation_preset_selection(
-                            &mut self.formation_spec,
-                            &mut self.tectonic_spec,
-                            &mut self.relief_spec,
+                            &mut editing.formation_spec,
+                            &mut editing.tectonic_spec,
+                            &mut editing.relief_spec,
                             selected,
                         );
                     }
                     ui.horizontal(|ui| {
                         ui.label(INITIAL_PLATE_COUNT_LABEL);
-                        ui.add(
-                            egui::DragValue::new(&mut self.tectonic_spec.plate_count)
-                                .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT),
+                        let rejected_plates = rejected_authoring_text(
+                            &self.author_input_error,
+                            INITIAL_PLATE_COUNT_LABEL,
+                        );
+                        let rejected_text = std::cell::RefCell::new(None);
+                        let response = ui.add(
+                            egui::DragValue::new(&mut editing.tectonic_spec.plate_count)
+                                .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT)
+                                .custom_formatter(move |value, _| {
+                                    rejected_plates
+                                        .clone()
+                                        .unwrap_or_else(|| (value as u16).to_string())
+                                })
+                                .custom_parser(|text| {
+                                    parse_authoring_plate_count(text, &rejected_text)
+                                })
+                                .update_while_editing(false),
+                        );
+                        author_input_focused |= authoring_number_stays_pending(
+                            &response,
+                            rejected_text.into_inner(),
+                            &mut self.author_input_error,
+                            "初始板块数",
                         );
                     });
-                    if self.world_pipeline == WorldPipeline::Formation {
+                    if editing.world_pipeline == WorldPipeline::Formation {
                         ui.horizontal(|ui| {
                             ui.label("驱动");
                             ui.radio_value(
-                                &mut self.relief_spec.sea_level_policy,
+                                &mut editing.relief_spec.sea_level_policy,
                                 SeaLevelPolicy::WaterInventory,
                                 "陆壳比例",
                             )
                             .on_hover_text("物理解：海平面由表层水量与地形共同决定");
                             ui.radio_value(
-                                &mut self.relief_spec.sea_level_policy,
+                                &mut editing.relief_spec.sea_level_policy,
                                 SeaLevelPolicy::TargetLandFraction,
                                 "陆地占比",
                             )
@@ -2120,19 +2796,42 @@ impl eframe::App for TemplateApp {
                         });
                     }
                     let controls = formation_authoring_control_state(
-                        self.world_pipeline,
-                        &self.relief_spec,
+                        editing.world_pipeline,
+                        &editing.relief_spec,
                         published_area_summary,
                     );
                     if controls.land_fraction_enabled {
-                        ui.add(
+                        let current_fraction = editing.relief_spec.target_land_fraction;
+                        let rejected_fraction =
+                            rejected_authoring_text(&self.author_input_error, "陆地占比");
+                        let rejected_text = std::cell::RefCell::new(None);
+                        let response = ui.add(
                             egui::Slider::new(
-                                &mut self.relief_spec.target_land_fraction,
+                                &mut editing.relief_spec.target_land_fraction,
                                 crate::world::natural::MIN_TARGET_LAND_FRACTION
                                     ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
                             )
                             .text("陆地占比")
-                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
+                            .custom_parser(|text| {
+                                parse_authoring_percentage(
+                                    text,
+                                    current_fraction,
+                                    crate::world::natural::MIN_TARGET_LAND_FRACTION
+                                        ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
+                                    &rejected_text,
+                                )
+                            })
+                            .custom_formatter(move |value, _| {
+                                rejected_fraction
+                                    .clone()
+                                    .unwrap_or_else(|| format_authoring_percentage(value))
+                            }),
+                        );
+                        author_input_focused |= authoring_number_stays_pending(
+                            &response,
+                            rejected_text.into_inner(),
+                            &mut self.author_input_error,
+                            "陆地占比",
                         );
                     } else {
                         let mut measured_land_fraction = controls.displayed_land_fraction;
@@ -2145,23 +2844,49 @@ impl eframe::App for TemplateApp {
                         .on_disabled_hover_text("陆壳比例驱动时，陆地占比由物理水线推算");
                     }
                     ui.collapsing("高级", |ui| {
-                        ui.add_enabled(
-                            controls.continental_fraction_enabled,
-                            egui::Slider::new(
-                                &mut self.tectonic_spec.continental_crust_fraction,
-                                MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
+                        let current_fraction = editing.tectonic_spec.continental_crust_fraction;
+                        let rejected_fraction =
+                            rejected_authoring_text(&self.author_input_error, "初始大陆地壳比例");
+                        let rejected_text = std::cell::RefCell::new(None);
+                        let response = ui
+                            .add_enabled(
+                                controls.continental_fraction_enabled,
+                                egui::Slider::new(
+                                    &mut editing.tectonic_spec.continental_crust_fraction,
+                                    MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
+                                )
+                                .text(if controls.continental_fraction_enabled {
+                                    "初始大陆地壳比例"
+                                } else {
+                                    "初始大陆地壳比例（预设值）"
+                                })
+                                .custom_parser(|text| {
+                                    parse_authoring_percentage(
+                                        text,
+                                        current_fraction,
+                                        MIN_CONTINENTAL_CRUST_FRACTION
+                                            ..=MAX_CONTINENTAL_CRUST_FRACTION,
+                                        &rejected_text,
+                                    )
+                                })
+                                .custom_formatter(
+                                    move |value, _| {
+                                        rejected_fraction
+                                            .clone()
+                                            .unwrap_or_else(|| format_authoring_percentage(value))
+                                    },
+                                ),
                             )
-                            .text(if controls.continental_fraction_enabled {
-                                "初始大陆地壳比例"
-                            } else {
-                                "初始大陆地壳比例（预设值）"
-                            })
-                            .custom_formatter(|value, _| format!("{:.0}%", value * 100.0)),
-                        )
-                        .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
+                            .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
+                        author_input_focused |= authoring_number_stays_pending(
+                            &response,
+                            rejected_text.into_inner(),
+                            &mut self.author_input_error,
+                            "初始大陆地壳比例",
+                        );
                     });
                     egui::ComboBox::from_label("构造活动")
-                        .selected_text(activity_label(self.tectonic_spec.activity))
+                        .selected_text(activity_label(editing.tectonic_spec.activity))
                         .show_ui(ui, |ui| {
                             for activity in [
                                 TectonicActivity::Quiet,
@@ -2169,31 +2894,26 @@ impl eframe::App for TemplateApp {
                                 TectonicActivity::Active,
                             ] {
                                 ui.selectable_value(
-                                    &mut self.tectonic_spec.activity,
+                                    &mut editing.tectonic_spec.activity,
                                     activity,
                                     activity_label(activity),
                                 );
                             }
                         });
-                    if self.world_pipeline == WorldPipeline::Formation {
+                    if editing.world_pipeline == WorldPipeline::Formation {
                         egui::ComboBox::from_label("质量档位")
-                            .selected_text(quality_tier_label(self.formation_quality_profile))
+                            .selected_text(quality_tier_label(editing.formation_quality_profile))
                             .show_ui(ui, |ui| {
                                 for profile in [
                                     crate::world::natural::NaturalQualityProfile::Draft,
                                     crate::world::natural::NaturalQualityProfile::Standard,
                                     crate::world::natural::NaturalQualityProfile::High,
                                 ] {
-                                    if ui
-                                        .selectable_value(
-                                            &mut self.formation_quality_profile,
-                                            profile,
-                                            quality_tier_label(profile),
-                                        )
-                                        .changed()
-                                    {
-                                        self.prewarm_formation_geometry();
-                                    }
+                                    ui.selectable_value(
+                                        &mut editing.formation_quality_profile,
+                                        profile,
+                                        quality_tier_label(profile),
+                                    );
                                 }
                             })
                             .response
@@ -2204,9 +2924,9 @@ impl eframe::App for TemplateApp {
                     ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效");
                     // Both actions must see this pass's edited preset and quality profile.
                     let rebuild_blocked = procedural_coast_unsupported(
-                        self.formation_spec.preset,
-                        self.world_pipeline,
-                        self.formation_quality_profile,
+                        editing.formation_spec.preset,
+                        editing.world_pipeline,
+                        editing.formation_quality_profile,
                     );
                     if ui
                         .add_enabled(!rebuild_blocked, egui::Button::new("新种子并重建"))
@@ -2229,6 +2949,30 @@ impl eframe::App for TemplateApp {
                         );
                     }
                     let _ = self.show_pending_world_build_status(ui);
+                    if new_seed {
+                        editing.world_seed = rand::random();
+                        rebuild = true;
+                    }
+                    // Settle this frame's edit before drawing its save/map status.
+                    self.finish_author_input(
+                        editing,
+                        author_input_focused,
+                        ctx.input(|input| input.pointer.any_down()),
+                        cancel_input_edit,
+                    );
+                    if let Some(error) = &self.author_input_error {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            format!(
+                                "无效{} {}：请按控件单位输入范围内的数值",
+                                error.field, error.text
+                            ),
+                        );
+                    }
+                    // Variable status rows follow the numeric editors so their
+                    // auto IDs and pending text survive status changes.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    self.show_project_status(ui, ctx);
 
                     self.spherical_presentation.read_resource(|current| {
                         let Some(presentation) = current.as_ref() else {
@@ -2310,18 +3054,180 @@ impl eframe::App for TemplateApp {
         // The control panel above drew the pending build's status row, so this
         // pass's 取消 input is already observed: a staged completion may settle
         // now, and this pass's actions and canvas then see the settled world.
-        self.poll_world_build(ctx);
-
-        if new_seed {
-            self.world_seed = rand::random();
-            rebuild = true;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(action) = self.project_shortcut(ctx) {
+                project_actions.push(action);
+            }
+            self.show_project_dialogs(ctx, &mut project_actions);
+            for action in project_actions {
+                self.dispatch_project_action(action, ctx);
+            }
+            self.intercept_project_close(ctx);
         }
         if rebuild {
-            spherical_actions.push(SphericalCanvasAction::RegenerateAsSpherical);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.dispatch_project_action(project_ui::ProjectAction::RetryBuild, ctx);
+            #[cfg(target_arch = "wasm32")]
+            self.request_spherical_world_build();
         }
+
+        // All authoring, file, close and cancel input precedes every completion.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.poll_project_io(ctx);
+        self.poll_world_build(ctx);
+        self.poll_amplified_detail(ctx);
+        self.try_start_open_build();
 
         self.show_active_canvas_after_actions(ctx, std::mem::take(&mut spherical_actions));
     }
+}
+
+impl TemplateApp {
+    fn finish_author_input(
+        &mut self,
+        editing: AuthorInputs,
+        focused: bool,
+        pointer_down: bool,
+        escape: bool,
+    ) {
+        self.input_edit = None;
+        if escape {
+            self.author_input_error = None;
+            return;
+        }
+        if !focused {
+            self.author_input_error = None;
+        }
+        if focused || pointer_down {
+            if focused || editing != *self.authoring.draft() {
+                self.pending_open_build = None;
+                self.input_edit = Some(editing);
+            }
+        } else {
+            let previous_geometry_key = self.formation_geometry_key();
+            match self
+                .authoring
+                .commit("编辑生成参数".to_owned(), editing.clone())
+            {
+                Ok(true) => {
+                    self.cancel_world_build();
+                    if self.formation_geometry_key() != previous_geometry_key {
+                        self.prewarm_formation_geometry();
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.pending_open_build = None;
+                    self.input_edit = Some(editing);
+                    self.spherical_runtime_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn parse_authoring_plate_count(
+    text: &str,
+    rejected: &std::cell::RefCell<Option<String>>,
+) -> Option<f64> {
+    let value = normalized_authoring_number(text)
+        .parse::<u16>()
+        .ok()
+        .filter(|value| (MIN_PLATE_COUNT..=MAX_PLATE_COUNT).contains(value));
+    if value.is_none() {
+        rejected.replace(Some(text.to_owned()));
+    }
+    value.map(f64::from)
+}
+
+fn format_authoring_percentage(value: f64) -> String {
+    format!("{}%", value as f32 * 100.0)
+}
+
+fn parse_authoring_percentage(
+    text: &str,
+    current: f32,
+    range: std::ops::RangeInclusive<f32>,
+    rejected: &std::cell::RefCell<Option<String>>,
+) -> Option<f64> {
+    let normalized = normalized_authoring_number(text);
+    let number = normalized.strip_suffix('%').unwrap_or(&normalized);
+    let displayed = format_authoring_percentage(f64::from(current));
+    // A displayed percentage can lose one f32 bit on division. Keep the authored
+    // bits when confirming the displayed value so a no-op cannot create a recipe.
+    if number == displayed.trim_end_matches('%') {
+        return Some(f64::from(current));
+    }
+    let value = number
+        .parse::<f64>()
+        .ok()
+        .map(|percent| (percent / 100.0) as f32)
+        .filter(|fraction| fraction.is_finite() && range.contains(fraction));
+    if value.is_none() {
+        rejected.replace(Some(text.to_owned()));
+    }
+    value.map(f64::from)
+}
+
+fn normalized_authoring_number(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| if c == '−' { '-' } else { c })
+        .collect()
+}
+
+fn rejected_authoring_text(error: &Option<RejectedAuthorInput>, field: &str) -> Option<String> {
+    error
+        .as_ref()
+        .filter(|error| error.field == field)
+        .map(|error| error.text.clone())
+}
+
+fn authoring_number_stays_pending(
+    response: &egui::Response,
+    rejected: Option<String>,
+    error: &mut Option<RejectedAuthorInput>,
+    field: &'static str,
+) -> bool {
+    // DragValue removes its temporary string on focus loss before returning.
+    // Restore a rejected parse so saving cannot silently capture the old number.
+    // Slider parses while typing; unchanged Enter need not reparse. After blur
+    // its response can use the track ID, so retain the original numeric-editor ID.
+    let rejected = rejected
+        .map(|text| RejectedAuthorInput {
+            field,
+            widget_id: response.id,
+            text,
+        })
+        .or_else(|| {
+            if !response.changed()
+                && !response
+                    .ctx
+                    .input(|input| input.key_pressed(egui::Key::Escape))
+            {
+                error.as_ref().filter(|error| error.field == field).cloned()
+            } else {
+                None
+            }
+        });
+    if let Some(rejected) = rejected {
+        let id = rejected.widget_id;
+        response
+            .ctx
+            .data_mut(|data| data.insert_temp(id, rejected.text.clone()));
+        response.ctx.memory_mut(|memory| {
+            if !memory.has_focus(id) {
+                memory.request_focus(id);
+            }
+        });
+        *error = Some(rejected);
+        return true;
+    }
+    if response.changed() {
+        *error = None;
+    }
+    response.has_focus()
 }
 
 fn activity_label(activity: TectonicActivity) -> &'static str {
@@ -2531,6 +3437,12 @@ fn apply_formation_preset_selection(
 /// Runtime initialization or explicit spherical-regeneration failures.
 #[derive(Debug, Error)]
 pub enum AppRuntimeError {
+    /// The request lost publication authority before commit.
+    #[error("世界构建结果已失效")]
+    StaleWorldBuild,
+    /// A worker or publication preparation failed.
+    #[error("{0}")]
+    WorldBuild(String),
     /// The formal spherical candidate or GPU publication failed atomically.
     #[error(transparent)]
     SphericalPresentation(#[from] SphericalPresentationError),
@@ -2585,7 +3497,7 @@ mod natural_app_tests {
         )
     }
 
-    fn request_test_render_state() -> eframe::egui_wgpu::RenderState {
+    pub(super) fn request_test_render_state() -> eframe::egui_wgpu::RenderState {
         use eframe::egui_wgpu::{self, wgpu};
         use std::sync::Arc;
 
@@ -2668,15 +3580,12 @@ mod natural_app_tests {
         // Headless egui input exercises actual control ordering without a GPU or OS input.
         let context = egui::Context::default();
         context.enable_accesskit();
-        let mut app = TemplateApp {
-            world_pipeline: WorldPipeline::Formation,
-            formation_quality_profile: Draft,
-            formation_spec: WorldFormationSpec {
-                preset: WorldFormationPreset::ProceduralContinents,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut app = TemplateApp::default();
+        edit_inputs(&mut app, |inputs| {
+            inputs.world_pipeline = WorldPipeline::Formation;
+            inputs.formation_quality_profile = Draft;
+            inputs.formation_spec.preset = WorldFormationPreset::ProceduralContinents;
+        });
         let render = |app: &mut TemplateApp, events| {
             context.run(
                 egui::RawInput {
@@ -2730,7 +3639,7 @@ mod natural_app_tests {
             // Popup geometry becomes interactive on the next pass.
             output = render(&mut app, Vec::new());
             output = render(&mut app, click(&output, &super::quality_tier_label(to)));
-            assert_eq!(app.formation_quality_profile, to);
+            assert_eq!(app.authoring.draft().formation_quality_profile, to);
             for label in ["新种子并重建", "按当前参数重建"] {
                 let node = &output
                     .platform_output
@@ -2759,15 +3668,12 @@ mod natural_app_tests {
             (WorldPipeline::Formation, High),
             (WorldPipeline::LegacyFoundation, Standard),
         ] {
-            let mut app = TemplateApp {
-                world_pipeline: pipeline,
-                formation_quality_profile: profile,
-                formation_spec: WorldFormationSpec {
-                    preset: WorldFormationPreset::ProceduralContinents,
-                    ..Default::default()
-                },
-                ..Default::default()
-            };
+            let mut app = TemplateApp::default();
+            edit_inputs(&mut app, |inputs| {
+                inputs.world_pipeline = pipeline;
+                inputs.formation_quality_profile = profile;
+                inputs.formation_spec.preset = WorldFormationPreset::ProceduralContinents;
+            });
             app.prewarm_formation_geometry();
             app.request_spherical_world_build();
             assert!(
@@ -2783,6 +3689,537 @@ mod natural_app_tests {
                 Some(super::PROCEDURAL_COAST_DRAFT_ONLY_TEXT)
             );
         }
+    }
+
+    fn edit_inputs(app: &mut TemplateApp, edit: impl FnOnce(&mut super::AuthorInputs)) {
+        let mut inputs = app.authoring.draft().clone();
+        edit(&mut inputs);
+        app.authoring.commit("test".to_owned(), inputs).unwrap();
+    }
+
+    #[test]
+    fn review_regression_nested_unknown_scientific_inputs_are_rejected_in_both_layouts() {
+        let current = serde_json::to_value(TemplateApp::default()).unwrap();
+        let legacy = current["inputs"].clone();
+        for field in [
+            "spherical_space_spec",
+            "formation_spec",
+            "tectonic_spec",
+            "geologic_spec",
+        ] {
+            let mut unknown_current = current.clone();
+            unknown_current["inputs"][field]["unknown_future_science"] = serde_json::json!("v2");
+            assert!(
+                serde_json::from_value::<TemplateApp>(unknown_current).is_err(),
+                "current {field}"
+            );
+            let mut unknown_legacy = legacy.clone();
+            unknown_legacy[field]["unknown_future_science"] = serde_json::json!("v2");
+            assert!(
+                serde_json::from_value::<TemplateApp>(unknown_legacy).is_err(),
+                "legacy {field}"
+            );
+        }
+    }
+
+    pub(super) fn authoring_keyboard_frame(
+        app: &mut TemplateApp,
+        context: &egui::Context,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        context.run(world_build_raw_input(events), |context| {
+            eframe::App::update(app, context, &mut eframe::Frame::_new_kittest());
+        })
+    }
+
+    pub(super) fn focus_authoring_number(
+        app: &mut TemplateApp,
+        context: &egui::Context,
+        text: &str,
+    ) {
+        fn find_number(shape: &egui::epaint::Shape, text: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.text() == text => {
+                    Some(egui::Rect::from_min_size(shape.pos, shape.galley.size()).center())
+                }
+                egui::epaint::Shape::Vec(shapes) => {
+                    shapes.iter().find_map(|shape| find_number(shape, text))
+                }
+                _ => None,
+            }
+        }
+        let output = authoring_keyboard_frame(app, context, Vec::new());
+        let position = output
+            .shapes
+            .iter()
+            .find_map(|shape| find_number(&shape.shape, text))
+            .expect("the actual authoring number is visible");
+        for pressed in [true, false] {
+            authoring_keyboard_frame(
+                app,
+                context,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        authoring_keyboard_frame(app, context, Vec::new());
+    }
+
+    fn authoring_key(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn review_regression_seed_keyboard_text_commits_once_on_enter_and_escape_discards() {
+        let mut app = TemplateApp::default();
+        let context = egui::Context::default();
+        let before = app.authoring.draft().clone();
+        let token = app.authoring.begin_build();
+        focus_authoring_number(&mut app, &context, &before.world_seed.to_string());
+        for text in ["7", "1", "7"] {
+            authoring_keyboard_frame(&mut app, &context, vec![egui::Event::Text(text.to_owned())]);
+            assert_eq!(app.authoring.revision(), 0, "typing is an uncommitted edit");
+            assert_eq!(app.authoring.draft(), &before);
+            assert!(app.authoring.accepts(token));
+        }
+        authoring_keyboard_frame(&mut app, &context, vec![authoring_key(egui::Key::Enter)]);
+        assert_eq!(app.authoring.draft().world_seed, 717);
+        assert_eq!(app.authoring.revision(), 1);
+        assert!(!app.authoring.accepts(token));
+        focus_authoring_number(&mut app, &context, "717");
+        for text in ["2", "3"] {
+            authoring_keyboard_frame(&mut app, &context, vec![egui::Event::Text(text.to_owned())]);
+            assert_eq!(app.authoring.revision(), 1);
+        }
+        authoring_keyboard_frame(&mut app, &context, vec![authoring_key(egui::Key::Escape)]);
+        assert_eq!(app.authoring.draft().world_seed, 717);
+        assert_eq!(app.authoring.revision(), 1);
+        assert!(app.authoring.undo());
+        assert_eq!(app.authoring.draft(), &before);
+        assert!(!app.authoring.undo());
+    }
+
+    #[test]
+    fn review_regression_plate_keyboard_text_stays_pending_until_confirmation() {
+        let mut app = TemplateApp::default();
+        let context = egui::Context::default();
+        let before = app.authoring.draft().tectonic_spec.plate_count;
+        focus_authoring_number(&mut app, &context, &before.to_string());
+        for text in ["1", "8"] {
+            authoring_keyboard_frame(&mut app, &context, vec![egui::Event::Text(text.to_owned())]);
+            assert_eq!(app.authoring.revision(), 0);
+            assert_eq!(app.authoring.draft().tectonic_spec.plate_count, before);
+        }
+        authoring_keyboard_frame(&mut app, &context, vec![authoring_key(egui::Key::Enter)]);
+        assert_eq!(app.authoring.draft().tectonic_spec.plate_count, 18);
+        assert_eq!(app.authoring.revision(), 1);
+    }
+
+    // Actual widgets are required: egui clamps/parses before the authoring transaction.
+    fn final_fix_percentage_app(continental: bool, value: f32) -> TemplateApp {
+        let mut inputs = super::AuthorInputs {
+            world_pipeline: WorldPipeline::LegacyFoundation,
+            ..Default::default()
+        };
+        inputs.relief_spec.target_land_fraction = if continental { 0.31 } else { value };
+        inputs.tectonic_spec.continental_crust_fraction = if continental { value } else { 0.31 };
+        TemplateApp {
+            authoring: super::AuthoringSession::new(inputs).unwrap(),
+            ..TemplateApp::default()
+        }
+    }
+
+    fn final_fix_focus_percentage(app: &mut TemplateApp, ctx: &egui::Context, continental: bool) {
+        let output = authoring_keyboard_frame(app, ctx, Vec::new());
+        let mut visible = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut visible);
+        }
+        if continental
+            && !visible
+                .iter()
+                .any(|text| text.ends_with('%') && text != "31%")
+        {
+            focus_authoring_number(app, ctx, "高级");
+        }
+        let output = authoring_keyboard_frame(app, ctx, Vec::new());
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut text);
+        }
+        let percentage = text
+            .iter()
+            .find(|text| text.ends_with('%') && *text != "31%")
+            .expect("the editable percentage is rendered")
+            .clone();
+        focus_authoring_number(app, ctx, &percentage);
+    }
+
+    #[test]
+    fn final_fix_percentage_keyboard_accepts_display_units_and_escape_discards() {
+        for continental in [false, true] {
+            for input in ["40%", "40"] {
+                let mut app = final_fix_percentage_app(continental, 0.38);
+                let ctx = egui::Context::default();
+                let before = app.authoring.draft().clone();
+                let token = app.authoring.begin_build();
+                final_fix_focus_percentage(&mut app, &ctx, continental);
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text(input.into())]);
+                assert_eq!(app.authoring.draft(), &before);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+                let value = if continental {
+                    app.authoring
+                        .draft()
+                        .tectonic_spec
+                        .continental_crust_fraction
+                } else {
+                    app.authoring.draft().relief_spec.target_land_fraction
+                };
+                assert_eq!(value, 0.40, "continental={continental} input={input}");
+                assert_eq!(app.authoring.revision(), 1);
+                assert!(!app.authoring.accepts(token));
+                let committed = app.authoring.draft().clone();
+                final_fix_focus_percentage(&mut app, &ctx, continental);
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("50%".into())]);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Escape)]);
+                assert_eq!(app.authoring.draft(), &committed);
+                assert_eq!(app.authoring.revision(), 1);
+                assert!(app.authoring.undo());
+                assert_eq!(app.authoring.draft(), &before);
+                assert!(!app.authoring.undo());
+            }
+        }
+    }
+
+    #[test]
+    fn final_fix_percentage_untouched_enter_preserves_noninteger_recipe_bits() {
+        for continental in [false, true] {
+            let mut app = final_fix_percentage_app(continental, 0.38123456);
+            app.authoring.mark_saved(app.authoring.capture_save());
+            assert!(!app.authoring.is_dirty());
+            let ctx = egui::Context::default();
+            let before = app.authoring.draft().clone();
+            let identity = before.recipe_id().unwrap();
+            let token = app.authoring.begin_build();
+            final_fix_focus_percentage(&mut app, &ctx, continental);
+            authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+            assert_eq!(app.authoring.draft(), &before, "continental={continental}");
+            assert_eq!(app.authoring.draft().recipe_id().unwrap(), identity);
+            assert_eq!(app.authoring.revision(), 0);
+            assert!(app.authoring.accepts(token));
+            assert!(!app.authoring.undo());
+            assert!(
+                app.input_edit.is_none(),
+                "untouched Enter finishes without a pending edit"
+            );
+        }
+    }
+
+    #[test]
+    fn final_fix_plate_keyboard_rejects_outside_domain_before_clamp_or_round() {
+        for invalid in ["0", "999", "2.5"] {
+            for finish in [egui::Key::Enter, egui::Key::Tab] {
+                let mut app = TemplateApp::default();
+                let ctx = egui::Context::default();
+                let before = app.authoring.draft().clone();
+                let token = app.authoring.begin_build();
+                focus_authoring_number(
+                    &mut app,
+                    &ctx,
+                    &before.tectonic_spec.plate_count.to_string(),
+                );
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text(invalid.into())]);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(finish)]);
+                assert_eq!(
+                    app.authoring.draft(),
+                    &before,
+                    "invalid={invalid} finish={finish:?}"
+                );
+                assert_eq!(app.authoring.revision(), 0);
+                assert!(app.authoring.accepts(token));
+                assert!(app.input_edit.is_some());
+                assert!(!app.authoring.undo());
+                let output = authoring_keyboard_frame(&mut app, &ctx, Vec::new());
+                let mut text = Vec::new();
+                for shape in &output.shapes {
+                    collect_text(&shape.shape, &mut text);
+                }
+                assert!(text.iter().any(|text| text == invalid), "rejected raw text stays visible: invalid={invalid} finish={finish:?} rendered={text:?}");
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    app.dispatch_project_action(super::project_ui::ProjectAction::Save, &ctx);
+                    assert!(
+                        app.input_edit.is_some(),
+                        "saving refuses the pending invalid text"
+                    );
+                }
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Escape)]);
+                assert_eq!(app.authoring.draft(), &before);
+                assert!(app.input_edit.is_none());
+                focus_authoring_number(
+                    &mut app,
+                    &ctx,
+                    &before.tectonic_spec.plate_count.to_string(),
+                );
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("18".into())]);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+                assert_eq!(app.authoring.draft().tectonic_spec.plate_count, 18);
+                assert_eq!(app.authoring.revision(), 1);
+                assert!(!app.authoring.accepts(token));
+            }
+        }
+    }
+
+    #[test]
+    fn final_fix_percentage_keyboard_rejects_domain_errors_without_committing() {
+        for continental in [false, true] {
+            for invalid in ["0%", "999%", "NaN"] {
+                let mut app = final_fix_percentage_app(continental, 0.38);
+                let ctx = egui::Context::default();
+                let before = app.authoring.draft().clone();
+                let token = app.authoring.begin_build();
+                final_fix_focus_percentage(&mut app, &ctx, continental);
+                authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text(invalid.into())]);
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+                assert_eq!(
+                    app.authoring.draft(),
+                    &before,
+                    "continental={continental} invalid={invalid}"
+                );
+                assert_eq!(app.authoring.revision(), 0);
+                assert!(app.authoring.accepts(token));
+                assert!(
+                    app.input_edit.is_some(),
+                    "continental={continental} invalid={invalid} focused={:?} error={:?}",
+                    ctx.memory(|m| m.focused()),
+                    app.author_input_error
+                );
+                authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Escape)]);
+                assert!(app.input_edit.is_none());
+                assert_eq!(app.authoring.draft(), &before);
+            }
+        }
+    }
+
+    #[test]
+    fn final_fix_pending_status_renders_actual_surface_phase_without_observation() {
+        let mut app = TemplateApp::default();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (_, pending) = super::prepare_pending_world_build(
+            app.authoring.draft().world_pipeline,
+            MemoryStageCache::default(),
+            receiver,
+            (
+                app.authoring.begin_build(),
+                crate::engine::BuildCancellation::new(),
+            ),
+            false,
+        );
+        app.world_build = Some(pending);
+        assert!(app.build_observation.is_none());
+        let ctx = egui::Context::default();
+        let output = ctx.run(test_raw_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.show_pending_world_build_status(ui);
+            });
+        });
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut text);
+        }
+        assert!(
+            text.iter().any(|text| text.contains("地表准备")),
+            "actual status text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn final_fix_invalid_numbers_can_be_corrected_in_place() {
+        for field in ["plates", "land", "continental"] {
+            let continental = field == "continental";
+            let mut app = final_fix_percentage_app(continental, 0.38);
+            let ctx = egui::Context::default();
+            let token = app.authoring.begin_build();
+            if field == "plates" {
+                focus_authoring_number(&mut app, &ctx, "12");
+            } else {
+                final_fix_focus_percentage(&mut app, &ctx, continental);
+            }
+            authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("0".into())]);
+            authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Tab)]);
+            assert!(app.input_edit.is_some(), "field={field}");
+            assert_eq!(app.authoring.revision(), 0);
+            assert!(app.authoring.accepts(token));
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                app.dispatch_project_action(super::project_ui::ProjectAction::Save, &ctx);
+                assert!(app.input_edit.is_some());
+            }
+            authoring_keyboard_frame(&mut app, &ctx, Vec::new());
+            let replacement = if field == "plates" { "18" } else { "40%" };
+            let correction_output = authoring_keyboard_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::Key {
+                        key: egui::Key::A,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers: egui::Modifiers {
+                            ctrl: true,
+                            command: true,
+                            ..egui::Modifiers::NONE
+                        },
+                    },
+                    egui::Event::Text(replacement.into()),
+                ],
+            );
+            authoring_keyboard_frame(&mut app, &ctx, vec![authoring_key(egui::Key::Enter)]);
+            let mut correction_text = Vec::new();
+            for shape in &correction_output.shapes {
+                collect_text(&shape.shape, &mut correction_text);
+            }
+            assert!(
+                app.input_edit.is_none(),
+                "field={field} error={:?} focus={:?} input={:?} correction={correction_text:?}",
+                app.author_input_error,
+                ctx.memory(|m| m.focused()),
+                app.input_edit
+            );
+            assert!(app.author_input_error.is_none());
+            assert_eq!(app.authoring.revision(), 1);
+            assert!(!app.authoring.accepts(token));
+            match field {
+                "plates" => assert_eq!(app.authoring.draft().tectonic_spec.plate_count, 18),
+                "land" => assert_eq!(app.authoring.draft().relief_spec.target_land_fraction, 0.40),
+                _ => assert_eq!(
+                    app.authoring
+                        .draft()
+                        .tectonic_spec
+                        .continental_crust_fraction,
+                    0.40
+                ),
+            }
+            assert!(app.authoring.undo());
+            assert!(!app.authoring.undo());
+        }
+    }
+
+    // The cheapest actual worker proves phase updates with observation disabled;
+    // a renderer-only fixture cannot prove that production advances its state.
+    #[test]
+    fn final_fix_actual_worker_phase_is_request_owned_and_never_persisted() {
+        let mut inputs = super::AuthorInputs {
+            world_pipeline: WorldPipeline::LegacyFoundation,
+            ..Default::default()
+        };
+        inputs.spherical_space_spec.target_cell_count = 162;
+        let mut app = TemplateApp {
+            authoring: super::AuthoringSession::new(inputs).unwrap(),
+            ..TemplateApp::default()
+        };
+        app.request_spherical_world_build();
+        assert!(app.build_observation.is_none());
+        let pending = app.world_build.as_mut().unwrap();
+        pending.worker.take().unwrap().join().unwrap();
+        let old_phase = pending.phase.clone();
+        assert_eq!(
+            *old_phase.lock().unwrap(),
+            super::WorldBuildPhase::Presentation
+        );
+        assert!(pending.receiver.try_recv().unwrap().result.is_ok());
+        let ctx = egui::Context::default();
+        let output = ctx.run(test_raw_input(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.show_pending_world_build_status(ui);
+            });
+        });
+        let mut text = Vec::new();
+        for shape in &output.shapes {
+            collect_text(&shape.shape, &mut text);
+        }
+        assert!(text.iter().any(|text| text.contains("显示准备/发布")));
+        app.world_build = None;
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let (_, next) = super::prepare_pending_world_build(
+            WorldPipeline::LegacyFoundation,
+            MemoryStageCache::default(),
+            receiver,
+            (
+                app.authoring.begin_build(),
+                crate::engine::BuildCancellation::new(),
+            ),
+            false,
+        );
+        super::WorldBuildPhase::Graph.enter(Some(&old_phase));
+        assert_eq!(*next.phase.lock().unwrap(), super::WorldBuildPhase::Surface);
+        app.world_build = Some(next);
+        let wire = serde_json::to_value(&app).unwrap();
+        assert!(wire.get("world_build").is_none());
+        assert!(wire.get("phase").is_none());
+        assert!(wire.get("author_input_error").is_none());
+    }
+    #[test]
+    fn persisted_recipe_has_one_input_source_and_no_runtime_or_history() {
+        let app = TemplateApp::default();
+        let wire = serde_json::to_value(&app).unwrap();
+        assert!(wire.get("inputs").is_some());
+        assert!(wire.get("world_seed").is_none());
+        assert!(wire.get("authoring").is_none());
+        assert!(wire.get("history").is_none());
+        assert!(wire.get("stage_cache").is_none());
+        assert!(wire.get("spherical_presentation").is_none());
+    }
+
+    #[test]
+    fn persisted_legacy_inputs_import_once_and_unknown_recipe_schema_is_rejected() {
+        let legacy = serde_json::json!({ "world_seed": 717 });
+        let app: TemplateApp = serde_json::from_value(legacy).unwrap();
+        assert!(app.authoring.is_dirty());
+        let wire = serde_json::to_value(&app).unwrap();
+        assert_eq!(wire["inputs"]["world_seed"], 717);
+        assert!(wire.get("world_seed").is_none());
+        let mut unknown = wire;
+        unknown["schema_version"] = serde_json::json!(u16::MAX);
+        assert!(serde_json::from_value::<TemplateApp>(unknown).is_err());
+
+        // eframe's existing autosaves use RON: legacy scalars and enums have
+        // no Option wrapper, unlike the new optional recipe container.
+        let mut storage = TestStorage::default();
+        eframe::Storage::set_string(&mut storage, eframe::APP_KEY, "(world_seed:717,world_origin:SphericalV1,world_pipeline:LegacyFoundation,formation_quality_profile:standard)".to_owned());
+        let mut imported: TemplateApp = eframe::get_value(&storage, eframe::APP_KEY).unwrap();
+        assert_eq!(imported.authoring.draft().world_seed, 717);
+        assert_eq!(
+            imported.authoring.draft().world_pipeline,
+            WorldPipeline::LegacyFoundation
+        );
+        assert_eq!(
+            imported.authoring.draft().formation_quality_profile,
+            crate::world::natural::NaturalQualityProfile::Standard
+        );
+        assert!(imported.authoring.is_dirty());
+        assert!(!imported.authoring.undo());
+
+        // A recipe serialized at the root is the legacy flat input layout.
+        // Reuse its production fields to exercise every nested strict decoder in RON.
+        let inputs = imported.authoring.draft().clone();
+        eframe::set_value(&mut storage, eframe::APP_KEY, &inputs);
+        let fully_imported: TemplateApp = eframe::get_value(&storage, eframe::APP_KEY).unwrap();
+        assert_eq!(fully_imported.authoring.draft(), &inputs);
     }
 
     #[derive(Default)]
@@ -2835,14 +4272,16 @@ mod natural_app_tests {
 
     fn create_cpu_published_app() -> TemplateApp {
         let mut app = TemplateApp::default();
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let candidate = super::build_spherical_presentation_candidate(
-            RootSeed::new(app.world_seed),
-            &app.spherical_space_spec,
-            &app.formation_spec,
-            &app.tectonic_spec,
-            &app.relief_spec,
-            &app.geologic_spec,
+            RootSeed::new(app.authoring.draft().world_seed),
+            &app.authoring.draft().spherical_space_spec,
+            &app.authoring.draft().formation_spec,
+            &app.authoring.draft().tectonic_spec,
+            &app.authoring.draft().relief_spec,
+            &app.authoring.draft().geologic_spec,
             &mut app.stage_cache,
             app.spherical_canvas_state.field_state(),
             &DisplayRevisionClock::default(),
@@ -2884,11 +4323,13 @@ mod natural_app_tests {
             .is_some());
     }
 
-    fn create_from_persisted(
+    pub(super) fn create_from_persisted(
         mut persisted: TemplateApp,
         render_state: &eframe::egui_wgpu::RenderState,
     ) -> TemplateApp {
-        persisted.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut persisted, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let mut storage = TestStorage::default();
         eframe::set_value(&mut storage, eframe::APP_KEY, &persisted);
         let restored: TemplateApp =
@@ -3005,7 +4446,9 @@ mod natural_app_tests {
                     current.source().clone(),
                 )
             });
-        app.world_seed = app.world_seed.wrapping_add(1);
+        edit_inputs(&mut app, |inputs| {
+            inputs.world_seed = inputs.world_seed.wrapping_add(1)
+        });
 
         app.try_rebuild_spherical_world(&render_state).unwrap();
         let (address_after, packet_after, source_after) =
@@ -3020,15 +4463,22 @@ mod natural_app_tests {
         assert_eq!(publication_address, address_after);
         assert!(!Arc::ptr_eq(&packet_before, &packet_after));
         assert_ne!(source_after, source_before);
-        assert_eq!(source_after.root_seed(), RootSeed::new(app.world_seed));
+        assert_eq!(
+            source_after.root_seed(),
+            RootSeed::new(app.authoring.draft().world_seed)
+        );
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
         assert_eq!(
             app.active_runtime_graph(),
             Some(AppRuntimeGraph::SphericalNaturalFoundation)
         );
 
-        app.spherical_space_spec.target_cell_count = 1;
-        assert!(app.try_rebuild_spherical_world(&render_state).is_err());
+        let mut invalid = app.authoring.draft().clone();
+        invalid.spherical_space_spec.target_cell_count = 1;
+        assert!(app
+            .authoring
+            .commit("invalid space".into(), invalid)
+            .is_err());
         app.spherical_presentation.read_resource(|current| {
             let current = current.as_ref().unwrap();
             assert_eq!(publication_address, std::ptr::from_ref(current));
@@ -3037,7 +4487,9 @@ mod natural_app_tests {
         });
         assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
 
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let revisions_before_invalid_relief = app
             .spherical_presentation
             .read_resource(|current| current.as_ref().unwrap().revisions());
@@ -3048,8 +4500,12 @@ mod natural_app_tests {
             .get::<crate::gpu::spherical::SphericalFieldRenderer>()
             .unwrap()
             .upload_counters();
-        app.relief_spec.target_land_fraction = f32::NAN;
-        assert!(app.try_rebuild_spherical_world(&render_state).is_err());
+        let mut invalid = app.authoring.draft().clone();
+        invalid.relief_spec.target_land_fraction = f32::NAN;
+        assert!(app
+            .authoring
+            .commit("invalid relief".into(), invalid)
+            .is_err());
         app.spherical_presentation.read_resource(|current| {
             let current = current.as_ref().unwrap();
             assert_eq!(publication_address, std::ptr::from_ref(current));
@@ -3101,14 +4557,20 @@ mod natural_app_tests {
 
         let render_state = request_test_render_state();
         let mut persisted = TemplateApp::default();
-        persisted.spherical_space_spec.target_cell_count = 162;
-        persisted.relief_spec.target_land_fraction = 0.55;
+        edit_inputs(&mut persisted, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
+        edit_inputs(&mut persisted, |inputs| {
+            inputs.relief_spec.target_land_fraction = 0.55
+        });
         let mut app = create_from_persisted(persisted, &render_state);
 
         let (initial_actual, initial_elevation, initial_sea_level) = published_land_fraction(&app);
         assert!((initial_actual - 0.55).abs() <= 0.02);
 
-        app.relief_spec.target_land_fraction = 0.25;
+        edit_inputs(&mut app, |inputs| {
+            inputs.relief_spec.target_land_fraction = 0.25
+        });
         app.try_rebuild_spherical_world(&render_state).unwrap();
         let (rebuilt_actual, rebuilt_elevation, rebuilt_sea_level) = published_land_fraction(&app);
         assert!((rebuilt_actual - 0.25).abs() <= 0.02);
@@ -3145,7 +4607,7 @@ mod natural_app_tests {
         output.shapes.iter().map(|shape| count(&shape.shape)).sum()
     }
 
-    fn collect_text(shape: &egui::epaint::Shape, output: &mut Vec<String>) {
+    pub(super) fn collect_text(shape: &egui::epaint::Shape, output: &mut Vec<String>) {
         match shape {
             egui::epaint::Shape::Text(text) => output.push(text.galley.text().to_owned()),
             egui::epaint::Shape::Vec(shapes) => {
@@ -3161,7 +4623,7 @@ mod natural_app_tests {
         world_build_raw_input(Vec::new())
     }
 
-    fn prepare_test_replacement_candidate(
+    pub(super) fn prepare_test_replacement_candidate(
         app: &TemplateApp,
         root_seed: RootSeed,
         stage_cache: &mut MemoryStageCache,
@@ -3173,11 +4635,11 @@ mod natural_app_tests {
                     .expect("the fixture is published")
                     .prepare_replacement_candidate_for_view(
                         root_seed,
-                        &app.spherical_space_spec,
-                        &app.formation_spec,
-                        &app.tectonic_spec,
-                        &app.relief_spec,
-                        &app.geologic_spec,
+                        &app.authoring.draft().spherical_space_spec,
+                        &app.authoring.draft().formation_spec,
+                        &app.authoring.draft().tectonic_spec,
+                        &app.authoring.draft().relief_spec,
+                        &app.authoring.draft().geologic_spec,
                         stage_cache,
                         app.spherical_canvas_state.presentation_view_state(),
                         app.spherical_canvas_state.field_state(),
@@ -3215,7 +4677,7 @@ mod natural_app_tests {
         cancel_rect
     }
 
-    fn settle_queued_world_build(app: &mut TemplateApp) {
+    pub(super) fn settle_queued_world_build(app: &mut TemplateApp) {
         let context = egui::Context::default();
         // Staging and settlement are separate egui passes: only `Context::run`
         // advances `cumulative_pass_nr`, and a staged completion never settles
@@ -3235,7 +4697,7 @@ mod natural_app_tests {
         assert!(app.world_build.is_none());
     }
 
-    fn published_source(app: &TemplateApp) -> crate::view::SphericalPresentationSource {
+    pub(super) fn published_source(app: &TemplateApp) -> crate::view::SphericalPresentationSource {
         app.spherical_presentation.read_resource(|current| {
             current
                 .as_ref()
@@ -3256,8 +4718,11 @@ mod natural_app_tests {
     /// a self-proving `(0, n) == (0, n)`.
     fn published_cache_hits(app: &TemplateApp, cache: &MemoryStageCache) -> (usize, usize) {
         let mut probe = cache.clone();
-        let candidate =
-            prepare_test_replacement_candidate(app, RootSeed::new(app.world_seed), &mut probe);
+        let candidate = prepare_test_replacement_candidate(
+            app,
+            RootSeed::new(app.authoring.draft().world_seed),
+            &mut probe,
+        );
         let report = candidate.report();
         assert!(
             report.cache_hits() > 0,
@@ -3272,7 +4737,7 @@ mod natural_app_tests {
     /// are the real thing. The mesh is a minimal one-triangle stand-in and
     /// there are no rivers: the install path only stores and clears these
     /// fields, so what is asserted never depends on their contents.
-    fn test_amplified_bundle() -> super::AmplifiedDisplayBundle {
+    pub(super) fn test_amplified_bundle() -> super::AmplifiedDisplayBundle {
         use crate::generators::natural::{AmplificationFieldsView, HierarchicalEvaluator};
         use crate::generators::spatial::GeodesicVoronoiBuilder;
         use crate::world::natural::SphericalOrogenyKind;
@@ -3361,7 +4826,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3375,7 +4844,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            BuildCancellation::new(),
+            (app.authoring.begin_build(), BuildCancellation::new()),
             false,
         );
         // A replacement-lineage candidate routed through the *initial* install
@@ -3385,6 +4854,7 @@ mod natural_app_tests {
         assert!(working_cache.len() > published_len);
         sender
             .send(WorldBuildCompletion {
+                token: pending.token,
                 result: Ok(candidate),
                 stage_cache: working_cache,
                 formation_geometry: None,
@@ -3422,7 +4892,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3435,7 +4909,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            BuildCancellation::new(),
+            (app.authoring.begin_build(), BuildCancellation::new()),
             true,
         );
         let candidate =
@@ -3444,6 +4918,7 @@ mod natural_app_tests {
         assert!(working_len > published_len);
         sender
             .send(WorldBuildCompletion {
+                token: pending.token,
                 result: Ok(candidate),
                 stage_cache: working_cache,
                 formation_geometry: None,
@@ -3493,7 +4968,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3507,7 +4986,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            cancellation.clone(),
+            (app.authoring.begin_build(), cancellation.clone()),
             true,
         );
         let candidate =
@@ -3515,6 +4994,7 @@ mod natural_app_tests {
         assert!(working_cache.len() > published_len);
         sender
             .send(WorldBuildCompletion {
+                token: pending.token,
                 result: Ok(candidate),
                 stage_cache: working_cache,
                 formation_geometry: None,
@@ -3550,7 +5030,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             std::mem::take(&mut app.stage_cache),
             receiver,
-            cancellation.clone(),
+            (app.authoring.begin_build(), cancellation.clone()),
             true,
         );
         app.world_build = Some(pending);
@@ -3588,15 +5068,17 @@ mod natural_app_tests {
             render_state: Some(render_state.clone()),
             ..TemplateApp::default()
         };
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let requested_state = app.spherical_canvas_state.field_state().clone();
         let candidate = build_spherical_presentation_candidate_for_view(
-            RootSeed::new(app.world_seed),
-            &app.spherical_space_spec,
-            &app.formation_spec,
-            &app.tectonic_spec,
-            &app.relief_spec,
-            &app.geologic_spec,
+            RootSeed::new(app.authoring.draft().world_seed),
+            &app.authoring.draft().spherical_space_spec,
+            &app.authoring.draft().formation_spec,
+            &app.authoring.draft().tectonic_spec,
+            &app.authoring.draft().relief_spec,
+            &app.authoring.draft().geologic_spec,
             &mut app.stage_cache,
             app.spherical_canvas_state.presentation_view_state(),
             &requested_state,
@@ -3634,15 +5116,17 @@ mod natural_app_tests {
             render_state: Some(render_state.clone()),
             ..TemplateApp::default()
         };
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         let requested_state = app.spherical_canvas_state.field_state().clone();
         let _warm = build_spherical_presentation_candidate_for_view(
             RootSeed::new(99),
-            &app.spherical_space_spec,
-            &app.formation_spec,
-            &app.tectonic_spec,
-            &app.relief_spec,
-            &app.geologic_spec,
+            &app.authoring.draft().spherical_space_spec,
+            &app.authoring.draft().formation_spec,
+            &app.authoring.draft().tectonic_spec,
+            &app.authoring.draft().relief_spec,
+            &app.authoring.draft().geologic_spec,
             &mut app.stage_cache,
             app.spherical_canvas_state.presentation_view_state(),
             &requested_state,
@@ -3657,16 +5141,16 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            BuildCancellation::new(),
+            (app.authoring.begin_build(), BuildCancellation::new()),
             false,
         );
         let candidate = build_spherical_presentation_candidate_for_view(
-            RootSeed::new(app.world_seed),
-            &app.spherical_space_spec,
-            &app.formation_spec,
-            &app.tectonic_spec,
-            &app.relief_spec,
-            &app.geologic_spec,
+            RootSeed::new(app.authoring.draft().world_seed),
+            &app.authoring.draft().spherical_space_spec,
+            &app.authoring.draft().formation_spec,
+            &app.authoring.draft().tectonic_spec,
+            &app.authoring.draft().relief_spec,
+            &app.authoring.draft().geologic_spec,
             &mut working_cache,
             app.spherical_canvas_state.presentation_view_state(),
             &requested_state,
@@ -3677,6 +5161,7 @@ mod natural_app_tests {
         assert!(working_len > published_len);
         sender
             .send(WorldBuildCompletion {
+                token: pending.token,
                 result: Ok(candidate),
                 stage_cache: working_cache,
                 formation_geometry: None,
@@ -3704,7 +5189,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3719,7 +5208,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            cancellation.clone(),
+            (app.authoring.begin_build(), cancellation.clone()),
             true,
         );
         let candidate =
@@ -3735,6 +5224,7 @@ mod natural_app_tests {
         // The worker finishes before the user lifts the button.
         sender
             .send(WorldBuildCompletion {
+                token: app.world_build.as_ref().unwrap().token,
                 result: Ok(candidate),
                 stage_cache: working_cache,
                 formation_geometry: None,
@@ -3796,7 +5286,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3811,7 +5305,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            cancellation.clone(),
+            (app.authoring.begin_build(), cancellation.clone()),
             true,
         );
         let candidate =
@@ -3827,6 +5321,7 @@ mod natural_app_tests {
         let cancel_position = cancel_rect.center();
         sender
             .send(WorldBuildCompletion {
+                token: app.world_build.as_ref().unwrap().token,
                 result: Ok(candidate),
                 stage_cache: working_cache,
                 formation_geometry: None,
@@ -3880,7 +5375,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3896,7 +5395,7 @@ mod natural_app_tests {
                 WorldPipeline::Formation,
                 published_cache.clone(),
                 receiver,
-                BuildCancellation::new(),
+                (app.authoring.begin_build(), BuildCancellation::new()),
                 replacement,
             );
             assert_eq!(pending.replacement, replacement);
@@ -3942,7 +5441,7 @@ mod natural_app_tests {
             WorldPipeline::LegacyFoundation,
             published_cache,
             receiver,
-            BuildCancellation::new(),
+            (app.authoring.begin_build(), BuildCancellation::new()),
             false,
         );
         assert!(
@@ -3962,7 +5461,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -3981,7 +5484,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            BuildCancellation::new(),
+            (app.authoring.begin_build(), BuildCancellation::new()),
             true,
         );
         let _candidate =
@@ -3989,6 +5492,7 @@ mod natural_app_tests {
         assert!(working_cache.len() > published_len);
         sender
             .send(WorldBuildCompletion {
+                token: pending.token,
                 result: Err("surface formation did not converge".to_owned()),
                 stage_cache: working_cache,
                 formation_geometry: None,
@@ -4020,7 +5524,11 @@ mod natural_app_tests {
         let render_state = request_test_render_state();
         let mut app = create_from_persisted(
             TemplateApp {
-                world_seed: 7,
+                authoring: super::AuthoringSession::new(super::AuthorInputs {
+                    world_seed: 7,
+                    ..Default::default()
+                })
+                .unwrap(),
                 ..TemplateApp::default()
             },
             &render_state,
@@ -4041,7 +5549,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            cancellation.clone(),
+            (app.authoring.begin_build(), cancellation.clone()),
             true,
         );
         let candidate =
@@ -4073,6 +5581,7 @@ mod natural_app_tests {
 
         sender
             .send(WorldBuildCompletion {
+                token: app.world_build.as_ref().unwrap().token,
                 result: Ok(candidate),
                 stage_cache: working_cache,
                 formation_geometry: None,
@@ -4152,7 +5661,7 @@ mod natural_app_tests {
             WorldPipeline::Formation,
             published_cache,
             receiver,
-            BuildCancellation::new(),
+            (app.authoring.begin_build(), BuildCancellation::new()),
             false,
         );
         drop(working_cache);
@@ -4196,7 +5705,11 @@ mod natural_app_tests {
             let render_state = request_test_render_state();
             let mut app = create_from_persisted(
                 TemplateApp {
-                    world_seed: 7,
+                    authoring: super::AuthoringSession::new(super::AuthorInputs {
+                        world_seed: 7,
+                        ..Default::default()
+                    })
+                    .unwrap(),
                     ..TemplateApp::default()
                 },
                 &render_state,
@@ -4215,7 +5728,7 @@ mod natural_app_tests {
                 WorldPipeline::Formation,
                 published_cache,
                 receiver,
-                BuildCancellation::new(),
+                (app.authoring.begin_build(), BuildCancellation::new()),
                 replacement,
             );
             let candidate =
@@ -4235,6 +5748,7 @@ mod natural_app_tests {
             }
             sender
                 .send(WorldBuildCompletion {
+                    token: pending.token,
                     result: Ok(candidate),
                     stage_cache: working_cache,
                     formation_geometry: None,
@@ -4260,41 +5774,20 @@ mod natural_app_tests {
     }
 
     #[test]
-    fn failed_spherical_startup_is_visible_and_retries_standalone_without_planar_fallback() {
-        let render_state = request_test_render_state();
-        let mut persisted = TemplateApp::default();
-        persisted.spherical_space_spec.target_cell_count = 162;
-        persisted.tectonic_spec.plate_count = 0;
-        let mut app = create_from_persisted(persisted, &render_state);
-
-        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
-        assert!(app.spherical_presentation.read_resource(Option::is_none));
-        assert_eq!(app.active_runtime_graph(), None);
-        assert!(app.spherical_runtime_error.as_deref().is_some());
-
-        app.tectonic_spec.plate_count = TectonicSpec::default().plate_count;
-        app.apply_spherical_action(SphericalCanvasAction::RegenerateAsSpherical);
-        wait_for_world_build(&mut app);
-        assert!(app.spherical_runtime_error.is_none());
-        assert_eq!(app.world_origin, PersistedWorldOrigin::SphericalV1);
-        assert_eq!(
-            app.active_runtime_graph(),
-            Some(AppRuntimeGraph::SphericalNaturalFoundation)
-        );
-        assert!(app.spherical_presentation.read_resource(Option::is_some));
-        assert!(render_state
-            .renderer
-            .read()
-            .callback_resources
-            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
-            .is_some());
+    fn invalid_persisted_inputs_are_rejected_before_runtime_initialization() {
+        let persisted = TemplateApp::default();
+        let mut invalid_wire = serde_json::to_value(&persisted).unwrap();
+        invalid_wire["inputs"]["tectonic_spec"]["plate_count"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<TemplateApp>(invalid_wire).is_err());
     }
 
     #[test]
     fn gpu_failed_spherical_startup_is_visible_and_retry_publishes_once() {
         let render_state = request_test_render_state();
         let mut app = TemplateApp::default();
-        app.spherical_space_spec.target_cell_count = 162;
+        edit_inputs(&mut app, |inputs| {
+            inputs.spherical_space_spec.target_cell_count = 162
+        });
         app.render_state = Some(render_state.clone());
 
         assert!(app
@@ -4371,10 +5864,14 @@ mod natural_app_tests {
     }
 
     #[test]
-    fn pending_world_build_hides_the_old_map_until_rollback_or_publication() {
+    fn pending_world_build_keeps_the_last_valid_map_browsable_until_publication() {
         let mut app = create_cpu_published_app();
+        let before = published_source(&app);
         let (sender, receiver) = std::sync::mpsc::channel();
         app.world_build = Some(PendingWorldBuild {
+            token: app.authoring.begin_build(),
+            phase: Arc::new(std::sync::Mutex::new(super::WorldBuildPhase::Surface)),
+            worker: None,
             receiver,
             cancellation: crate::engine::BuildCancellation::new(),
             started_at: std::time::Instant::now(),
@@ -4387,23 +5884,15 @@ mod natural_app_tests {
         let pending = context.run(test_raw_input(), |context| {
             app.show_active_canvas_after_actions(context, Vec::new());
         });
-        assert_eq!(spherical_callback_count(&pending), 0);
-        let mut texts = Vec::new();
-        for shape in &pending.shapes {
-            collect_text(&shape.shape, &mut texts);
-        }
-        assert!(texts.iter().any(|text| text == "世界正在成形"));
+        assert_eq!(spherical_callback_count(&pending), 1);
+        assert_eq!(published_source(&app), before);
 
         app.world_build.as_ref().unwrap().cancellation.cancel();
         let cancelling = context.run(test_raw_input(), |context| {
             app.show_active_canvas_after_actions(context, Vec::new());
         });
-        assert_eq!(spherical_callback_count(&cancelling), 0);
-        let mut texts = Vec::new();
-        for shape in &cancelling.shapes {
-            collect_text(&shape.shape, &mut texts);
-        }
-        assert!(texts.iter().any(|text| text == "正在取消构建"));
+        assert_eq!(spherical_callback_count(&cancelling), 1);
+        assert_eq!(published_source(&app), before);
 
         drop(sender);
         app.world_build = None;
@@ -4476,7 +5965,9 @@ mod natural_app_tests {
                 Arc::downgrade(current.layers_arc()),
             )
         });
-        app.world_seed = app.world_seed.wrapping_add(1);
+        edit_inputs(&mut app, |inputs| {
+            inputs.world_seed = inputs.world_seed.wrapping_add(1)
+        });
         app.try_rebuild_spherical_world(&render_state).unwrap();
         inspect(&app, &mut cache, SphericalViewMode::Globe);
         assert_eq!(cache.probe_for_test(), (3, diagnostics.len() * 3));
@@ -5012,36 +6503,54 @@ mod natural_app_tests {
     #[test]
     fn default_application_persists_continents_with_missing_field_compatibility() {
         let app = TemplateApp::default();
-        assert_eq!(app.formation_spec.preset, WorldFormationPreset::Continents);
-        assert_eq!(app.relief_spec, ReliefSpec::default());
-
-        let mut encoded = serde_json::to_value(&app).unwrap();
-        encoded.as_object_mut().unwrap().remove("formation_spec");
-        encoded.as_object_mut().unwrap().remove("relief_spec");
-        let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
         assert_eq!(
-            restored.formation_spec.preset,
+            app.authoring.draft().formation_spec.preset,
             WorldFormationPreset::Continents
         );
-        assert_eq!(restored.relief_spec, ReliefSpec::default());
+        assert_eq!(app.authoring.draft().relief_spec, ReliefSpec::default());
+
+        // Missing-field defaults are a legacy-import contract. Current recipes
+        // require their complete input record instead of silently inventing it.
+        let encoded = serde_json::json!({"world_seed": app.authoring.draft().world_seed});
+        let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
+        assert_eq!(
+            restored.authoring.draft().formation_spec.preset,
+            WorldFormationPreset::Continents
+        );
+        assert_eq!(
+            restored.authoring.draft().relief_spec,
+            ReliefSpec::default()
+        );
     }
 
     #[test]
     fn application_roundtrip_preserves_manual_land_target() {
         let mut app = TemplateApp::default();
-        app.relief_spec.target_land_fraction = 0.55;
-        app.relief_spec.sea_level_policy = SeaLevelPolicy::TargetLandFraction;
-        app.relief_spec.water_inventory_ratio = 1.75;
+        edit_inputs(&mut app, |inputs| {
+            inputs.relief_spec.target_land_fraction = 0.55
+        });
+        edit_inputs(&mut app, |inputs| {
+            inputs.relief_spec.sea_level_policy = SeaLevelPolicy::TargetLandFraction
+        });
+        edit_inputs(&mut app, |inputs| {
+            inputs.relief_spec.water_inventory_ratio = 1.75
+        });
 
         let restored: TemplateApp =
             serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
 
-        assert_eq!(restored.relief_spec.target_land_fraction, 0.55);
         assert_eq!(
-            restored.relief_spec.sea_level_policy,
+            restored.authoring.draft().relief_spec.target_land_fraction,
+            0.55
+        );
+        assert_eq!(
+            restored.authoring.draft().relief_spec.sea_level_policy,
             SeaLevelPolicy::TargetLandFraction
         );
-        assert_eq!(restored.relief_spec.water_inventory_ratio, 1.75);
+        assert_eq!(
+            restored.authoring.draft().relief_spec.water_inventory_ratio,
+            1.75
+        );
     }
 
     #[test]
@@ -5193,17 +6702,24 @@ mod natural_app_tests {
     #[test]
     fn quality_tier_roundtrips_and_defaults_to_draft() {
         assert_eq!(
-            TemplateApp::default().formation_quality_profile,
+            TemplateApp::default()
+                .authoring
+                .draft()
+                .formation_quality_profile,
             crate::world::natural::NaturalQualityProfile::Draft
         );
         let app = TemplateApp {
-            formation_quality_profile: crate::world::natural::NaturalQualityProfile::Standard,
+            authoring: super::AuthoringSession::new(super::AuthorInputs {
+                formation_quality_profile: crate::world::natural::NaturalQualityProfile::Standard,
+                ..Default::default()
+            })
+            .unwrap(),
             ..Default::default()
         };
         let restored: TemplateApp =
             serde_json::from_value(serde_json::to_value(&app).unwrap()).unwrap();
         assert_eq!(
-            restored.formation_quality_profile,
+            restored.authoring.draft().formation_quality_profile,
             crate::world::natural::NaturalQualityProfile::Standard
         );
     }
@@ -5296,5 +6812,995 @@ mod natural_app_tests {
             preliminary_mean_air_temperature_c_field_id(),
             surface_elevation_m_field_id()
         );
+    }
+}
+
+#[cfg(test)]
+mod phase_a_tests {
+    use super::natural_app_tests::{
+        create_from_persisted, prepare_test_replacement_candidate, published_source,
+        request_test_render_state, settle_queued_world_build,
+    };
+    use super::*;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_recipe_io(
+        app: &mut TemplateApp,
+        ctx: &egui::Context,
+        completed: impl Fn(&TemplateApp) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !completed(app) {
+            app.poll_project_io(ctx);
+            assert!(std::time::Instant::now() < deadline, "recipe IO timed out");
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_formation_publication(app: &mut TemplateApp, ctx: &egui::Context) {
+        // This ignored integration contract includes the real worker and detached GPU install.
+        // Ordinary state tests use the existing tiny completion fixtures instead.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+        while app.world_build.is_some() {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Formation worker timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            app.spherical_runtime_error.is_none(),
+            "Formation publication failed: {:?}",
+            app.spherical_runtime_error
+        );
+        app.spherical_presentation.read_resource(|current| {
+            let document = current
+                .as_ref()
+                .expect("Formation was published")
+                .document();
+            let formation = document
+                .formation()
+                .expect("the production Formation document");
+            assert_eq!(
+                formation.quality_profile(),
+                crate::world::natural::NaturalQualityProfile::Draft
+            );
+            formation.formation_snapshot().validate().unwrap();
+        });
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    #[ignore = "release-only production Formation save/reopen with cold session and GPU publication"]
+    fn phase_a_recipe_reopen_formation() {
+        use project_file::{current_generator_identity, ProjectFile};
+        use project_io::read_project;
+        use project_ui::ProjectAction;
+
+        let directory = std::env::temp_dir().join(format!(
+            "sekai-phase-a-reopen-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("recipe.sekai.json");
+        let render_state = request_test_render_state();
+        let ctx = egui::Context::default();
+        let (saved_inputs, saved_source, saved_generator) = {
+            let mut app = TemplateApp {
+                authoring: AuthoringSession::new(AuthorInputs {
+                    world_pipeline: WorldPipeline::Formation,
+                    world_seed: 42,
+                    ..Default::default()
+                })
+                .unwrap(),
+                render_state: Some(render_state.clone()),
+                ..Default::default()
+            };
+            let initial_recipe = app.authoring.capture_save().recipe_id;
+            app.request_spherical_world_build();
+            wait_formation_publication(&mut app, &ctx);
+            let initial_source = published_source(&app);
+
+            let mut edited = app.authoring.draft().clone();
+            edited.relief_spec.sea_level_policy =
+                crate::world::natural::SeaLevelPolicy::TargetLandFraction;
+            edited.relief_spec.target_land_fraction = 0.4;
+            assert!(app
+                .authoring
+                .commit("land fraction".into(), edited)
+                .unwrap());
+            assert_ne!(app.authoring.capture_save().recipe_id, initial_recipe);
+            assert!(
+                app.world_build.is_none(),
+                "editing requires explicit rebuild"
+            );
+            assert_eq!(
+                published_source(&app),
+                initial_source,
+                "old world remains published"
+            );
+            app.request_spherical_world_build();
+            wait_formation_publication(&mut app, &ctx);
+            let source = published_source(&app);
+            assert_ne!(
+                source.build_result_hash(),
+                initial_source.build_result_hash()
+            );
+            let inputs = app.authoring.draft().clone();
+            let generator = ProjectFile::new(inputs.clone()).unwrap().generator;
+            app.dispatch_project_action(ProjectAction::SaveAs(path.clone()), &ctx);
+            wait_recipe_io(&mut app, &ctx, |app| !app.authoring.is_dirty());
+            assert_eq!(read_project(&path).unwrap().file.inputs, inputs);
+            eprintln!(
+                "PHASE_A_REOPEN saved recipe={:?} source={source:?}",
+                inputs.recipe_id().unwrap()
+            );
+            (inputs, source, generator)
+        }; // Drops the old session, publication, stage/surface/display caches and worker slots.
+           // Do not reuse the old callback resource's GPU publication in the new app.
+        drop(render_state);
+        let mut reopened = TemplateApp {
+            render_state: Some(request_test_render_state()),
+            ..Default::default()
+        };
+        assert!(reopened.stage_cache.is_empty());
+        assert!(reopened.formation_geometry.is_none());
+        assert!(reopened
+            .spherical_presentation
+            .read_resource(Option::is_none));
+        // A new empty editor is intentionally unsaved; bind only the authorized open action.
+        reopened
+            .authoring
+            .mark_saved(reopened.authoring.capture_save());
+        reopened.dispatch_project_action(ProjectAction::Open(path.clone()), &ctx);
+        wait_recipe_io(&mut reopened, &ctx, |app| app.pending_open_build.is_some());
+        assert_eq!(reopened.authoring.draft(), &saved_inputs);
+        assert_eq!(
+            current_generator_identity(reopened.authoring.draft()).unwrap(),
+            saved_generator
+        );
+        assert_eq!(read_project(&path).unwrap().file.generator, saved_generator);
+        assert!(
+            !reopened.authoring.undo(),
+            "session history is not persisted"
+        );
+        assert!(!reopened.authoring.is_dirty());
+        assert!(reopened.world_build.is_none());
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            eframe::App::update(&mut reopened, ctx, &mut eframe::Frame::_new_kittest());
+        });
+        let token = reopened
+            .world_build
+            .as_ref()
+            .expect("open automatically started one build")
+            .token;
+        assert_eq!(token.recipe_id, saved_inputs.recipe_id().unwrap());
+        assert!(reopened.pending_open_build.is_none());
+        assert!(
+            !reopened.try_start_open_build(),
+            "the open intent is consumed once"
+        );
+        wait_formation_publication(&mut reopened, &ctx);
+        assert_eq!(
+            published_source(&reopened),
+            saved_source,
+            "same-environment output fingerprint"
+        );
+        assert_eq!(reopened.published_world_token, Some(token));
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            eframe::App::update(&mut reopened, ctx, &mut eframe::Frame::_new_kittest());
+        });
+        assert!(reopened.world_build.is_none());
+        assert!(!reopened.try_start_open_build());
+        eprintln!(
+            "PHASE_A_REOPEN restored token={token:?} source={:?}",
+            published_source(&reopened)
+        );
+        drop(reopened);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn phase_a_save_ungenerated_draft_keeps_recipe_without_world() {
+        let directory = std::env::temp_dir().join(format!(
+            "sekai-phase-a-draft-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("draft.sekai.json");
+        let mut app = TemplateApp::default();
+        let mut edited = app.authoring.draft().clone();
+        edited.world_seed = 717;
+        app.authoring.commit("seed".into(), edited.clone()).unwrap();
+        let ctx = egui::Context::default();
+        app.dispatch_project_action(project_ui::ProjectAction::SaveAs(path.clone()), &ctx);
+        wait_recipe_io(&mut app, &ctx, |app| !app.authoring.is_dirty());
+        assert_eq!(project_io::read_project(&path).unwrap().file.inputs, edited);
+        assert!(app.world_build.is_none());
+        assert!(app.published_world_token.is_none());
+        assert!(app.spherical_presentation.read_resource(Option::is_none));
+        assert!(app.stage_cache.is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_new_resets_epoch_before_completion_poll() {
+        let mut app = TemplateApp::default();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        let before = app.authoring.capture_save();
+        app.dispatch_project_action(project_ui::ProjectAction::New, &egui::Context::default());
+        assert!(app.authoring.capture_save().epoch > before.epoch);
+        assert!(app.authoring.is_dirty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_undo_invalidates_pending_open_before_poll() {
+        let mut app = TemplateApp::default();
+        let mut next = app.authoring.draft().clone();
+        next.world_seed += 1;
+        app.authoring.commit("edit".into(), next).unwrap();
+        let stamp = app.authoring.capture_save();
+        app.pending_open_build = Some(PendingOpenBuild {
+            timing: None,
+            epoch: stamp.epoch,
+            recipe_id: stamp.recipe_id,
+        });
+        app.dispatch_project_action(project_ui::ProjectAction::Undo, &egui::Context::default());
+        assert!(app.pending_open_build.is_none());
+        assert_eq!(app.authoring.revision(), 2);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_actual_text_edit_is_unsaved_without_implicit_build() {
+        use super::natural_app_tests::{authoring_keyboard_frame, focus_authoring_number};
+        let mut app = TemplateApp::default();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        let ctx = egui::Context::default();
+        let seed = app.authoring.draft().world_seed.to_string();
+        focus_authoring_number(&mut app, &ctx, &seed);
+        authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("717".into())]);
+        assert_eq!(app.authoring.revision(), 0);
+        assert!(app.project_is_dirty());
+        assert!(app.input_edit.is_some());
+        assert!(app.world_build.is_none());
+        app.dispatch_project_action(project_ui::ProjectAction::Save, &ctx);
+        assert!(app.project_is_dirty());
+        authoring_keyboard_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(app.authoring.draft().world_seed, 717);
+        assert_eq!(app.authoring.revision(), 1);
+        assert!(app.world_build.is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_drag_frames_commit_once_and_escape_restores_input() {
+        let mut app = TemplateApp::default();
+        let before = app.authoring.draft().clone();
+        let mut edit = before.clone();
+        for seed in [111, 222, 333] {
+            edit.world_seed = seed;
+            app.finish_author_input(edit.clone(), false, true, false);
+            assert_eq!(app.authoring.revision(), 0);
+            assert!(app.world_build.is_none());
+        }
+        app.finish_author_input(edit.clone(), false, false, false);
+        assert_eq!(app.authoring.revision(), 1);
+        edit.world_seed = 999;
+        app.finish_author_input(edit.clone(), false, true, false);
+        app.finish_author_input(edit, false, false, true);
+        assert_eq!(app.authoring.draft().world_seed, 333);
+        app.dispatch_project_action(project_ui::ProjectAction::Undo, &egui::Context::default());
+        assert_eq!(app.authoring.draft(), &before);
+        assert!(!app.authoring.undo());
+        app.dispatch_project_action(project_ui::ProjectAction::Redo, &egui::Context::default());
+        assert_eq!(app.authoring.draft().world_seed, 333);
+        assert!(app.world_build.is_none());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_actual_text_focus_keeps_recipe_undo_shortcut_out_of_text_editor() {
+        use super::natural_app_tests::{authoring_keyboard_frame, focus_authoring_number};
+        let mut app = TemplateApp::default();
+        let mut edit = app.authoring.draft().clone();
+        edit.world_seed = 717;
+        app.authoring.commit("recipe edit".into(), edit).unwrap();
+        let ctx = egui::Context::default();
+        focus_authoring_number(&mut app, &ctx, "717");
+        authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("123".into())]);
+        let modifiers = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..egui::Modifiers::NONE
+        };
+        let _ = ctx.run(
+            egui::RawInput {
+                modifiers,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Z,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..egui::RawInput::default()
+            },
+            |ctx| {
+                eframe::App::update(&mut app, ctx, &mut eframe::Frame::_new_kittest());
+            },
+        );
+        assert_eq!(app.authoring.revision(), 1);
+        assert_eq!(app.authoring.draft().world_seed, 717);
+        assert!(app.authoring.undo());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_system_close_asks_before_cancelling_build() {
+        let mut app = TemplateApp::default();
+        let token = app.authoring.begin_build();
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+        let output = ctx.run(raw, |ctx| {
+            eframe::App::update(&mut app, ctx, &mut eframe::Frame::_new_kittest());
+        });
+        assert!(app.authoring.accepts(token));
+        assert!(output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&egui::ViewportCommand::CancelClose));
+        assert!(app.project_is_dirty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_invalid_text_focus_loss_cannot_silently_save_previous_value() {
+        use super::natural_app_tests::{authoring_keyboard_frame, focus_authoring_number};
+        let mut app = TemplateApp::default();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        let ctx = egui::Context::default();
+        let seed = app.authoring.draft().world_seed.to_string();
+        focus_authoring_number(&mut app, &ctx, &seed);
+        authoring_keyboard_frame(&mut app, &ctx, vec![egui::Event::Text("invalid".into())]);
+        authoring_keyboard_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Tab,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert!(app.input_edit.is_some());
+        assert!(app.project_is_dirty());
+        assert_eq!(app.authoring.revision(), 0);
+        app.dispatch_project_action(project_ui::ProjectAction::Save, &ctx);
+        assert!(app.project_is_dirty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_large_seed_focus_and_confirmation_preserve_every_u64_bit() {
+        use super::natural_app_tests::{authoring_keyboard_frame, focus_authoring_number};
+        let mut app = TemplateApp::default();
+        let seed = (1_u64 << 53) + 1;
+        let mut edited = app.authoring.draft().clone();
+        edited.world_seed = seed;
+        app.authoring.commit("large seed".into(), edited).unwrap();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        let stamp = app.authoring.capture_save();
+        let revision = app.authoring.revision();
+        let ctx = egui::Context::default();
+        focus_authoring_number(&mut app, &ctx, &seed.to_string());
+        authoring_keyboard_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        assert_eq!(app.authoring.draft().world_seed, seed);
+        assert_eq!(app.authoring.capture_save(), stamp);
+        assert_eq!(app.authoring.revision(), revision);
+        assert!(!app.authoring.is_dirty());
+        let wire = serde_json::to_value(&app).unwrap();
+        assert_eq!(wire["inputs"]["world_seed"].as_u64(), Some(seed));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn project_flow_status_shapes_follow_uncommitted_text_enter_and_escape() {
+        use super::natural_app_tests::{
+            authoring_keyboard_frame, collect_text, focus_authoring_number,
+        };
+        fn rendered_text(output: egui::FullOutput) -> Vec<String> {
+            let mut text = Vec::new();
+            for shape in &output.shapes {
+                collect_text(&shape.shape, &mut text);
+            }
+            text
+        }
+        fn key(key: egui::Key) -> egui::Event {
+            egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }
+        }
+        let mut app = TemplateApp::default();
+        let before = app.authoring.draft().clone();
+        app.authoring.mark_saved(app.authoring.capture_save());
+        // Status consumes only publication identity, so no world generation or
+        // GPU payload is needed to represent the last valid published recipe.
+        let published = app.authoring.begin_build();
+        assert!(app.authoring.mark_published(published));
+        app.published_world_token = Some(published);
+        let ctx = egui::Context::default();
+        let initial = rendered_text(authoring_keyboard_frame(&mut app, &ctx, Vec::new()));
+        assert!(initial
+            .iter()
+            .any(|text| text == "配方已保存；世界结果不保存在项目中"));
+        for finish in [egui::Key::Escape, egui::Key::Enter] {
+            focus_authoring_number(&mut app, &ctx, &before.world_seed.to_string());
+            for events in [vec![egui::Event::Text("717".into())], Vec::new()] {
+                let text = rendered_text(authoring_keyboard_frame(&mut app, &ctx, events));
+                assert!(text
+                    .iter()
+                    .any(|text| text == "参数文本尚未提交；配方尚未保存"));
+                assert!(!text
+                    .iter()
+                    .any(|text| text == "配方已保存；世界结果不保存在项目中"));
+                assert!(text
+                    .iter()
+                    .any(|text| text == "参数已修改，地图仍为上次有效结果"));
+                assert!(!text.iter().any(|text| text == "地图对应当前已提交配方"));
+                assert_eq!(app.authoring.draft(), &before);
+                assert!(app.world_build.is_none());
+            }
+            let text = rendered_text(authoring_keyboard_frame(&mut app, &ctx, vec![key(finish)]));
+            if finish == egui::Key::Escape {
+                assert!(text
+                    .iter()
+                    .any(|text| text == "配方已保存；世界结果不保存在项目中"));
+                assert!(text.iter().any(|text| text == "地图对应当前已提交配方"));
+                assert_eq!(app.authoring.draft(), &before);
+            } else {
+                assert!(text.iter().any(|text| text == "配方尚未保存"));
+                assert!(!text
+                    .iter()
+                    .any(|text| text == "配方已保存；世界结果不保存在项目中"));
+                assert!(text
+                    .iter()
+                    .any(|text| text == "参数已修改，地图仍为上次有效结果"));
+                assert_eq!(app.authoring.draft().world_seed, 717);
+            }
+            assert!(app.world_build.is_none());
+        }
+    }
+
+    // Manual completions isolate publication races from the expensive formation solver.
+    #[test]
+    fn publication_edit_before_settlement_preserves_world() {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let before = published_source(&app);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let cache = std::mem::take(&mut app.stage_cache);
+        let (mut cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            cache,
+            receiver,
+            (
+                app.authoring.begin_build(),
+                crate::engine::BuildCancellation::new(),
+            ),
+            true,
+        );
+        let candidate = prepare_test_replacement_candidate(&app, RootSeed::new(18), &mut cache);
+        sender
+            .send(WorldBuildCompletion {
+                token: pending.token,
+                result: Ok(candidate),
+                stage_cache: cache,
+                formation_geometry: None,
+                amplified: None,
+            })
+            .unwrap();
+        app.world_build = Some(pending);
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+        let _ = context.run(egui::RawInput::default(), |ctx| {
+            let mut after = app.authoring.draft().clone();
+            after.world_seed = 19;
+            app.authoring.commit("edit".into(), after).unwrap();
+            app.poll_world_build(ctx);
+        });
+        assert!(app.world_build.is_none());
+        assert_eq!(published_source(&app), before);
+    }
+
+    #[test]
+    fn failed_publication_retains_prewarm_without_publishing_a_world() {
+        let mut app = TemplateApp::default();
+        let key = app.formation_geometry_key();
+        let (_geometry_sender, geometry_receiver) = std::sync::mpsc::channel();
+        let geometry_cancellation = crate::engine::BuildCancellation::new();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (_, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            MemoryStageCache::new(),
+            receiver,
+            (
+                app.authoring.begin_build(),
+                crate::engine::BuildCancellation::new(),
+            ),
+            false,
+        );
+        sender
+            .send(WorldBuildCompletion {
+                token: pending.token,
+                result: Err("failed".into()),
+                stage_cache: MemoryStageCache::new(),
+                formation_geometry: Some(super::FormationGeometrySlot::Warming(
+                    super::FormationGeometryPrewarm {
+                        key,
+                        receiver: geometry_receiver,
+                        cancellation: geometry_cancellation.clone(),
+                    },
+                )),
+                amplified: None,
+            })
+            .unwrap();
+        app.world_build = Some(pending);
+        settle_queued_world_build(&mut app);
+        assert_eq!(
+            app.formation_geometry
+                .as_ref()
+                .map(super::FormationGeometrySlot::key),
+            Some(key)
+        );
+        assert!(!geometry_cancellation.is_cancelled());
+        assert!(app.spherical_presentation.read_resource(Option::is_none));
+        assert_eq!(app.spherical_runtime_error.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn publication_old_detail_completion_after_epoch_reset_is_rejected() {
+        let mut app = TemplateApp::default();
+        let (engine, sender) = super::amplified_detail_engine_tests::detached_engine(0, 1);
+        app.amplified_detail = Some(engine);
+        app.authoring
+            .reset_project(app.authoring.draft().clone(), true)
+            .unwrap();
+        sender
+            .send(super::amplified_detail_engine_tests::refreshed(1, 9))
+            .unwrap();
+        app.poll_amplified_detail(&egui::Context::default());
+        assert!(app.amplified_mesh.is_none());
+    }
+
+    fn replacement_attempt() -> (TemplateApp, RenderState, WorldBuildCompletion) {
+        let render_state = request_test_render_state();
+        let mut app = create_from_persisted(TemplateApp::default(), &render_state);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (mut cache, pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            app.stage_cache.clone(),
+            receiver,
+            (
+                app.authoring.begin_build(),
+                crate::engine::BuildCancellation::new(),
+            ),
+            true,
+        );
+        let candidate = prepare_test_replacement_candidate(&app, RootSeed::new(18), &mut cache);
+        let completion = WorldBuildCompletion {
+            token: pending.token,
+            result: Ok(candidate),
+            stage_cache: cache,
+            formation_geometry: None,
+            amplified: Some(super::natural_app_tests::test_amplified_bundle()),
+        };
+        drop(sender);
+        app.world_build = Some(pending);
+        (app, render_state, completion)
+    }
+
+    #[test]
+    fn publication_preparation_and_cancelled_final_guard_preserve_all_consumers() {
+        let (mut app, render_state, completion) = replacement_attempt();
+        let before = published_source(&app);
+        let packet = app
+            .spherical_presentation
+            .read_resource(|p| Arc::clone(p.as_ref().unwrap().gpu_packet_arc()));
+        app.store_amplified_bundle(Some(super::natural_app_tests::test_amplified_bundle()));
+        let mesh = Arc::clone(app.amplified_mesh.as_ref().unwrap());
+        let rivers = Arc::clone(app.river_polylines.as_ref().unwrap());
+        let reports = app.active_runtime_stage_ids.clone();
+        let cache_len = app.stage_cache.len();
+        let uploads = render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        let prepared = app
+            .prepare_world_publication(completion, &render_state)
+            .unwrap();
+        assert_eq!(published_source(&app), before);
+        assert_eq!(
+            uploads,
+            render_state
+                .renderer
+                .read()
+                .callback_resources
+                .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+                .unwrap()
+                .upload_counters()
+        );
+        app.cancel_world_build();
+        let mut after = app.authoring.draft().clone();
+        after.world_seed += 1;
+        app.authoring
+            .commit("edit after cancel".into(), after)
+            .unwrap();
+        assert!(app.authoring.undo());
+        assert!(matches!(
+            app.commit_world_publication(prepared, &render_state),
+            Err(AppRuntimeError::StaleWorldBuild)
+        ));
+        assert_eq!(published_source(&app), before);
+        app.spherical_presentation
+            .read_resource(|p| assert!(Arc::ptr_eq(&packet, p.as_ref().unwrap().gpu_packet_arc())));
+        assert!(Arc::ptr_eq(&mesh, app.amplified_mesh.as_ref().unwrap()));
+        assert!(Arc::ptr_eq(&rivers, app.river_polylines.as_ref().unwrap()));
+        assert_eq!(reports, app.active_runtime_stage_ids);
+        assert_eq!(cache_len, app.stage_cache.len());
+        assert_eq!(
+            uploads,
+            render_state
+                .renderer
+                .read()
+                .callback_resources
+                .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+                .unwrap()
+                .upload_counters()
+        );
+    }
+
+    #[test]
+    fn publication_gpu_preparation_failure_preserves_current_world() {
+        let (app, render_state, completion) = replacement_attempt();
+        let before = published_source(&app);
+        let uploads = render_state
+            .renderer
+            .read()
+            .callback_resources
+            .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+            .unwrap()
+            .upload_counters();
+        assert!(app
+            .prepare_world_publication_impl(
+                completion,
+                &render_state,
+                MigrationFailurePoint::GpuPrepare
+            )
+            .is_err());
+        assert_eq!(published_source(&app), before);
+        assert!(app.formation_geometry.is_none());
+        assert!(app.amplified_mesh.is_none());
+        assert_eq!(
+            uploads,
+            render_state
+                .renderer
+                .read()
+                .callback_resources
+                .get::<crate::gpu::spherical::SphericalFieldRenderer>()
+                .unwrap()
+                .upload_counters()
+        );
+    }
+
+    #[test]
+    fn publication_new_epoch_rejects_prepared_world() {
+        let (mut app, render_state, completion) = replacement_attempt();
+        let before = published_source(&app);
+        let prepared = app
+            .prepare_world_publication(completion, &render_state)
+            .unwrap();
+        app.authoring
+            .reset_project(app.authoring.draft().clone(), true)
+            .unwrap();
+        assert!(matches!(
+            app.commit_world_publication(prepared, &render_state),
+            Err(AppRuntimeError::StaleWorldBuild)
+        ));
+        assert_eq!(published_source(&app), before);
+    }
+
+    #[test]
+    fn publication_completion_waits_for_actual_worker_exit_and_open_intent_is_one_shot() {
+        let mut app = TemplateApp::default();
+        let token = app.authoring.begin_build();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (sent, observed) = std::sync::mpsc::channel();
+        let (_, mut pending) = prepare_pending_world_build(
+            WorldPipeline::Formation,
+            MemoryStageCache::new(),
+            receiver,
+            (token, crate::engine::BuildCancellation::new()),
+            false,
+        );
+        pending.worker = Some(std::thread::spawn(move || {
+            sender
+                .send(WorldBuildCompletion {
+                    token,
+                    result: Err("test failure".into()),
+                    stage_cache: MemoryStageCache::new(),
+                    formation_geometry: None,
+                    amplified: None,
+                })
+                .unwrap();
+            sent.send(()).unwrap();
+            blocked.recv().unwrap();
+        }));
+        observed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        app.world_build = Some(pending);
+        let stamp = app.authoring.capture_save();
+        app.pending_open_build = Some(PendingOpenBuild {
+            timing: None,
+            epoch: stamp.epoch,
+            recipe_id: stamp.recipe_id,
+        });
+        let context = egui::Context::default();
+        for _ in 0..2 {
+            let _ = context.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+        }
+        assert!(app.world_build.as_ref().unwrap().completion.is_some());
+        assert!(app.world_build.as_ref().unwrap().worker.is_some());
+        app.request_spherical_world_build();
+        assert!(app.authoring.accepts(token));
+        assert!(!app.try_start_open_build());
+        assert!(app.pending_open_build.is_some());
+        app.cancel_world_build();
+        assert!(app.pending_open_build.is_none());
+        release.send(()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while app.world_build.is_some() {
+            let _ = context.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(!app.try_start_open_build());
+        assert!(!app.authoring.accepts(token));
+    }
+}
+
+#[cfg(test)]
+mod build_metrics_app_tests {
+    use super::*;
+
+    fn tiny_observed_app() -> TemplateApp {
+        let mut app = TemplateApp::default();
+        let mut inputs = app.authoring.draft().clone();
+        inputs.spherical_space_spec.target_cell_count = 162;
+        app.authoring = AuthoringSession::new(inputs).unwrap();
+        app.frame_sampler.start(0.0);
+        app
+    }
+
+    fn exit_and_settle(app: &mut TemplateApp) {
+        app.world_build
+            .as_mut()
+            .unwrap()
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        let context = egui::Context::default();
+        let _ = context.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+        let _ = context.run(egui::RawInput::default(), |ctx| app.poll_world_build(ctx));
+    }
+
+    #[test]
+    fn application_records_real_worker_and_gpu_spans_then_only_marks_queued_world_submission() {
+        let mut app = tiny_observed_app();
+        let wire = serde_json::to_string(&app).unwrap();
+        let recipe_id = app.authoring.draft().recipe_id().unwrap();
+        app.render_state = Some(natural_app_tests::request_test_render_state());
+        app.request_spherical_world_build();
+        assert_eq!(serde_json::to_string(&app).unwrap(), wire);
+        let observation = app.build_observation.clone().unwrap();
+        exit_and_settle(&mut app);
+        {
+            let metrics = observation.metrics.lock().unwrap();
+            assert_eq!(metrics.outcome, BuildOutcome::Published);
+            for phase in [
+                BuildPhase::InputAndSurface,
+                BuildPhase::Graph,
+                BuildPhase::Presentation,
+                BuildPhase::GpuInstall,
+            ] {
+                assert!(metrics.spans.iter().any(|span| span.phase == phase));
+            }
+            assert!(!metrics
+                .spans
+                .iter()
+                .any(|span| span.phase == BuildPhase::FirstSubmittedFrame));
+        }
+        let ctx = egui::Context::default();
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            },
+            |ctx| app.show_active_canvas_after_actions(ctx, Vec::new()),
+        );
+        assert!(app.build_observation.is_none());
+        let metrics = observation.metrics.lock().unwrap();
+        assert_eq!(
+            metrics
+                .spans
+                .iter()
+                .filter(|span| span.phase == BuildPhase::FirstSubmittedFrame)
+                .count(),
+            1
+        );
+        assert_eq!(app.authoring.draft().recipe_id().unwrap(), recipe_id);
+    }
+
+    #[test]
+    fn application_classifies_cancel_stale_and_failed_without_success_submission() {
+        for expected in [
+            BuildOutcome::Cancelled,
+            BuildOutcome::Stale,
+            BuildOutcome::Failed,
+        ] {
+            let mut app = tiny_observed_app();
+            let token = app.authoring.begin_build();
+            let observation = BuildObservation::new(token, std::time::Instant::now());
+            app.build_observation = Some(observation.clone());
+            let (_, receiver) = std::sync::mpsc::channel();
+            let (_, mut pending) = prepare_pending_world_build(
+                WorldPipeline::LegacyFoundation,
+                MemoryStageCache::new(),
+                receiver,
+                (token, crate::engine::BuildCancellation::new()),
+                false,
+            );
+            pending.completion = Some((
+                0,
+                WorldBuildCompletion {
+                    token,
+                    result: Err("fixture build failure".to_owned()),
+                    stage_cache: MemoryStageCache::new(),
+                    formation_geometry: None,
+                    amplified: None,
+                },
+            ));
+            app.world_build = Some(pending);
+            match expected {
+                BuildOutcome::Cancelled => app.cancel_world_build(),
+                BuildOutcome::Stale => {
+                    app.authoring.invalidate_build();
+                }
+                BuildOutcome::Failed => {}
+                BuildOutcome::Published => unreachable!(),
+            }
+            app.settle_staged_world_build();
+            assert!(app.build_observation.is_none());
+            let metrics = observation.metrics.lock().unwrap();
+            assert_eq!(metrics.outcome, expected);
+            assert!(!metrics
+                .spans
+                .iter()
+                .any(|span| span.phase == BuildPhase::FirstSubmittedFrame));
+        }
+    }
+
+    #[test]
+    #[ignore = "release-only offscreen native detached-renderer timing; not real UI or OS present"]
+    fn observe_phase_a_detached_renderer() {
+        let mut app = tiny_observed_app();
+        let mut inputs = app.authoring.draft().clone();
+        inputs.world_pipeline = WorldPipeline::Formation;
+        inputs.formation_quality_profile = match std::env::var("SEKAI_PHASE_A_PROFILE")
+            .as_deref()
+            .unwrap_or("draft")
+        {
+            "draft" => crate::world::natural::NaturalQualityProfile::Draft,
+            "standard" => crate::world::natural::NaturalQualityProfile::Standard,
+            other => panic!("unsupported profile {other}"),
+        };
+        app.authoring = AuthoringSession::new(inputs).unwrap();
+        let render = natural_app_tests::request_test_render_state();
+        eprintln!("PHASE_A_DETACHED_CONFIG profile={:?} seed={} adapter={} target_format={:?} source=offscreen_native_test not_os_present=true", app.authoring.draft().formation_quality_profile, app.authoring.draft().world_seed, render.adapter.get_info().name, render.target_format);
+        app.render_state = Some(render.clone());
+        app.request_spherical_world_build();
+        exit_and_settle(&mut app);
+        assert!(
+            app.spherical_runtime_error.is_none(),
+            "{:?}",
+            app.spherical_runtime_error
+        );
+        // Discard the unsubmitted first attempt, then measure a genuine replacement
+        // with the old publication and candidate both alive through detached preparation.
+        app.build_observation = None;
+        app.request_spherical_world_build();
+        app.world_build
+            .as_mut()
+            .unwrap()
+            .worker
+            .take()
+            .unwrap()
+            .join()
+            .unwrap();
+        let completion = app.world_build.as_ref().unwrap().receiver.recv().unwrap();
+        let before = native_memory();
+        let started = std::time::Instant::now();
+        let prepared = app.prepare_world_publication(completion, &render).unwrap();
+        let duration = started.elapsed();
+        let retained = native_memory();
+        app.commit_world_publication(prepared, &render).unwrap();
+        eprintln!("PHASE_A_DETACHED_SAMPLE outcome=published replacement=true cache=hot preparation_s={:.6} memory_before={before:?} memory_old_plus_detached={retained:?} memory_after_commit={:?} gpu_device_memory=unmeasured validation=included source=offscreen_native_test", duration.as_secs_f64(), native_memory());
+    }
+
+    #[cfg(windows)]
+    fn native_memory() -> Option<(usize, usize)> {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+            ..Default::default()
+        };
+        // Reads this process into the exact Windows C structure; no external process access.
+        let ok =
+            unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
+        (ok != 0).then_some((counters.WorkingSetSize, counters.PeakWorkingSetSize))
+    }
+
+    #[cfg(not(windows))]
+    fn native_memory() -> Option<(usize, usize)> {
+        None
     }
 }

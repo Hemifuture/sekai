@@ -53,6 +53,12 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 pollster = "0.4"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
+
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_System_ProcessStatus",

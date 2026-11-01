@@ -775,15 +775,22 @@ fn standalone_and_replacement_builds_reconcile_edges_to_the_final_overlay_channe
 #[test]
 fn persisted_origin_defaults_new_apps_and_missing_tags_to_spherical() {
     let app = TemplateApp::default();
-    let mut encoded = serde_json::to_value(&app).unwrap();
+    let encoded = serde_json::to_value(&app).unwrap();
 
     assert_eq!(app.world_origin(), PersistedWorldOrigin::SphericalV1);
     // The formation product chain is the interactive default since 7323cba
     // (G1: crust follows the plates and the formation chain closes).
     assert_eq!(app.runtime_graph(), AppRuntimeGraph::SphericalFormation);
-    assert_eq!(encoded["world_origin"], "SphericalV1");
-    assert_eq!(encoded["spherical_space_spec"]["radius"], 6_371_000.0);
-    assert_eq!(encoded["spherical_space_spec"]["target_cell_count"], 20_000);
+    assert!(encoded.get("world_origin").is_none());
+    assert!(encoded.get("spherical_space_spec").is_none());
+    assert_eq!(
+        encoded["inputs"]["spherical_space_spec"]["radius"],
+        6_371_000.0
+    );
+    assert_eq!(
+        encoded["inputs"]["spherical_space_spec"]["target_cell_count"],
+        20_000
+    );
     assert!(encoded.get("spherical_mode").is_none());
     assert!(encoded.get("geometry_mode").is_none());
     assert!(encoded.get("world_mode").is_none());
@@ -791,12 +798,8 @@ fn persisted_origin_defaults_new_apps_and_missing_tags_to_spherical() {
     assert!(encoded.get("spherical_renderer").is_none());
     assert!(encoded.get("stage_cache").is_none());
 
-    encoded.as_object_mut().unwrap().remove("world_origin");
-    encoded
-        .as_object_mut()
-        .unwrap()
-        .remove("spherical_space_spec");
-    let restored: TemplateApp = serde_json::from_value(encoded).unwrap();
+    // A legacy autosave without origin or space tags still uses the spherical defaults.
+    let restored: TemplateApp = serde_json::from_value(serde_json::json!({})).unwrap();
     assert_eq!(restored.world_origin(), PersistedWorldOrigin::SphericalV1);
     assert_eq!(
         restored.runtime_graph(),

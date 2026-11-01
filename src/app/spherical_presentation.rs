@@ -1,5 +1,7 @@
 //! Composition root for one complete source-bound spherical presentation.
 
+use super::build_metrics::{BuildObservation, BuildPhase};
+use super::WorldBuildPhase;
 use std::sync::Arc;
 
 use eframe::egui_wgpu::wgpu;
@@ -618,6 +620,40 @@ pub struct PublishedSphericalPresentation {
 }
 
 impl PublishedSphericalPresentation {
+    /// Validates the existing world lineage, then prepares an independent renderer.
+    /// The caller retains both current resources until its final publication guard succeeds.
+    pub(super) fn prepare_detached_world(
+        mut candidate: SphericalPresentationCandidate,
+        current: Option<&Self>,
+        view: SphericalPresentationViewState,
+        state: &SphericalFieldDisplayState,
+        gpu: &mut SphericalRendererPreparer<'_>,
+    ) -> Result<Self, SphericalPresentationError> {
+        if let Some(current) = current {
+            candidate.lineage.validate_current(current)?;
+            candidate.adopt_live_display(current)?;
+        } else {
+            candidate.lineage.validate_initial()?;
+        }
+        let mut state = state.clone();
+        if current.is_none_or(|current| current.source() != candidate.source()) {
+            state.select_entity(None);
+        }
+        if candidate.view_state != view || candidate.state != state {
+            candidate = assemble_spherical_candidate(
+                Arc::clone(candidate.document_arc()),
+                candidate.report().clone(),
+                view,
+                &state,
+                candidate.clock(),
+                FailureInjector::NONE,
+                candidate.lineage.clone(),
+            )?;
+        }
+        candidate.lineage.clear();
+        Self::try_new(candidate, gpu)
+    }
+
     /// Prepares the renderer and publishes an already complete first candidate.
     pub fn try_new(
         candidate: SphericalPresentationCandidate,
@@ -750,6 +786,8 @@ impl PublishedSphericalPresentation {
             self.clock(),
             WorldCandidateLineage::Replacement(Arc::new(WorldReplaceBase::from_published(self))),
             &BuildCancellation::new(),
+            None,
+            None,
         )
     }
 
@@ -1628,6 +1666,8 @@ pub fn build_spherical_formation_candidate_for_view(
         clock,
         WorldCandidateLineage::NoBase,
         &BuildCancellation::new(),
+        None,
+        None,
     )
 }
 
@@ -1658,7 +1698,10 @@ fn build_spherical_formation_candidate_with_lineage(
     clock: &DisplayRevisionClock,
     lineage: WorldCandidateLineage,
     cancellation: &BuildCancellation,
+    observation: Option<&BuildObservation>,
+    phase: Option<&std::sync::Mutex<WorldBuildPhase>>,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    let input_timing = observation.map(|o| o.span(BuildPhase::InputAndSurface, Some(1)));
     let (external, graph) = match geometry {
         FormationGeometryInput::Surface {
             quality_profile,
@@ -1691,12 +1734,18 @@ fn build_spherical_formation_candidate_with_lineage(
             )
         }
     };
+    drop(input_timing);
+    WorldBuildPhase::Graph.enter(phase);
+    let graph_timing = observation.map(|o| o.span(BuildPhase::Graph, Some(1)));
     let outcome = BuildEngine::new(graph).build_with_cancellation(
         root_seed,
         external,
         cache,
         cancellation,
     )?;
+    drop(graph_timing);
+    WorldBuildPhase::Presentation.enter(phase);
+    let _presentation_timing = observation.map(|o| o.span(BuildPhase::Presentation, Some(1)));
     let document = Arc::new(SphericalWorldFieldDocument::Formation(Arc::new(
         SphericalFormationFieldDocument::from_build_outcome(&outcome)?,
     )));
@@ -1774,6 +1823,17 @@ pub fn run_spherical_world_build(
     cache: &mut MemoryStageCache,
     cancellation: &BuildCancellation,
 ) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
+    run_spherical_world_build_observed(request, cache, cancellation, None, None)
+}
+
+/// App-only timing at the existing causal boundaries; validation remains included.
+pub(super) fn run_spherical_world_build_observed(
+    request: SphericalWorldBuildRequest,
+    cache: &mut MemoryStageCache,
+    cancellation: &BuildCancellation,
+    observation: Option<&BuildObservation>,
+    phase: Option<&std::sync::Mutex<WorldBuildPhase>>,
+) -> Result<SphericalPresentationCandidate, SphericalPresentationError> {
     let (lineage, clock) = match request.replacement {
         Some(token) => (token.lineage, token.clock),
         None => (
@@ -1801,6 +1861,8 @@ pub fn run_spherical_world_build(
             &clock,
             lineage,
             cancellation,
+            observation,
+            phase,
         ),
         SphericalWorldBuildTarget::PreparedFormation { geometry } => {
             build_spherical_formation_candidate_with_lineage(
@@ -1816,9 +1878,12 @@ pub fn run_spherical_world_build(
                 &clock,
                 lineage,
                 cancellation,
+                observation,
+                phase,
             )
         }
         SphericalWorldBuildTarget::LegacyFoundation { space } => {
+            let input_timing = observation.map(|o| o.span(BuildPhase::InputAndSurface, Some(1)));
             let external = build_spherical_external_artifacts(
                 &space,
                 &request.formation,
@@ -1826,8 +1891,15 @@ pub fn run_spherical_world_build(
                 &request.relief,
                 &request.geologic,
             )?;
+            drop(input_timing);
+            WorldBuildPhase::Graph.enter(phase);
+            let graph_timing = observation.map(|o| o.span(BuildPhase::Graph, Some(1)));
             let outcome = BuildEngine::new(spherical_natural_foundation_graph()?)
                 .build_with_cancellation(request.root_seed, external, cache, cancellation)?;
+            drop(graph_timing);
+            WorldBuildPhase::Presentation.enter(phase);
+            let _presentation_timing =
+                observation.map(|o| o.span(BuildPhase::Presentation, Some(1)));
             let document = Arc::new(SphericalWorldFieldDocument::NaturalFoundation(Arc::new(
                 SphericalNaturalFieldDocument::from_build_outcome(&outcome)?,
             )));
@@ -1883,27 +1955,41 @@ fn formation_spec_external_artifacts(
         WorldFormationGenerator::resolve_for_roll(formation, (root_seed.raw() % 100) as u32)?;
     let mut external = ExternalArtifacts::new();
     external.insert(NaturalQualityProfileArtifact::new(quality_profile))?;
-    external.insert(ResolvedTectonicInputArtifact::new(
-        ResolvedTectonicInput::new(TectonicModel::CurrentSliceV1, tectonic.clone())?,
-    ))?;
+    let (resolved_tectonic, resolved_geologic) = formation_authored_models(tectonic, geologic)?;
+    external.insert(ResolvedTectonicInputArtifact::new(resolved_tectonic))?;
     external.insert(ResolvedWorldFormationArtifact::new(resolved_formation))?;
-    external.insert(ResolvedGeologicInputArtifact::new(
-        ResolvedGeologicInput::new(GeologicModel::CurrentSliceV1, geologic.clone())?,
-    ))?;
+    external.insert(ResolvedGeologicInputArtifact::new(resolved_geologic))?;
     external.insert(ReliefSpecArtifact::new(relief.clone()))?;
-    external.insert(ResolvedClimateInputArtifact::new(
+    let (climate, hydro_erosion) = formation_implicit_models()?;
+    external.insert(ResolvedClimateInputArtifact::new(climate))?;
+    external.insert(ResolvedHydroErosionInputArtifact::new(hydro_erosion))?;
+    Ok(external)
+}
+
+/// Shared compiled model bindings for the authored formation inputs.
+pub(super) fn formation_authored_models(
+    tectonic: &TectonicSpec,
+    geologic: &GeologicSpec,
+) -> Result<(ResolvedTectonicInput, ResolvedGeologicInput), SphericalPresentationError> {
+    Ok((
+        ResolvedTectonicInput::new(TectonicModel::CurrentSliceV1, tectonic.clone())?,
+        ResolvedGeologicInput::new(GeologicModel::CurrentSliceV1, geologic.clone())?,
+    ))
+}
+
+/// Shared fixed climate/hydro inputs for both generation and recipe compatibility.
+pub(super) fn formation_implicit_models(
+) -> Result<(ResolvedClimateInput, ResolvedHydroErosionInput), SphericalPresentationError> {
+    Ok((
         ResolvedClimateInput::new(
             ClimateModel::SeasonalEnergyMoistureV1,
             ClimateSpec::default(),
         )?,
-    ))?;
-    external.insert(ResolvedHydroErosionInputArtifact::new(
         ResolvedHydroErosionInput::new(
             HydroErosionModel::PriorityFloodStreamPowerV1,
             HydroErosionSpec::default(),
         )?,
-    ))?;
-    Ok(external)
+    ))
 }
 
 /// Binds one complete document to every presentation derivative for the view.

@@ -6,6 +6,16 @@ pub(super) const DEFAULT_TARGET_CELL_COUNT: u32 = 20_000;
 /// Root seed used by a newly authored product world.
 pub const PRODUCT_DEFAULT_WORLD_SEED: RootSeed = RootSeed::new(42);
 
+/// Compatibility epoch for generation semantics outside existing domain/stage versions.
+/// Changes to P1, RNG binding, or profile numeric policy must bump their owning version
+/// or this epoch. Application releases alone do not change recipe compatibility.
+///
+/// Epoch 2: main changed generated products after the Phase A base `a716138`
+/// (`a14a344`, `9e87d39`, `0f6c834`, `2090696`, `51a9b36`, among others) without
+/// bumping any identity read here, so epoch-1 recipes would otherwise compare as
+/// `Exact` against a generator that no longer rebuilds their world.
+pub(super) const PRODUCT_RECIPE_GENERATOR_VERSION: u32 = 2;
+
 /// Which authoritative generation chain the spherical canvas builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorldPipeline {
@@ -41,10 +51,6 @@ pub enum PersistedWorldOrigin {
     SphericalV1,
 }
 
-pub(super) fn missing_world_origin_is_spherical() -> PersistedWorldOrigin {
-    PersistedWorldOrigin::SphericalV1
-}
-
 /// The graph family selected for runtime initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppRuntimeGraph {
@@ -68,6 +74,7 @@ pub(super) mod spherical_space_spec_serde {
     use crate::world::{Meters, SphericalSpaceSpec};
 
     #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct Wire {
         radius: f64,
         target_cell_count: u32,
