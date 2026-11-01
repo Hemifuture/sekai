@@ -91,7 +91,12 @@ WASM lib check、Trunk Release 与 native Release 构建均通过。新增 UI �
 - [x] site 站点导出适配当前作者输入与 P4 身份；保留旧冻结导出，不覆盖旧世界。
 - [x] 合入海岸响应诊断记录，对最终工作域复跑最小程序化场景。
 - [x] 最终 Release 常规契约分批覆盖、工程门禁、native/Trunk 构建；原全量命令超时如上保留。
-- [ ] README/PROGRESS 更新、最终备份与已包含分支/工作区清理。
+- [x] README/PROGRESS 更新、最终备份与已包含分支/工作区清理。
+  产品代码检查点 `b8d676b`；主目录和湖/A10研究共3个工作区。本地保留 main、
+  integration/sekai-current、a10-impl、lod1-lake-r4、g4-stage0-1a、p2-boundary-noise-spec
+  六个分支；G4/P2无活动工作区但源码仍在，未当作已采纳。
+  恢复清单、完整 bundle、被忽略的站点导出/探针 tar 和 exe SHA256 在
+  `D:/hemifuture/sekai-backup-20261101-final/`，未改远端。
 - [ ] 用户 UI：启动当前候选，编辑/撤销/重做，生成中取消，保存/重开一次生成，旧配方显式升级；
   检查二维/三维、岸线/河口/点选和站点导出身份。用户本人确认前不标记产品整体交付。
 
