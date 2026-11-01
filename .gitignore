@@ -25,3 +25,6 @@ debug.log
 
 # Per-plan agent execution scratch
 .superpowers/sdd/
+
+# Site-climatology exports written by the native app
+/site-climatology/

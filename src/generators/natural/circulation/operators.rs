@@ -2461,11 +2461,12 @@ mod tests {
         let max_rate = incoming_rates.into_iter().fold(0.0_f64, f64::max);
         assert!(max_rate > 0.0);
         let dt_seconds = 3.5 / max_rate;
+        let kelvin_offset = crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K as f32;
         let shifted = scalar
             .iter()
-            .map(|value| value + 273.15)
+            .map(|value| value + kelvin_offset)
             .collect::<Vec<_>>();
-        let constant = vec![273.15; grid.cell_count()];
+        let constant = vec![kelvin_offset; grid.cell_count()];
         let transport = |values: &[f32]| {
             operators
                 .advect_scalar_upwind_tracer_subcycled_cancellable(
@@ -2482,9 +2483,9 @@ mod tests {
         let minimum = scalar.iter().copied().fold(f32::INFINITY, f32::min);
         let maximum = scalar.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         // 初值与四个子步各经 f32 舍入，容差按温标平移后的量级计算。
-        let tolerance = 8.0 * f32::EPSILON * (273.15 + maximum.abs());
+        let tolerance = 8.0 * f32::EPSILON * (kelvin_offset + maximum.abs());
         for (value, shifted_value) in result.values().iter().zip(shifted_result.values()) {
-            assert!((shifted_value - value - 273.15).abs() <= tolerance);
+            assert!((shifted_value - value - kelvin_offset).abs() <= tolerance);
             assert!(*value >= minimum && *value <= maximum);
         }
         assert_eq!(transport(&constant).values(), constant);

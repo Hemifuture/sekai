@@ -1,84 +1,86 @@
 # Sekai
 
-[![CI](https://github.com/Hemifuture/sekai/actions/workflows/rust.yml/badge.svg)](https://github.com/Hemifuture/sekai/actions/workflows/rust.yml)
-[![GitHub Pages](https://github.com/Hemifuture/sekai/actions/workflows/pages.yml/badge.svg)](https://github.com/Hemifuture/sekai/actions/workflows/pages.yml)
+Sekai 是使用 Rust、egui 和 wgpu 构建的幻想世界地图生成器。产品是一份可检查、可复现的
+**最终当前态**，而不是历史回放或预测级气候模拟器。
 
-Sekai 是一个用 Rust、egui 和 wgpu 构建的幻想世界生成器。项目面向世界观作者，以前工业、中世纪幻想为默认语境，生成可检查、可复现且因果关系清晰的**当前时间切片**。
+> 本页描述本地 `integration/sekai-current` 整合候选。工程能力已经汇合，但用户 UI 验收和
+> 部分科学质量问题仍未完成；本轮没有推送远端，也未把候选标为正式交付。
+> 当前范围和证据见 [项目进度](docs/PROGRESS.md) 与
+> [整合验证记录](docs/superpowers/plans/2026-11-01-integration-validation.md)。
 
-当前里程碑聚焦自然世界底座。历史时间线、事件演化和历史回放不属于现阶段实现；系统只用当前板块、地幔、气候和地表过程之间的因果关系，使最终快照显得经历过自然塑形。
+## 当前候选可以做什么
 
-> 当前状态：自然底座里程碑已合入 `main`。完整进度、验证证据和未完成范围见 [项目进度](docs/PROGRESS.md)。
+- 在球面上生成板块、地壳、基底/初级地形、全球环流，以及水文、侵蚀和沉积后的最终地图。
+  二维投影与三维球体读取同一已验证产物。
+- 选择大陆、群岛等形成预设；额外提供**程序化海岸（实验）**，把程序化形状作为真实地壳
+  初态，再进入既有物理过程。该实验预设当前只开放草稿档，不承诺局地气候或细海峡真实性。
+- 放大查看派生地形、水岸、河口并点选字段。已修复整格海岸着色和拾取层级不一致；
+  个别湖泊的直岸、截断及一致性问题仍在独立研究中。
+- 编辑作者输入、撤销/重做、显式重建，以及在生成中取消；旧有效世界保留到新产物原子发布。
+- 在原生桌面通过“文件”菜单保存、打开配方。项目保存输入与兼容身份，**不保存世界快照**；
+  重开时重新生成。不兼容配方必须显式升级副本，不静默冒充原来的世界。
+- 在“站点气候”面板选择区域、查看月值、显示采样足迹并导出带指纹的 JSON。
+  不可得能力有明确标记；旧青岚冻结导出保留原身份，新构建不会覆盖成“同一世界”。
+- 复用启动时的内存几何预热、求解工作区和已验证快照，减少重复构建、校验与指纹计算。
+  不使用磁盘世界缓存掩盖生成成本，当前仍不能宣称达到全部时延目标。
 
-## 当前可以做什么
+## 当前边界
 
-- 用固定根种子生成确定性的平面 Voronoi 世界，桌面默认规模为 20,000 个单元。
-- 选择随机、多大陆、群岛、超级大陆、大岛与卫星岛、火山群岛六种世界形成预设。
-- 生成彼此分责的板块、地壳、构造边界、地幔热点、地貌、地质、初步气候、水文与侵蚀字段。
-- 根据当前板块相对运动形成汇聚、离散和走滑边界响应，并在 Relief 阶段形成相应高程变化。
-- 在热点和洋—洋俯冲的因果支撑内生成海山、火山岛组和断续岛弧；多尺度噪声只负责塑形，不会凭空在全球海床上造陆。
-- 保持有限平面地图的外边缘和东西可见边框为海洋，避免尚未实现无缝球面拓扑时出现截断大陆。
-- 通过中文字段目录查看当前地表高程、海陆、地壳、板块、构造、火山、气候、水文、侵蚀和地质潜势等中间结果。
-- 在原生桌面和 WASM 上运行同一套领域生成逻辑。
+正式生成仍使用 C2 气候；**A10 降阶气候没有切入生产链**。最新整合场景通过预算、身份
+和直接消费者校验，但仍有风场跳变和季节相位的质量建议未满足。左侧已发布世界摘要会
+显示实际报告中的未满足项，数值与建议范围来自同一生产报告，不另设 UI 阈值。
 
-## 设计边界
+细分显示不自动提高全球物理分辨率。小岛、狭窄海峡、湖泊与全部 LOD 的物理一致性仍有
+未决范围。湖 R7、A10 R9、G4/P2 失败候选保留在研究分支，没有为了整合而强行上线。
+完整生态、魔法、社会与历史系统也不属于本轮已实现范围。
 
-Sekai 把“预设”“物理生成”“显示”保持为三个正交层次：
+## 原生桌面启动
 
-- 世界形成预设只提供宏观地壳初态和少量显式先验，不替代板块运动，也不直接绘制最终高度图。
-- Tectonics 拥有板块速度与边界分类，Mantle 独立拥有热点，Relief 是把这些当前因果场解释为正式地形分量的唯一阶段。
-- 气候、水文、侵蚀和显示层只消费上游公开产物；GPU 颜色、UI 状态和缓存都不是世界真值。
-- 每个随机机制使用独立的确定性子流；阶段产物有版本、验证和缓存失效边界。
-- 当前生成的是一个自洽快照，不生成地质年龄、热点年代、王朝、战争或其他历史事件。
-
-这些边界及第一阶段总体目标以 [当前切片世界生成总体设计](docs/superpowers/specs/2026-07-28-sekai-current-slice-world-design.md) 为准。
-
-## 快速开始
-
-需要 Rust 1.85 或更高版本。运行桌面 release 构建：
+在当前整合目录运行：
 
 ```powershell
-cargo run --release
+cargo run --release --bin sekai
 ```
 
-应用左侧可以设置根种子、目标单元数、世界形态和构造活动度；重建后可在字段目录中切换不同的自然字段。
+已构建的可执行文件是 `target/release/sekai.exe`。推荐这样验收：
 
-Web 版本使用 [Trunk](https://trunkrs.dev/)：
+1. 用“文件 → 新建”进入当前默认完整生成链；选择草稿档、种子 42。
+2. 选择“程序化海岸（实验）”，驱动切为“陆地占比”，设置目标 25%，点击重建。
+3. 查看当前地表高程、降水和风，放大海岸/湖泊，比较二维、三维、河口与点击读数。
+   留意摘要中的气候质量建议；实验预设切到标准/高档时应明确禁用重建，不应伪装快速成功。
+4. 修改参数并撤销/重做，在生成中取消；确认不会发布旧请求或丢失此前有效地图。
+5. 保存配方，打开后等待重新生成。若提示兼容差异，只在确认后升级为新副本。
+6. 向下滚动展开“站点气候”，采用推荐锚点或当前选择，查看足迹/月表并导出。
+   原生输出在工作目录的 `site-climatology/`；切换世界时旧锚点和足迹不能留在新地图上。
+
+算法最终交付仍以用户本人在 UI 的结果为准，测试通过不替代这一步。
+
+## Web 构建
+
+共享 Rust 代码已通过 WASM 检查并重新生成 Trunk Release 产物。本轮以原生桌面为验收目标，
+**未完成浏览器交互、后台生成或文件体验的用户验收**，不把构建通过写成 Web 全功能交付。
 
 ```powershell
 rustup target add wasm32-unknown-unknown
 cargo install --locked trunk
-$env:RUSTFLAGS='--cfg getrandom_backend="wasm_js"'
-$env:RUSTDOCFLAGS='--cfg getrandom_backend="wasm_js"'
 trunk serve --release
 ```
 
-也可以访问由 `main` 自动构建的 [GitHub Pages 版本](https://hemifuture.github.io/sekai/)。
+## 验证与文档
 
-## 验证
+工程门禁是 `cargo fmt --all -- --check`、严格 workspace/all-targets/all-features Clippy、
+WASM lib check。测试按影响面选择；共享几何、身份及编排整合使用 Release 回归，GPU 测试
+串行。高成本语料与参考探针保持 ignored/offline，不默认扩大调试档全量或模型时域。
 
-提交前的核心质量门如下：
+本轮全量命令超时、未执行套件的有界续跑、既有审计身份基线恢复、真实配方重开和当前
+导出身份的结果均如实记录在[整合验证记录](docs/superpowers/plans/2026-11-01-integration-validation.md)。
 
-```powershell
-cargo fmt --all -- --check
-cargo check --all-features
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
-cargo test --release --test natural_display_golden
-```
+- [唯一协作规则](AGENTS.md)
+- [项目进度与未完成范围](docs/PROGRESS.md)
+- [产品收口与清理计划](docs/superpowers/plans/2026-10-31-product-consolidation.md)
+- [程序化海岸规格及支持域](docs/superpowers/specs/2026-10-30-procedural-coast-climate-spike.md)
+- [作者配方闭环](docs/superpowers/specs/2026-09-30-phase-a-authoring-loop-design.md)
+- [站点气候导出](docs/superpowers/specs/2026-10-26-site-climatology-export-design.md)
 
-CI 执行 fmt、workspace clippy、wasm32 检查、全套件测试、WASM/Trunk 构建、GPU 离屏参考测试和多平台 release 构建。性能预算与大语料证据是 `#[ignore]` 的 Release 探针，离线运行，不在 CI 里。Golden 变化必须经过人工视觉审阅，不能只机械更新图片。
-
-## 文档
-
-- [项目进度与当前边界](docs/PROGRESS.md)
-- [当前切片世界生成总体设计](docs/superpowers/specs/2026-07-28-sekai-current-slice-world-design.md)
-- [独立字段显示系统设计](docs/superpowers/specs/2026-07-29-field-display-system-design.md)
-- [世界形成预设与海洋边框设计](docs/superpowers/specs/2026-08-02-world-formation-presets-design.md)
-- [自然地图可信度修正设计](docs/superpowers/specs/2026-08-02-natural-map-polish-design.md)
-- [因果岛屿与多尺度地貌噪声设计](docs/superpowers/specs/2026-08-03-causal-island-relief-design.md)
-
-`docs/superpowers/specs/` 保存已确认的设计契约，`docs/superpowers/plans/` 保存相应实施与验收记录。`docs/` 下较早的通用架构、算法和地形研究文档保留作历史参考；若内容冲突，以当前切片总体设计和后续日期更晚的专项设计为准。
-
-## 尚未实现
-
-自然底座里程碑不代表第一阶段完整产品已经完成。目前仍未交付的主要范围包括完整土壤与生态、魔法地理、物种与社会当前切片、作者编辑与项目存储，以及通往外部城镇/村庄生成器的确定性链接。它们会继续沿用现有的类型化阶段、单一职责和只读显示边界；历史系统则留待未来独立设计。
+设计事实在 `docs/superpowers/specs/`，冻结内容通过显式修订变更。较早的平面生成与性能
+记录保留为历史，不代表当前球面管线的能力、质量或耗时。

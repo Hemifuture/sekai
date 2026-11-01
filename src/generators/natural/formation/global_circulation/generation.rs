@@ -3086,7 +3086,9 @@ fn energy_total(
                 check_cancelled(cancellation)?;
             }
             let capacity = super::tendency::cell_heat_capacity_per_area(state, layer, index)?;
-            total += cell.area_m2() * capacity * (f64::from(*value) + 273.15);
+            total += cell.area_m2()
+                * capacity
+                * (f64::from(*value) + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K);
         }
     }
     if let Some(deep) = state.deep_ocean_temperature_c() {
@@ -3095,7 +3097,9 @@ fn energy_total(
             if index % 256 == 0 {
                 check_cancelled(cancellation)?;
             }
-            total += cell.area_m2() * capacity * (f64::from(*value) + 273.15);
+            total += cell.area_m2()
+                * capacity
+                * (f64::from(*value) + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K);
         }
     }
     total += WATER_VAPORIZATION_LATENT_HEAT_J_KG * moisture_total(grid, state, cancellation)?;
@@ -3132,7 +3136,9 @@ fn energy_change_total(
             let after_capacity = super::tendency::cell_heat_capacity_per_area(after, layer, index)?;
             total += cell.area_m2()
                 * (after_capacity * (f64::from(*after_value) - f64::from(*before_value))
-                    + (after_capacity - before_capacity) * (f64::from(*before_value) + 273.15));
+                    + (after_capacity - before_capacity)
+                        * (f64::from(*before_value)
+                            + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K));
         }
     }
     if let (Some(before), Some(after)) = (

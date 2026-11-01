@@ -576,7 +576,7 @@ pub(super) fn ocean_mass_source_heat_j(
             let capacity = super::tendency::cell_heat_capacity_per_area(before, layer, cell)?;
             heat_j += grid.cells()[cell].area_m2() * capacity / old_depth
                 * (f64::from(endpoint.temperature_c(role).expect("ocean temperature")[cell])
-                    + 273.15)
+                    + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K)
                 * (new_depth - old_depth);
         }
     }

@@ -14,6 +14,9 @@ use crate::world::spatial::{
 };
 use crate::world::{CellId, MAX_SPHERICAL_CELL_COUNT};
 
+/// Exact Celsius/Kelvin origin offset, BIPM SI Brochure, 9th edition, §2.3.1.
+pub(crate) const CELSIUS_TO_KELVIN_OFFSET_K: f64 = 273.15;
+
 const MAX_GLOBAL_CIRCULATION_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
 const WATER_VAPOR_TO_DRY_AIR_MOLAR_MASS_RATIO: f64 = 0.622;
 const BOLTON_SATURATION_REFERENCE_VAPOR_PRESSURE_PA: f64 = 611.2;
@@ -853,7 +856,7 @@ fn reference_moisture_profile_integral_m(base_height_m: f64, thickness_m: f64) -
 pub fn gray_equilibrium_surface_temperature_c(absorbed_shortwave_w_m2: f64) -> f64 {
     (absorbed_shortwave_w_m2.max(0.0) / STEFAN_BOLTZMANN_CONSTANT_W_M2_K4).powf(0.25)
         + EARTH_GRAY_GREENHOUSE_OFFSET_K
-        - 273.15
+        - CELSIUS_TO_KELVIN_OFFSET_K
 }
 
 /// Linearized gray outgoing longwave around the local radiative-equilibrium
@@ -873,8 +876,9 @@ pub fn linearized_outgoing_longwave_w_m2(
 /// Gray longwave slope `B = 4 sigma T_e^3` at the emission temperature of one
 /// surface target (the `B` of the Budyko 1969 / North 1975 `A + B T` law).
 pub fn gray_longwave_slope_w_m2_k(equilibrium_surface_temperature_c: f64) -> f64 {
-    let emission_temperature_k =
-        (equilibrium_surface_temperature_c + 273.15 - EARTH_GRAY_GREENHOUSE_OFFSET_K).max(1.0);
+    let emission_temperature_k = (equilibrium_surface_temperature_c + CELSIUS_TO_KELVIN_OFFSET_K
+        - EARTH_GRAY_GREENHOUSE_OFFSET_K)
+        .max(1.0);
     4.0 * STEFAN_BOLTZMANN_CONSTANT_W_M2_K4 * emission_temperature_k.powi(3)
 }
 
@@ -1082,9 +1086,9 @@ pub fn lcl_adjusted_orographic_condensation_kg_m2_s(
     if !logarithmic_pressure_ratio.is_finite() || dewpoint_denominator <= 0.0 {
         return 0.0;
     }
-    let dewpoint_k =
-        BOLTON_DEWPOINT_OFFSET_C * logarithmic_pressure_ratio / dewpoint_denominator + 273.15;
-    let temperature_k = temperature_c + 273.15;
+    let dewpoint_k = BOLTON_DEWPOINT_OFFSET_C * logarithmic_pressure_ratio / dewpoint_denominator
+        + CELSIUS_TO_KELVIN_OFFSET_K;
+    let temperature_k = temperature_c + CELSIUS_TO_KELVIN_OFFSET_K;
     if dewpoint_k <= BOLTON_LCL_TEMPERATURE_OFFSET_K || temperature_k <= 0.0 {
         return 0.0;
     }

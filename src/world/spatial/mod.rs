@@ -28,8 +28,9 @@ pub(crate) use sphere_geometry::{
     project_tangent_raw, scale, spherical_triangle_area_unit_raw, subtract,
 };
 pub use sphere_geometry::{
-    canonical_east_north_basis, central_angle, project_tangent, spherical_triangle_area_unit,
-    SphereGeometryError, UnitVector3,
+    canonical_east_north_basis, central_angle, gnomonic_forward, gnomonic_inverse,
+    latitude_longitude_radians, project_tangent, spherical_triangle_area_unit, SphereGeometryError,
+    UnitVector3,
 };
 pub use spherical_snapshot::{
     SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot, SphericalSurfaceVertex,

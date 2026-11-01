@@ -37,6 +37,11 @@ pub(crate) const WORLD_LOADING_PALETTE: WorldLoadingPalette = WorldLoadingPalett
     ],
 };
 
+/// Effective sampled-region outline in sRGB, retained from the site UI prototype.
+pub(crate) const SITE_FOOTPRINT_SRGB: [u8; 3] = [255, 196, 0];
+/// Requested-region outline in sRGB when climate support widens the footprint.
+pub(crate) const SITE_REQUESTED_FOOTPRINT_SRGB: [u8; 3] = [255, 255, 255];
+
 /// A linear-light RGBA color used consistently by CPU and GPU display paths.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -205,14 +205,18 @@ pub(crate) fn thermal_height_target(
         .cells()
         .iter()
         .zip(air_temperature_c)
-        .map(|(cell, temperature)| cell.area_m2() * (f64::from(*temperature) + 273.15))
+        .map(|(cell, temperature)| {
+            cell.area_m2()
+                * (f64::from(*temperature) + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K)
+        })
         .sum::<f64>()
         / total_area;
     air_temperature_c
         .iter()
         .map(|temperature| {
             (f64::from(spec.atmosphere_reference_depth_m)
-                * (f64::from(*temperature) + 273.15 - mean_kelvin)
+                * (f64::from(*temperature) + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K
+                    - mean_kelvin)
                 / mean_kelvin) as f32
         })
         .collect()

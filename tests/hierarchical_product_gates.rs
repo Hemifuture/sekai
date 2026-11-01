@@ -29,10 +29,10 @@ use support::causal_formation::{
 /// spec amendment A16), inland average-interpolating centroids (A17),
 /// base-level beds with fine-dry river clipping (A18), the LOD-1 R2 lake
 /// bound with scale-recursive lake connectivity (A19), and the R2 lake-bed
-/// flattening with the lake-bound near-water partition (A20). Measured anew
-/// on this branch's unchanged P4 baseline when integrating LOD-1 (A21).
+/// flattening with the lake-bound near-water partition (A20). The integrated
+/// A9 work domain restores the measured A20 baseline, not the old P4 A21 baseline (A22).
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "1b0d3f0b0569ae23b82830414913641df3d5f5e1a23797c5ceca0c69f733a603";
+    "6b97e30623bead1c927a92313409b96ee3732faea87c6a336ad0c63465c710f3";
 
 fn evaluator() -> HierarchicalEvaluator {
     evaluator_for(causal_formation_fixture())

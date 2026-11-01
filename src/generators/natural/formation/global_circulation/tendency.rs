@@ -4244,7 +4244,7 @@ fn diagnose_axisymmetric_circulation(
         // still own the seasonal response.
         let temperature_k = temperature
             .iter()
-            .map(|value| f64::from(*value) + 273.15)
+            .map(|value| f64::from(*value) + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K)
             .sum::<f64>()
             / CLIMATE_MONTH_COUNT as f64;
         weight += area;
@@ -4661,7 +4661,8 @@ fn is_atmosphere_role(role: ClimateLayerRole) -> bool {
 
 fn atmospheric_thermal_buoyancy_m_s2(temperature_anomaly_c: f64) -> f64 {
     STANDARD_GRAVITY_M_S2 * temperature_anomaly_c
-        / (crate::world::natural::STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C + 273.15)
+        / (crate::world::natural::STANDARD_ATMOSPHERE_SEA_LEVEL_TEMPERATURE_C
+            + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K)
 }
 
 /// Returns upper buoyancy in m/s² before the nonnegative terrain correction.
@@ -7161,7 +7162,10 @@ mod tests {
             .cells()
             .iter()
             .zip(&equilibrium)
-            .map(|(cell, months)| cell.area_m2() * (f64::from(months[0]) + 273.15))
+            .map(|(cell, months)| {
+                cell.area_m2()
+                    * (f64::from(months[0]) + crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K)
+            })
             .sum::<f64>()
             / total_area_m2;
         let expected_eddy_scale = (9.806_65 * 10_000.0 * diagnostic.equator_to_pole_contrast_k

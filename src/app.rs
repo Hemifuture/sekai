@@ -15,6 +15,7 @@ mod project_file;
 mod project_io;
 #[cfg(not(target_arch = "wasm32"))]
 mod project_ui;
+mod site_climatology;
 mod spherical_formation_display;
 #[cfg_attr(not(test), allow(dead_code))]
 mod spherical_natural_display;
@@ -809,6 +810,7 @@ pub struct TemplateApp {
     active_runtime_stage_ids: Vec<String>,
     spherical_runtime_error: Option<String>,
     spherical_inspector_cache: SphericalInspectorCache,
+    site_climatology: site_climatology::SiteClimatologyPanel,
     stage_cache: MemoryStageCache,
     frame_sampler: FrameSampler,
     build_observation: Option<BuildObservation>,
@@ -973,6 +975,7 @@ impl Default for TemplateApp {
             active_runtime_stage_ids: Vec::new(),
             spherical_runtime_error: None,
             spherical_inspector_cache: SphericalInspectorCache::default(),
+            site_climatology: site_climatology::SiteClimatologyPanel::default(),
             stage_cache: MemoryStageCache::new(),
             frame_sampler: frame_stats::runtime_frame_sampler(),
             build_observation: None,
@@ -2176,6 +2179,9 @@ impl TemplateApp {
             .insert::<crate::gpu::spherical::SphericalFieldRenderer>(prepared.renderer);
         self.spherical_canvas_state
             .replace_field_state(prepared.published.state().clone());
+        self.site_climatology.synchronize_world(Some(
+            *prepared.published.source().build_result_hash().as_bytes(),
+        ));
         self.spherical_presentation
             .with_resource(|current| *current = Some(prepared.published));
         self.published_world_token = Some(prepared.token);
@@ -2533,7 +2539,51 @@ impl TemplateApp {
                     ui.label("球面世界尚未发布");
                 });
             }
+            self.paint_site_footprint(ui, rect);
         });
+    }
+
+    /// Outlines the site-climatology footprint over the canvas: the sampled
+    /// square solid, the requested square dashed when it was widened.
+    fn paint_site_footprint(&self, ui: &egui::Ui, rect: egui::Rect) {
+        let Some((effective, requested)) = self.site_climatology.outlines() else {
+            return;
+        };
+        let canvas_size = [f64::from(rect.width()), f64::from(rect.height())];
+        let painter = ui.painter_at(rect);
+        let to_screen = |point: [f64; 2]| rect.min + egui::vec2(point[0] as f32, point[1] as f32);
+        let [red, green, blue] = crate::view::SITE_FOOTPRINT_SRGB;
+        let stroke = egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(red, green, blue));
+        for [start, end] in self
+            .spherical_canvas_state
+            .project_polyline_to_screen(effective, canvas_size)
+        {
+            painter.line_segment([to_screen(start), to_screen(end)], stroke);
+        }
+        if let Some(requested) = requested {
+            // Dash whole connected runs: dashing each short projected segment
+            // restarts the pattern per segment and draws a small box solid.
+            let mut runs: Vec<Vec<egui::Pos2>> = Vec::new();
+            for [start, end] in self
+                .spherical_canvas_state
+                .project_polyline_to_screen(requested, canvas_size)
+            {
+                let (start, end) = (to_screen(start), to_screen(end));
+                match runs.last_mut() {
+                    Some(run) if run.last() == Some(&start) => run.push(end),
+                    _ => runs.push(vec![start, end]),
+                }
+            }
+            let [red, green, blue] = crate::view::SITE_REQUESTED_FOOTPRINT_SRGB;
+            for run in runs {
+                painter.extend(egui::Shape::dashed_line(
+                    &run,
+                    egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(red, green, blue)),
+                    4.0,
+                    3.0,
+                ));
+            }
+        }
     }
 
     fn setup_fonts(ctx: &egui::Context) {
@@ -3029,6 +3079,11 @@ impl eframe::App for TemplateApp {
                                 ui.colored_label(egui::Color32::LIGHT_RED, error.to_string());
                             }
                         }
+                        self.site_climatology.show(
+                            ui,
+                            presentation.document(),
+                            self.spherical_canvas_state.field_state().selected_entity(),
+                        );
                     });
                     if let Some(status) = self.spherical_runtime_error.as_deref() {
                         ui.separator();
@@ -3251,6 +3306,16 @@ fn show_spherical_area_summary(ui: &mut egui::Ui, document: &SphericalWorldField
                 .expect("formation summary and document variant agree")
                 .field_registry(),
         ),
+    }
+    if let Some(formation) = document.formation() {
+        for metric in formation.formation.bundle().climate_quality().metrics() {
+            if metric.status() == crate::world::natural::QualityMetricStatus::Fail {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    crate::ui::field::localization::climate_quality_advisory_text(metric),
+                );
+            }
+        }
     }
 }
 

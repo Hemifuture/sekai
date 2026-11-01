@@ -221,6 +221,7 @@ impl TemplateApp {
         self.formation_geometry = None;
         self.amplified_pick_batches = None;
         self.amplified_context = None;
+        self.site_climatology.synchronize_world(None);
         self.stage_cache = crate::engine::MemoryStageCache::new();
         self.active_runtime_graph = None;
         self.active_runtime_stage_ids.clear();

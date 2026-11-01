@@ -5,6 +5,28 @@ use crate::world::fields::{EntityKind, FieldDomain, FieldSchema, FieldValueType,
 
 const NATURAL_FIELD_PREFIX: &str = "field.sekai.core.natural.";
 
+/// Formats a measured climate advisory using the report's registered bounds;
+/// no acceptance threshold is duplicated in presentation code.
+pub(crate) fn climate_quality_advisory_text(
+    metric: &crate::world::natural::QualityMetric,
+) -> String {
+    let label = match metric.id().name() {
+        "cubed-face-seam-speed-ratio" => "相邻风场跳变比",
+        "seasonal-hemisphere-phase-fraction" => "季节半球相位通过比例",
+        other => other,
+    };
+    let value = metric
+        .value()
+        .map_or_else(|| "不可用".to_owned(), |value| format!("{value:.3}"));
+    let bounds = match (metric.bounds().min(), metric.bounds().max()) {
+        (Some(min), Some(max)) => format!("{min:.3}–{max:.3}"),
+        (Some(min), None) => format!("≥ {min:.3}"),
+        (None, Some(max)) => format!("≤ {max:.3}"),
+        (None, None) => "未设范围".to_owned(),
+    };
+    format!("气候质量建议未满足｜{label}：{value}（建议 {bounds}）")
+}
+
 pub(crate) const P4_WATER_ENERGY_BUDGET_LABEL: &str = "P4 水热预算";
 pub(crate) const P4_EVAPORATION_MINUS_PRECIPITATION_LABEL: &str = "E-P";
 pub(crate) const P4_PLANETARY_ALBEDO_LABEL: &str = "行星反照率";
@@ -33,6 +55,66 @@ pub(crate) fn derived_elevation_label(level: u8) -> String {
 /// Inspector row label of the water class the display derives at `level`.
 pub(crate) fn derived_water_label(level: u8) -> String {
     format!("水体（派生 L{level}）")
+}
+
+pub(crate) const SITE_CLIMATOLOGY_HEADING: &str = "站点气候";
+pub(crate) const SITE_HEADING_LABEL: &str = "朝向（+X 自东顺时针，°）";
+pub(crate) const SITE_SCALE_LABEL: &str = "尺度（行星米 / 游戏米）";
+pub(crate) const SITE_HALF_EXTENT_LABEL: &str = "游戏世界半边长（m）";
+pub(crate) const SITE_USE_SELECTION_LABEL: &str = "以选中单元为锚点";
+pub(crate) const SITE_RECOMMEND_LABEL: &str = "推荐锚点";
+pub(crate) const SITE_USE_CANDIDATE_LABEL: &str = "使用";
+pub(crate) const SITE_EXPORT_LABEL: &str = "导出";
+pub(crate) const SITE_FINGERPRINT_LABEL: &str = "导出指纹";
+pub(crate) const SITE_NO_ANCHOR_HINT: &str = "在地图或球体上点击一个单元，然后设为锚点";
+pub(crate) const SITE_FORMATION_ONLY_HINT: &str = "站点气候只对形成链世界可用";
+pub(crate) const SITE_NO_CANDIDATE_HINT: &str = "没有满足全部条件的锚点";
+pub(crate) const SITE_UNAVAILABLE_LABEL: &str = "不可得";
+pub(crate) const SITE_MONTH_COLUMNS: [&str; 9] = [
+    "月",
+    "气温 °C",
+    "降水 mm/日",
+    "地形雨占比",
+    "相对湿度",
+    "引导风 m/s",
+    "去向 °",
+    "Eady /日",
+    "湿日比例",
+];
+
+/// Product label of an exported site-climatology capability.
+pub(crate) const fn site_capability_label(
+    id: crate::world::natural::SiteCapabilityId,
+) -> &'static str {
+    use crate::world::natural::SiteCapabilityId as Id;
+    match id {
+        Id::SteeringWind => "引导风（上层风）",
+        Id::VerticalWindShear => "垂直风切变",
+        Id::EadyGrowthRate => "Eady 增长率",
+        Id::RelativeHumidity => "相对湿度",
+        Id::WetDayStatistics => "湿日统计",
+        Id::ConvectivePrecipitationShare => "对流降水占比",
+        Id::DiurnalTemperatureRange => "气温日较差",
+        Id::WindVariability => "风速分布与风向稳定度",
+        Id::CloudCover => "云量",
+        Id::TropicalCycloneClimatology => "热带气旋气候学",
+    }
+}
+
+/// Product explanation of why a site-climatology capability is not available.
+pub(crate) const fn site_capability_reason_label(
+    reason: crate::world::natural::SiteCapabilityReason,
+) -> &'static str {
+    use crate::world::natural::SiteCapabilityReason as Reason;
+    match reason {
+        Reason::NoUpperLayer => "P4 为单层布局，没有上层",
+        Reason::NoVerifiedWetDayRelationship => "由月降水推湿日频率的关系尚无可核对的出处",
+        Reason::NoPrecipitationTypeDiagnostic => "P4 不区分对流与大尺度降水",
+        Reason::NoDiurnalCycle => "P4 只发布月均值，没有日变化",
+        Reason::NoTransientStatistics => "P4 只发布月均矢量，没有瞬变方差",
+        Reason::CloudsNotImplemented => "云与地表能量（P6）尚未实现",
+        Reason::P4CapabilityUnavailable => "P4 能力清单标为不可得",
+    }
 }
 
 pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
@@ -194,5 +276,28 @@ pub(super) const fn localized_palette(palette: PaletteId) -> &'static str {
         PaletteId::Categorical => "分类",
         PaletteId::Hypsometric => "等高地形",
         PaletteId::LandOcean => "海陆",
+    }
+}
+
+#[cfg(test)]
+mod quality_advisory_tests {
+    use super::*;
+    use crate::world::natural::{
+        QualityBounds, QualityMetric, QualityMetricId, QualityMetricStatus,
+    };
+
+    #[test]
+    fn advisory_uses_report_values_instead_of_a_second_threshold() {
+        let metric = QualityMetric::new(
+            QualityMetricId::new("test", "cubed-face-seam-speed-ratio", 1).unwrap(),
+            QualityMetricStatus::Fail,
+            Some(7.5),
+            1,
+            QualityBounds::at_most(3.25).unwrap(),
+            None,
+        )
+        .unwrap();
+        let text = climate_quality_advisory_text(&metric);
+        assert!(text.contains("7.500") && text.contains("≤ 3.250"));
     }
 }

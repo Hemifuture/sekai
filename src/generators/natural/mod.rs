@@ -23,6 +23,7 @@ mod relief;
 mod relief_noise;
 mod relief_spec;
 mod rule_input;
+mod site_climatology;
 mod stage;
 mod surface_water_geometry;
 mod tectonics;
@@ -136,6 +137,11 @@ pub use rule_input::{
     AuthorConstraintsArtifact, ResolvedTectonicInput, ResolvedTectonicInputArtifact,
     ResolvedTectonicInputStage, ResolvedTectonicInputStageInputs, RulePackSetArtifact,
     RuleTectonicResolutionStage, RuleTectonicResolutionStageInputs, TectonicRuleResolutionArtifact,
+};
+pub use site_climatology::{
+    climate_grid_spacing_m, eady_growth_rate_per_day, recommend_site_anchors,
+    sample_site_climatology, toward_bearing_deg, SiteAnchorCandidate, SiteClimatologyInputs,
+    SiteFootprint,
 };
 pub use stage::TectonicSpecArtifact;
 pub use surface_water_geometry::{

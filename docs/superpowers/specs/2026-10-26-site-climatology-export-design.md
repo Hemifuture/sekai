@@ -1,7 +1,7 @@
 # 站点气候导出设计：把终点 P4 月气候按区域取样，供下游天气发生器使用
 
 日期：2026-10-26
-状态：**R0 草案，待用户审阅**。尚未实现，所有数值包络待按 §9 先测后钉。
+状态：**R1（2026-10-27）已实现于 `feat/site-climatology-export`**；实施期偏离与 Stage 0 实测见 §12，以 §12 为准。
 上位：`AGENTS.md`；P4 `2026-08-17-global-atmosphere-ocean-p4-design.md`；目标尺度优化
 `2026-10-14-resolution-bounded-optimization-design.md`（本导出是 P4 月字段的新消费者，见 §8）。
 下游：Voxim `Docs/Weather.md`（P1 接入 sekai 区域气候与日历）。
@@ -212,3 +212,325 @@ JSON，`schema_version = 1`。顶层：
 - 湿日转移概率与湿日频率：Geng, S., Penning de Vries, F. W. T. & Supit, I. (1986), *Agricultural and Forest Meteorology* 36(4)；New, M., Lister, D., Hulme, M. & Makin, I. (2002), *Climate Research* 21(1)。（实施前逐条核对原文，见 §9.0。）
 - 对流降水占比的候选观测依据：Dai, A. (2001), *Journal of Climate* 14(6)；Schumacher, C. & Houze, R. A. (2003), *Journal of Climate* 16(11)。
 - 引导气流：Holton, J. R. & Hakim, G. J., *An Introduction to Dynamic Meteorology*（第 5 版，2013）。
+
+## 12. 修订 R1（2026-10-27，实施记录）
+
+以下条目取代正文中与之冲突的部分。
+
+### 12.1 Stage 0 实测（§9.0）
+
+- P4 格距：取 `4πR²/(6N²)` 的平方根（`N` 为生产 `climate_face_resolution`，无新常数）。
+  R = 6371 km 时 Draft（N = 24）384.2 km，Standard（32）288.1 km，High（48）192.1 km。
+- Draft / seed 42（`causal_formation_fixture`）、青岚映射（1:1、半边长 8192 m）：4916 个陆地锚点，
+  扩大后的足迹每个含 7–9 个权威格（最小 7，中位数 7，最大 9），不是只落在一两格上。
+- 锚点推荐在该世界上 0.05 s（Release）。前五名均满足条件；第一名 35.4°N，一月 −5.2 °C、七月 10.1 °C。
+- 探针：`tests/site_climatology.rs::stage0_measures_draft_footprints_and_recommendations`（`#[ignore]`，Release）。
+
+### 12.2 湿日统计：显式不可得（§5.2）
+
+- 湿日阈值已核对原文：New et al. (2002) §2.3 把湿日定义为当日降水 **> 0.1 mm**，1.0 mm 阈值的站点换算到 0.1 mm。
+  导出 `wet_day_threshold_mm = WET_DAY_THRESHOLD_MM`（0.1），Voxim 按同一阈值判湿天气日。
+- 由月降水推湿日频率：New et al. (2002) 是对观测湿日频率直接插值，没有给出可复用的"降水 → 湿日"关系。
+  Geng et al. (1986) 的 `p_wd = 0.75 f`、`p_ww = 0.25 + p_wd` 本次也未能核对原文。
+  按出处纪律，`wet_day_statistics` 标为 `unavailable`（原因 `no_verified_wet_day_relationship`），
+  `wet_day_fraction`、`p_wet_given_dry`、`p_wet_given_wet`、`mean_wet_day_amount_mm` 全为 `null`。
+  这一项转为 §10 开放问题 2，交用户裁定。在此之前，Voxim 按 `Docs/Weather.md` §4.4 使用作者值。
+
+### 12.3 相对湿度改用 P4 自身的饱和定义（§5.2）
+
+正文原写"标准大气气压 + Bolton"。实现改为逐格计算 `q / saturation_specific_humidity_kg_kg(T)` 后按面积平均，
+直接复用 P4 在下层参考气压下的 Bolton 饱和比湿。P4 的比湿本身就是相对这一定义发布的，
+另用一套标准大气气压会造出第二个饱和事实源（SSOT）。
+
+### 12.4 Eady 增长率的 N 与赤道处理（§5.2）
+
+- 正文的 `N² = (g/ρ̄)·Δρ/Δz` 在现有布局下恒为零：两层大气用同一个 `P4_REFERENCE_AIR_DENSITY_KG_M3`，模型里没有密度分层。
+  实现改用干 Brunt–Väisälä 频率 `N² = (g/T)(g/c_p − Γ)`（Holton & Hakim 2013, §2.7.3）。
+  其中 `T` 为足迹月均近地面气温，`Γ = CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M`（U.S. Standard Atmosphere 1976，P4 强迫已在用），
+  `c_p = P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K`。方法 ID：`lindzen_farrell_1980_dry_standard_lapse_v1`。
+- `σ = 0.31 |f| |∂U/∂z| / N` 随 `f` 线性趋零、处处有限，不需要"`|f|` 过小"的阈值。
+  因此不新增阈值，也不使用 `not_applicable`。准地转假设在热带失效，下游应把低纬的小值读作"无天气尺度斜压活动"，而不是精确数值。
+- `Δz` 取两层参考厚度中点的高差（C2：5000 m），由 `ClimateLayerLayout` 读取。
+
+### 12.5 Schema 调整（§6.1）
+
+- `source`：
+  - `global_circulation_content_hash` 改为 `global_circulation_fingerprint`（`GlobalCirculationFields::fingerprint`，P4 字段状态身份），
+    同时记录 `build_result_hash` 与 `graph_contract_version`。应用层拿不到 bundle 内气候的单独 artifact `ContentHash`，这三项都是现成身份，没有另造；
+  - `sekai_revision` 改为 `sekai_package_version`；
+  - 新增 `climate_profile` 与 `quality_profile`，均为枚举的 snake_case 名。
+- `region`：
+  - 锚点改为一个权威格的质心，UI 点选单元，记录 `anchor_cell`；
+  - 新增 `requested_footprint_side_m`、`climate_grid_spacing_m`、`lake_fraction`；
+  - `effective_footprint_m` 改名为 `effective_footprint_side_m`；
+  - 朝向约定写死为"+X 自地理东**顺时针**（俯视）旋转"，与 Voxim canonical X→Z 顺时针一致。
+- 新增 `anchor_assessment`：离岸距离、内陆门槛、陆地、内陆、足迹纯陆地、湖格数、足迹起伏、是否满足全部条件。
+  它对应 Voxim `Docs/Weather.md` §7 第 4 项"选定理由写入导出"，并对任何锚点都记录，不只推荐锚点。
+- `months`：
+  - `inflow_bearing_deg` 改名为 `steering_flow_toward_bearing_deg`，明确是**去向**；
+  - 新增 `specific_humidity_kg_kg`、`month`；
+  - 不导出地形雨占比，由下游从两项降水相除得到，避免第二份事实。
+- `capabilities`：每项为 `{id, availability, reason, substitute}`。`reason` 是稳定原因码，UI 经本地化表显示中文；
+  共 10 项（引导风、风切变、Eady、相对湿度、湿日统计、对流占比、日较差、风变率、云量、热带气旋）。
+- 导出指纹是文件字节的纯 BLAKE3（不加域前缀），`b3sum` 可复核。
+
+### 12.6 锚点推荐（Voxim §7 第 4 项）
+
+- 条件：锚点为陆地；离最近的"沿岸海洋格"质心 ≥ `ANCHOR_INLAND_MIN_CLIMATE_SPACINGS`（2）个 P4 格距；足迹内全是陆地（无海、无湖）。
+- 按足迹高程起伏降序排名，相邻候选至少相隔一个有效足迹边长，取前 `ANCHOR_RECOMMENDATION_COUNT`（5）个。
+- 先用离岸跳数乘最大邻格距离作上界做预筛，再算精确球面距离。
+
+### 12.7 代码落点与 UI（§6.3、§7）
+
+- 类型：`src/world/natural/site_climatology.rs`。
+- 取样、派生与推荐：`src/generators/natural/site_climatology.rs`。
+- 纬经度与 gnomonic 正反投影：`src/world/spatial/sphere_geometry.rs`，为唯一实现，地图投影 `forward` 改为复用。
+- 面板：`src/app/site_climatology.rs`。
+
+用户验证步骤：
+
+1. `cargo run --release`，形成链生成任意世界。
+2. 在左侧"站点气候"中：
+   - 点"推荐锚点"→"使用"，或在地图/球体上点一个单元后点"以选中单元为锚点"；
+   - 画布上出现黄色实线方框（实际取样）和白色虚线小方框（青岚 16 km 请求，已扩大）；
+     16 km 请求框在全球视图里不到 1 像素，要放大地图才能看到虚线；
+   - 面板显示 12 个月的数值，北半球七月比一月暖；湿日比例显示"—"，上方注明"湿日统计：不可得"及原因。
+3. 点"导出"，在 `site-climatology/` 下得到 JSON；面板显示的指纹等于该文件的 `b3sum`。
+
+### 12.8 开放问题更新（§10）
+
+- 问题 1（只取陆地格）：推荐锚点要求足迹纯陆地，问题 1 对推荐锚点不再出现。手选锚点照常全部平均，并在 `land_fraction` 与评估中如实记录。
+- 问题 2（湿日公式出处）：**已裁定（2026-10-27）：`wet_day_statistics` 保持 `unavailable`**（§12.2 不变）。调研结论如下。
+  - **月降水 → `f_wet`**：没有已发表、可直接用的空间关系。
+    New, Hulme & Jones (2000), *J. Climate* 13, Part II §3b(3), p.2233 的式 (4)(5) 是 `WD = (a·PRE)^x`（x = 0.45），
+    属于年际距平关系，前提是已有当地 1961–90 的湿日常年值，不能从零推出湿日频率。
+    GWGEN、SIMMETEO 和 Geng et al. (1986) 都把湿日数当作输入，而不是输出。
+  - **CRU CL 2.0 自拟合**：数据取自 `https://crudata.uea.ac.uk/cru/data/hrg/tmc/`，
+    `grid_10min_pre.dat.gz`（SHA-256 `c0a46277c84ad989625e38bbaccf2ead026391a4cc359795a3a38ff1a5a2bfe3`）与
+    `grid_10min_rd0.dat.gz`（SHA-256 `eb52eb1673e2ec1f79f034a0e840b0c03bece13a412ea912c310c1bb5cce413e`）。
+    原始数据不入库，复现脚本与结果见 `assets/2026-10-27-wet-day-fit/`（`fit_wetday.py`、`result.json`；
+    运行方式 `python -I fit_wetday.py <数据目录> <输出 json>`）。
+    - 拟合式 `f = 1 − exp(−a·P^b)`（P 为 mm/日），按 cos(纬度) 加权，得 a = 0.3292，b = 0.4559。
+    - 全球 R² = 0.591。即使不限函数形式、只用 P 作预报因子（窄分箱条件均值），R² 上限也只有 0.610。
+    - P 在 1–3 mm/日时 MAE 为 0.115，约合每 30 天 ±3.5 个湿日；残差 5%–95% 区间为 −0.27 到 +0.20。
+      50–70°N 的偏差为 −0.12。
+    - 结论：精度不够当判据；要修正又需要一个没有出处的分带项，所以不采用。
+  - **Geng et al. (1986)**：原文没有取到（ScienceDirect 返回 403）。二手资料 Soltani & Hoogenboom (2003),
+    *Clim. Res.* 24:215, Table 1 确认了 `p_wd = 0.75·PW`。
+  - **`f_wet` → 转移概率**：已核实的出处是 Sommer & Kaplan (2017), *GMD* 10:3771 式 (1)，
+    `p_ww = 0.2549 + 0.7451·f_wet`（9508 个 GHCN-Daily 站）。由平稳性恒等式 `f = p_wd / (1 − p_ww + p_wd)`
+    得 `p_wd = 0.7451·f_wet`。以后 `f_wet` 有了来源（例如日尺度降水诊断），就可以接上这一步。
+- 问题 3、4：不变。
+
+### 12.9 UI 验收（2026-10-27）
+
+代理按 §12.7 在真实窗口中走查（Windows 11，1920×1080，窗口 1800×1030，浅色主题）。操作经 `orca computer`（无障碍树与坐标点击），
+截图取自桌面合成画面，每张均逐张查看。此次走查属于代理自验，不替代用户验收（见 AGENTS"验收纪律"）。
+
+**命令与版本**
+
+- `cargo run --release -j 4`，工作目录为仓库根，导出写入 `site-climatology/`；
+- 第一轮：`9d9a686`（修复前）；第二轮：`aa54783`（修复后，见下文），fmt、`clippy --all-targets -D warnings`、
+  `--test site_climatology` 与库内 `site_climatology` 单元测试均通过；
+- 世界：启动时恢复的参数（多大陆，标准档 79212 格，形成链 P5），`world_seed` 1950802277578115247。两轮各在本进程内重新生成。
+
+**逐步结果**（截图在 `captures/site-climatology/2026-10-27/`）
+
+| 步骤 | 结果 | 截图 |
+|---|---|---|
+| 生成世界（形成链） | 通过。状态栏显示"……全球环流 → 耦合地貌（P5）" | `01`、`11` |
+| 展开"站点气候"，无锚点 | 通过。显示三项输入、两个按钮和提示文字，中文无方块、无截断 | `02` |
+| "推荐锚点" | 通过。列出 5 个候选，两轮结果相同；首位 +11.1°, +63.2°，起伏 2452 m，离岸 598 km | `03`、`12` |
+| "使用"首位候选 | 通过。锚点 +11.07°, +63.24°（cell 6584），取样边长 288 km（请求 16.4 km，已扩大），15 格，陆地 100%，离岸 598 km ≥ 门槛 576 km，满足内陆条件 | `04`、`13` |
+| 黄色实线框 | 通过。全球视图约 9×13 px，可见；放大后清晰 | `04`、`05`、`14` |
+| 白色虚线框（16 km 请求） | 修复后通过。全球视图下 16 km 不足 1 px，只是一个白点；放大到黄色框约 170 px 宽时，白框约 10 px。修复前此时画成实线，修复后为虚线 | `05a`（前）、`14a`（后）、`14` |
+| 12 个月数值 | 通过。北半球七月比一月暖（七月 15.8 °C，一月 10.9 °C） | `04` |
+| 湿日 | 通过。"湿日比例"列 12 个月均为"—"；上方写"湿日统计：不可得（由月降水推湿日频率的关系尚无可核对的出处）" | `04` |
+| 不可得原因 | 通过。6 项不可得全部显示中文原因，没有出现原因码原文 | `04` |
+| 地图上手选单元 → "以选中单元为锚点" | 通过。选中 cell 24157，锚点 +30.84°, +42.29°，9 格，离岸 163 km，显示"不满足内陆选址条件"；一月 5.9 °C，七月 15.5 °C；面板指纹 `c36057552009152e1363e117bdb592ca9a7fe5aef5344ff08505025ed1accf98`（未导出） | `07` |
+| 球体视图中的足迹 | 通过。切换到三维球体后，黄色框随球面透视显示 | `08` |
+| "导出" | 通过。先删除旧文件再导出，面板显示"已写入 D:\…\site-climatology\site-climatology-a00f9cd12e2ad3dd.json" | `15`（修复前的路径显示见 `06`） |
+| BLAKE3 复核 | 通过。独立实现（Python `blake3` 包）对文件字节计算，结果为 `a00f9cd12e2ad3dd8583d07178ec18e949d942fb582b24f01eec564a01e7ca96`，与面板显示一致。两轮各在一个进程内重新生成世界，指纹相同 | — |
+
+**导出文件**：`site-climatology/site-climatology-a00f9cd12e2ad3dd.json`（13173 字节，不入库）。
+锚点 cell 6584，纬度 11.074237342918801°，经度 63.244180352347215°，朝向 0°，尺度 1，半边长 8192 m；
+`build_result_hash` `5039b0bcbe8a40d980015569240697dd7a5e04dc02a9829e444f18b66a5a3bea`，climate_profile `c2_layered_v1`，quality_profile `standard`。
+
+**本次修复**（`aa54783`）
+
+- 白色请求框原来对投影后的每一小段分别画虚线。段长短于一个虚线周期时，每段都从实线部分开始，整框画成实线；
+  现在先把首尾相连的段连成折线，再整体画虚线。
+- Windows 上 `canonicalize` 返回带 `\\?\` 前缀的路径，面板原样显示；改用 `std::path::absolute`。
+
+**与预期不符、未修（不属于 UI 小问题或不属于本分支）**
+
+1. 两个锚点 12 个月的地形雨占比都是 0%。推荐锚点足迹内起伏 2452 m，导出中 `orographic_precipitation_mm_day` 也全为 0。
+   这是数据问题，不在 UI 层，需要核对 P4 地形雨在该足迹上是否本来就为零（例如是否全落在背风侧，或格距过粗）。
+   **已核查（§12.10）**：导出取样无误，P4 在这两处本来就为零，物理上说得通。
+2. 全球视图下 16 km 请求框不到 1 px。§12.7 写的"出现白色虚线小方框"需要先放大地图才能看到（本次滚轮放大约 37 格）。用户验证步骤应注明这一点。**已在 §12.7 注明。**
+3. 鼠标悬停左栏时，egui 浮动滚动条会盖住表格最后一列"湿日比例"的最后一个字。这是全局滚动条样式造成的，鼠标移开后恢复正常。
+4. 既有"根种子"输入框把 u64 种子按 f64 显示为 1950802277578115328，导出中的 `world_seed` 是 1950802277578115247。
+   这个问题不属于本分支。另外，JSON 中大于 2^53 的整数在 JS 系读取端会丢精度；Voxim 导入脚本用 Python，不受影响。
+5. 未验证：Voxim 侧 `import_site_climatology.py` 导入（§7 第 4 步）、深色主题、wasm 版本的剪贴板导出。
+
+### 12.10 地形雨为零的核查（2026-10-27）
+
+结论：P4 在这两个锚点附近的地形雨本来就是 0，物理上说得通。导出的取样和派生没有缺陷，P4 发布的字段也没有发现缺陷。
+
+**探针**：`assets/2026-10-27-orographic-zero/orographic_probe.rs`（复制到 `tests/zz_orographic_probe.rs` 后，
+用 `cargo test --release -j 4 --test zz_orographic_probe -- --ignored --nocapture` 运行），输出见同目录 `probe-output.txt`。
+探针重建 §12.9 的世界（标准档，seed 1950802277578115247，`target_land_fraction` 0.47，其余为默认值），
+得到的 `build_result_hash` 为 `5039b0bc…5a3bea`，与导出文件一致。两次运行的输出相同。
+
+**导出没有读错（排除 a）**
+
+- 推荐锚点 cell 6584 方圆 300 km 内共 54 个权威格，手选锚点 cell 24157 方圆 300 km 内共 37 个权威格。
+  这些格的 `monthly_orographic_precipitation_mm_day` 在 12 个月里**全部恰为 0**。
+  两个锚点的有效足迹（288 km 方框，半对角线约 204 km）都在这个范围内，所以任何面积加权结果都只能是 0，
+  与导出一致。
+- 导出读取的是 `fields.monthly_orographic_precipitation_mm_day()`，P4 发布时 `new_c2_cancellable` 的这个参数位接的就是
+  地形雨累加器，没有错位。
+
+**P4 字段本身在别处正常（不支持 c）**
+
+- 全世界 950544 个"格×月"中，有 6.57% 非零；只看干陆地格，252720 个"格×月"中有 11.93% 非零。
+  21060 个干陆地格里，有 6537 个（31%）至少一个月非零。
+- 按面积加权，地形雨占总降水的比例：全球 7.6%，干陆地 17.6%。单格单月最大值 74.4 mm/日。
+- 纬度带上，0–30°N 的干陆地非零格最少（12%–17%），高纬和南半球中纬较多。
+- 干陆地上，有地形雨的"格×月"抬升凝结高度（LCL）中位数是 524 m，没有地形雨的是 942 m。
+
+**为什么这里是 0（属于 b）**
+
+P4 的地形雨源是 Smith 上坡凝结率乘以"一个气候格尺度的抬升中，超过 LCL 的那一段所占的比例"
+（`lcl_adjusted_orographic_condensation_kg_m2_s`）。C2 布局里，抬升风用的是上层风（越山气流）；
+抬升量 = 沿风向的坡度 × 气候格边长（约 288 km）。抬升达不到 LCL，或者风是下坡风，这个源就为 0。
+探针用生产的格网（`CubedSphereGrid`，N = 32）、守恒重映射、`CirculationOperators::gradient` 和这个函数本身，
+以月均发布字段为输入重算了一遍：
+
+- 推荐锚点 6584：权威面上足迹起伏 2452 m，到气候格上被平均成两个格，高程 460 m 和 1143 m，坡度最大只有 0.28%。
+  - 湿季（1–3 月，锚点降水 2.6–5.9 mm/日）：上层风是下坡风，抬升 −169 到 −803 m，地形雨为 0。
+  - 上坡风季节（5–7 月）：抬升 +457 到 +828 m，但空气偏干（相对湿度 0.58–0.64），LCL 为 817–1024 m，抬升始终低于 LCL，
+    地形雨仍为 0。这几个月的总降水本身也只有 0–0.10 mm/日。
+  - 其余月份：抬升为负，或者只有几十米。
+- 手选锚点 24157：地势平坦（气候格高程 24–239 m，坡度约 0.1%），抬升最多 +258 m，而 LCL 为 0.3–2.4 km。
+- 全球对照（气候格上的陆地格，按"格×月"计）：月均输入重算与发布值同为正的有 1425 个，重算为正而发布为 0 的有 48 个，
+  重算为 0 而发布为正的有 3667 个，同为 0 的有 15056 个。
+  月均输入会低估这个门槛型过程，因为求解时是逐步的瞬时湿度和风；但重算"有雨"而发布"无雨"的情况很少
+  （1473 个中只有 48 个），与发布字段在空间上是一致的。
+
+**给下游的说明**
+
+导出中的地形雨为 0，意思是"P4 在约 288 km 的格距上没有算出地形雨"，不是"16 km 的青岚地图上没有地形效应"。
+比气候格更小的地形增强，P4 没有表示，导出也不推断。若 Voxim 需要地图内的迎风坡增雨，属于新工作，不在本导出范围内。
+
+### 12.11 青岚冻结行星（2026-10-27）
+
+青岚固定使用下面这颗行星（Voxim `Docs/Weather.md` §7 第 4、5、6 条，§7.1 第 10 条）。
+sekai 重新生成导致下列任一身份变化时，必须重新导出；Voxim 导入工具发现来源哈希不一致时报警，不自动覆盖。
+
+**世界与版本**
+
+- 种子 42（`PRODUCT_DEFAULT_WORLD_SEED`），形成链（`WorldPipeline::Formation`），半径 6371 km，
+  `WorldFormationSpec`、`TectonicSpec`、`ReliefSpec`、`GeologicSpec` 均为默认值。界面上即全新启动（无持久化状态）时的默认世界。
+- 档位：**草稿（Draft）**，20252 个球面单元，P4 立方球面 N = 24，格距 384.2 km。
+  理由：界面与生产的默认档位都是 Draft——`src/app.rs` 的 `default_formation_quality_profile()` 返回 Draft，
+  测试 `quality_tier_roundtrips_and_defaults_to_draft` 钉住这一点；`NaturalQualityProfile::Standard` 的文档注释写的是
+  "完整管线满足预算之后的成品目标"，目前还不是默认值。§12.1 的 Stage 0 实测也是这颗 Draft / seed 42 世界。
+- sekai 包版本 `0.1.0`，源码提交 `973519a`（分支 `feat/site-climatology-export`），Windows 11 x86_64 本机 Release 构建。
+  按 AGENTS"测试范围纪律"，精确身份只在审计浮点平台上成立；本次没有单独核对平台金丝雀。
+- `build_result_hash`：`a7427f1a4dd32854fbc45f705fef69aacc586a7bc5e4d4cfe5f919cf564ea583`
+- `surface_fingerprint`：`0d09df7aa131d120490202741b0fd3184919ea9681f16537a14f81f0e5806f2e`
+- `global_circulation_fingerprint`：`3482cde38caaa20843e185f0ac856dd9e2bb6b7279dea1d02d7324a3ac3d93ff`
+  （`global_circulation_schema` 2，`climate_profile` `c2_layered_v1`）
+- `graph_contract_version`：3
+
+**映射**：1:1（`scale` 1），朝向 ρ = 0°，半边长 8192 m（请求足迹 16.4 km，扩大到 P4 格距 384.2 km，取样 7 格）。
+
+**锚点**：cell **2898**，纬度 35.37795776266931°N，经度 106.67121932469111°E。
+
+推荐前五名（`recommend_site_anchors`，按足迹起伏排名）与 §7.1 第 10 条纬度条件（25° ≤ |纬度| ≤ 45°）对照：
+
+| 排名 | cell | 纬度, 经度 | 起伏 | 离岸 | 纬度条件 |
+|---|---|---|---|---|---|
+| 1 | 2898 | +35.4°, +106.7° | 2410 m | 935 km | 满足 |
+| 2 | 8484 | −4.2°, −166.3° | 2059 m | 851 km | 不满足 |
+| 3 | 1928 | +36.1°, +111.4° | 1714 m | 1046 km | 满足 |
+| 4 | 1904 | +36.8°, +116.4° | 1285 m | 1304 km | 满足 |
+| 5 | 19887 | +2.5°, +19.4° | 1015 m | 805 km | 不满足 |
+
+选择理由：五名都满足 §7 第 4 项（推荐算法本身保证）；满足纬度条件的有第 1、3、4 名，按规则取排名最高的第 1 名，不需要手选。
+导出的 `anchor_assessment`：陆地；离岸 935 km ≥ 内陆门槛 768 km；足迹纯陆地，湖格 0；足迹起伏 2410 m（高程 1549–3959 m，均值 2619 m）；
+`meets_criteria` 为 true。
+
+**导出文件**
+
+- 冻结副本：`assets/2026-10-27-qinglan-frozen/site-climatology-48b3028fa1574fab.json`（13176 字节）。
+  同目录 `.gitattributes` 对 `*.json` 关闭换行转换，保证检出后字节与指纹不变。
+- BLAKE3：`48b3028fa1574fab927ae05bd83f4fcfea6c5d361775f34cb8e9a979e09687b7`
+
+**12 个月**（足迹面积平均；去向为引导风吹去的方位，自北顺时针）
+
+| 月 | 气温 °C | 降水 mm/日 | 其中地形雨 mm/日 | 相对湿度 | 引导风 m/s | 去向 ° |
+|---|---|---|---|---|---|---|
+| 1 | −5.2 | 9.47 | 2.01 | 104% | 20.0 | 45 |
+| 2 | −6.2 | 20.48 | 4.69 | 95% | 21.8 | 80 |
+| 3 | −4.7 | 8.97 | 2.48 | 79% | 20.4 | 110 |
+| 4 | −1.0 | 1.74 | 0.21 | 59% | 19.2 | 131 |
+| 5 | 3.8 | 0.10 | 0.00 | 42% | 8.6 | 112 |
+| 6 | 7.6 | 0.40 | 0.00 | 35% | 11.2 | 47 |
+| 7 | 10.1 | 0.46 | 0.00 | 33% | 15.8 | 54 |
+| 8 | 11.7 | 0.35 | 0.00 | 33% | 19.7 | 87 |
+| 9 | 12.1 | 0.15 | 0.00 | 33% | 20.9 | 116 |
+| 10 | 9.7 | 0.04 | 0.00 | 40% | 16.4 | 125 |
+| 11 | 4.7 | 0.00 | 0.00 | 56% | 7.5 | 112 |
+| 12 | −1.0 | 0.72 | 0.06 | 85% | 14.0 | 47 |
+
+摘要：
+
+- 气温年较差 18.3 °C（二月 −6.2 °C 到九月 12.1 °C），十二月到四月在 0 °C 以下。足迹平均高程 2619 m，气温是这一高程上的值。
+- 降水集中在十二月到四月（二月最多，20.5 mm/日），五月到十一月接近干旱；年均 3.57 mm/日。
+- 引导风全年吹向东北到东南（45°–131°），即西风带气流；冬春 19–22 m/s，五月和十一月最弱（8.6、7.5 m/s）。
+
+**能力项**：引导风、风切变、Eady 增长率、相对湿度为 `available`，C2 分层直接给出，不是 C1 替代（`substitute` 全为 null）。
+湿日统计、对流降水占比、气温日较差、风变率、云量、热带气旋气候学为 `unavailable`，原因码分别为
+`no_verified_wet_day_relationship`、`no_precipitation_type_diagnostic`、`no_diurnal_cycle`、`no_transient_statistics`、
+`clouds_not_implemented`、`p4_capability_unavailable`。
+
+**取得方式与核对**
+
+1. 无界面推荐：`cargo test --release -j 4 --test site_climatology stage0_measures_draft_footprints_and_recommendations -- --ignored --nocapture`。
+   这条命令列出的五名候选，以及首位候选的一月和七月气温、降水、去向和 Eady 增长率，与界面结果一致。
+2. 导出走界面的"导出"按钮（与产品同一条序列化路径）。为了得到默认世界，先备份并移走
+   `%APPDATA%\Sekai - World Generator\data\app.ron`，再启动 `target/release/sekai.exe`（工作目录为仓库根）。
+   启动后自动生成 seed 42 / 草稿档世界；依次点击"站点气候"→"推荐锚点"，在第 1 名上点"使用"，再点"导出"。
+   完成后关闭应用，还原 `app.ron`。
+3. 面板显示的导出指纹与独立实现（Python `blake3` 1.0.11）对文件字节的计算结果一致，为 `48b3028f…09687b7`。
+   截图在 `captures/site-climatology/2026-10-27-qinglan-frozen/`：
+   - `01`：根种子 42、草稿档，地图上的黄色足迹框；
+   - `02`：锚点、12 个月表格、导出指纹和"已写入"路径。
+
+   两张截图均已逐张查看。
+
+**观察到的现象（记录，不在本次处理）**
+
+一月相对湿度为 104%。导出按格计算 `q / q_sat(T)` 再做面积平均（§12.3），超过 1 说明 P4 发布的月均比湿在这个足迹上超过了月均气温下的饱和比湿。
+月均值来自对瞬时状态的平均，冬季冷格上可能出现这种情况。导出按 P4 原值记录，不截断。
+是否需要在 P4 侧核查，留给 P4 负责方决定。
+
+## 13. 修订 R2：整合作者闭环与当前生成身份（2026-11-01）
+
+站点面板接入 `AuthoringSession` 与预热后的发布流程，只读取当前已发布文档，不从
+尚未重建的草稿取源身份。世界发布可能发生在面板绘制之后，且折叠面板不会执行内容闭包；
+因此缓存失效不能只放在该闭包中。`synchronize_world` 统一在原子发布、面板刷新及清空
+项目时处理世界绑定缓存，保留会话区域参数，不把旧足迹画在新世界上。
+
+描边色板移至 view/palette，青岚范围作者先验移至 world；Celsius/Kelvin 转换与既有
+环流共用唯一 SI 定义，数值不变（BIPM SI Brochure 第9版 §2.3.1）。不增加新模型或系数。
+
+对最终工作域，仅用同一个程序化 Draft 世界同时验证完整链、细岸和真实 UI 取样适配器。
+新导出来源与实际发布的 build/P4 身份一致；它不是 §12.11 的冻结青岚世界，不替换其文件。
+该场景有气候质量建议未满足，UI 摘要显式展示生产报告；导出继续忠实记录源字段与能力，
+不 clamp、不补不可得统计、不改本导出 schema。命令、导出和验证局限见
+`../plans/2026-11-01-integration-validation.md`。
+
+本轮未接管用户鼠标，也未替代用户的实际面板/文件验收；浏览器交互和 Voxim 导入仍未验收。

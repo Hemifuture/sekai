@@ -176,7 +176,8 @@ fn daily_mean_insolation(latitude: f64, declination: f64) -> f64 {
 fn radiative_equilibrium_c(insolation_w_m2: f64, albedo: f64) -> f64 {
     let effective_flux =
         BACKGROUND_HEAT_FLUX_W_M2 + LOCAL_SOLAR_COUPLING * insolation_w_m2 * (1.0 - albedo);
-    (effective_flux / STEFAN_BOLTZMANN_W_M2_K4).powf(0.25) + GREENHOUSE_OFFSET_K - 273.15
+    (effective_flux / STEFAN_BOLTZMANN_W_M2_K4).powf(0.25) + GREENHOUSE_OFFSET_K
+        - crate::world::natural::CELSIUS_TO_KELVIN_OFFSET_K
 }
 
 /// Errors returned by deterministic analytic fixture construction.

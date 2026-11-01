@@ -36,13 +36,13 @@ pub(crate) use field_layers::{
     FieldLayerPreparationCounts,
 };
 pub(crate) use field_layers::{prepare_globe_vector_glyphs, prepare_map_vector_glyphs};
-pub(crate) use palette::terrain_water_color;
 pub use palette::{
     built_in_palette, category_color, prepare_cell_field, resolve_display_range, sample_palette,
     scalar_color, DisplayPrepareError, DisplayRangeMode, LinearRgba, PaletteId, PreparedCellField,
     PreparedFieldKind, ResolvedDisplayRange, DIAGNOSTIC_ERROR_COLOR, DIAGNOSTIC_INFO_COLOR,
     DIAGNOSTIC_WARNING_COLOR, HYPSOMETRIC_DISPLAY_RADIUS_M,
 };
+pub(crate) use palette::{terrain_water_color, SITE_FOOTPRINT_SRGB, SITE_REQUESTED_FOOTPRINT_SRGB};
 pub(crate) use palette::{WorldLoadingPalette, WORLD_LOADING_PALETTE};
 pub use prepared::{DisplayRevision, DisplayRevisionClock};
 pub use resident::ResidentBytesError;
