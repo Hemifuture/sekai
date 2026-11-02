@@ -7210,6 +7210,75 @@ mod tests {
     }
 
     #[test]
+    fn orographic_moisture_response_follows_upper_wind_and_requires_terrain() {
+        // Isolate the existing C2 moisture source from transport and radiation.
+        // Opposing lower wind makes accidentally selecting that layer observable.
+        let grid = CubedSphereGrid::new(1, 6_371_000.0).unwrap();
+        let count = grid.cell_count();
+        let humidity = crate::world::natural::saturation_specific_humidity_kg_kg(15.0) as f32;
+        let forcing = PlanetForcing::new(
+            *grid.fingerprint(),
+            vec![0.0; count],
+            vec![1.0; count],
+            vec![0.25; count],
+            vec![0.0; count],
+            vec![[240.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[15.0; CLIMATE_MONTH_COUNT]; count],
+            vec![[humidity; CLIMATE_MONTH_COUNT]; count],
+        )
+        .unwrap();
+        let layout = ClimateLayerLayout::for_profile(ClimateModelProfile::C2LayeredV1);
+        let mut state = LayeredClimateState::from_forcing(&grid, &layout, &forcing, 0).unwrap();
+        let radial = grid.cells()[0].center_unit();
+        let axis = if radial[0].abs() < 0.5 {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let tangent = tangentize(axis, radial);
+        state
+            .velocity_m_s_mut(ClimateLayerRole::LowerAtmosphere)
+            .unwrap()[0] = tangent.map(|value| (-10.0 * value) as f32);
+        let mut gradient = vec![[0.0; 3]; count];
+        let system = LayeredTendencySystem::new(&grid);
+        let cancellation = BuildCancellation::new();
+        let no_convergence = vec![0.0; count];
+        let mut responses = Vec::with_capacity(3);
+        for (upper_speed, slope) in [(10.0, 0.01), (-10.0, 0.01), (10.0, 0.0)] {
+            state
+                .velocity_m_s_mut(ClimateLayerRole::UpperAtmosphere)
+                .unwrap()[0] = tangent.map(|value| (upper_speed * value) as f32);
+            gradient[0] = tangent.map(|value| (slope * value) as f32);
+            let mut tendency = LayeredClimateTendency::zeroed(&state);
+            system
+                .apply_moisture(
+                    &state,
+                    &forcing,
+                    &gradient,
+                    state.specific_humidity(),
+                    &no_convergence,
+                    1.0,
+                    &mut tendency,
+                    &cancellation,
+                )
+                .unwrap();
+            responses.push(tendency);
+        }
+        let [upslope, downslope, flat] = responses.as_slice() else {
+            unreachable!("the three controlled cases are present");
+        };
+        assert!(upslope.orographic_precipitation_rate_mm_s()[0] > 0.0);
+        assert_eq!(downslope.orographic_precipitation_rate_mm_s()[0], 0.0);
+        assert_eq!(flat.orographic_precipitation_rate_mm_s()[0], 0.0);
+        assert!(
+            upslope.specific_humidity_tendency_s_inv()[0]
+                < flat.specific_humidity_tendency_s_inv()[0]
+        );
+        assert!(upslope.precipitation_rate_mm_s()[0] > flat.precipitation_rate_mm_s()[0]);
+    }
+
+    #[test]
     fn convective_condensation_of_converged_moisture_exports_its_latent_heat() {
         // A lower-layer flow converging on one pole piles moisture up beyond
         // the transport bound there; that surplus must fall as convective
