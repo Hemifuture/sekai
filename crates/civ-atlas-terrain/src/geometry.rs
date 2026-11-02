@@ -520,6 +520,8 @@ impl<'a> SurfaceNoise<'a> {
         ])
     }
     /// Sample site i with its axial noise coordinate multiplied by sy.
+    // Task 4's sea-ice land/sea classification consumes this operator.
+    #[allow(dead_code)]
     pub(crate) fn stretched(&self, i: usize, f: f64, sy: f64) -> f64 {
         let f = f * self.r;
         self.sample([

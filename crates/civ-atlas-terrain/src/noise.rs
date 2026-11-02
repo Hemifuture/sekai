@@ -159,6 +159,8 @@ pub(crate) fn ridged3(n: &Noise3, [x, y, z]: [f64; 3], octaves: usize, persisten
 
 // Civ Atlas raster.ts consumes this periodic texture for authoritative fine elevation.
 // Preconditions match upstream: size is a power of two; cells and octaves are positive.
+// Task 4's raster noise tiles consume this exact upstream operator.
+#[allow(dead_code)]
 pub(crate) fn tileable_fbm(
     seed: u32,
     size: usize,
@@ -234,6 +236,7 @@ pub(crate) fn tileable_fbm(
     out
 }
 
+#[allow(dead_code)]
 fn fade(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }

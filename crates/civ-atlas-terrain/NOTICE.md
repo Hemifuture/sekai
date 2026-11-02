@@ -46,6 +46,55 @@ cargo test --manifest-path crates/civ-atlas-terrain/Cargo.toml -j 2
 此 canary 仅在测试中存在；根项目集成后仍使用其既有 `audited_float_platform()`。
 不能静默重钉世界指纹。
 
+## 粗地形生成移植（2026-11-01）
+
+- `src/tectonics.rs`、`src/tectonics/continents.rs`：固定上游 `tectonics.ts` 的默认
+  生成分支，包括多源板块生长、多尺度扭曲、碎片合并、大陆/微大陆/群岛选择、
+  欧拉轴运动、汇聚与张裂距离场、岛弧、热点、大陆架/海沟、抬升与高原底座。
+  所有作者控制保留；不移植草图、板块编辑状态或地形编辑器。
+- `src/inland_sea.rs`：同提交 `inlandSea.ts`，按原顺序填平内海或凿通海峡；
+  未保留无人消费的草图保护和 noFill 分支。
+- `src/erosion.rs`：同提交 `erosion.ts` 的 Barnes (2014) Priority-Flood 与
+  Braun & Willett (2013) 隐式流水功率求解；保留原 shoreSeeds、邻接顺序和
+  Float32Array 写回语义，复用一次建立的岸边种子与边长。
+- `src/util.rs`：同提交 `util.ts` 的插值和最小堆；相等优先级的入堆、选子节点
+  和出堆顺序不变。`orderByKey` 用 Rust 稳定数值排序实现相同的 key/id 次序，
+  包括正负零相等；未移植仅用于 JavaScript 数组加速的整数编码层。
+- `src/initial_climate.rs`、`src/initial_currents.rs`：同提交 `climate.ts` 与
+  `currents.ts`，完整保留初始化降水依赖、季节风带与洋流参数化。缓存只属于一次
+  生成，构造一次球面几何、种子噪声与风带；不保存编辑器弱引用缓存。
+  这些字段保持 crate-private，不作为 Sekai 最终气候或最终水文发布。
+- `src/terrain.rs`：同提交 `world.ts` 的两段侵蚀、作者初态米制换算、高原峡谷、
+  裂谷/随机洼地、湖泊、湖心岛、初始化径流和河道链。删除回放历史、编辑器与
+  文明分支；海冰、creeks 和其他细地形实际消费者由后续 raster 任务迁移。
+  分位换算及高峰膝点是上游作者初态规则（规格修订 A1），不得复用于 Sekai
+  后续物理反馈，不能将本移植称为守恒的地质历史。
+- `src/params.rs`：同提交 `params.ts` 的全部实际 WorldParams 作者控制，公开
+  参数域取自 `ui/genesisSliders.ts` 与 `ui/ParamField.tsx` 的大陆按钮及 cap。
+  离线 237 格夹具不扩展公开支持域；公开请求在分配网格前验证。
+
+新增取消检查与输出有限性/尺寸校验，未引入新算法依赖、物理阈值或替代地形公式。
+`UPSTREAM_REVISION`、`UPSTREAM_PACKAGE_VERSION` 与 `UPSTREAM_GENERATOR_VERSION`
+为根项目来源身份的唯一代码定义；后续集成应引用这些定义。
+
+### 粗地形离线参考
+
+`reference/terrain.mjs` 使用离线安装的 tsx 加载器运行原固定 TypeScript 世界生成，
+只将 `world.ts` 的模块路径改为固定源码的绝对地址，并在既有语句之后插入数组快照。
+没有重写上游算法；原回放、编辑器模块仍由上游正常加载，但不作为 Rust 运行时依赖。
+运行前引用 `source-pins.mjs` 校验实际算法源码、源 UI 域和噪声/三角剖分依赖入口；
+新脚本不复制字面哈希。原始上游输出写入 `reference/terrain.rs`，测试不从 Rust 反钉。
+
+```text
+<prefix>/node_modules/.bin/tsx crates/civ-atlas-terrain/reference/terrain.mjs <pinned-upstream-checkout> <prefix> crates/civ-atlas-terrain/reference/terrain.rs
+cargo test --manifest-path crates/civ-atlas-terrain/Cargo.toml -j 2
+```
+
+默认小夹具覆盖板块、海陆、海底、抬升、高原、两次降水、两段侵蚀、米制高程、
+最终水体、私有季节气候/洋流/汇流及全部原河道链。另一个同 seed/同小网格的组合
+作者控制场景覆盖非默认大陆数量、聚拢、破碎度、硬度和半球偏向分支；不扫描种子。
+有限性与取消契约始终运行；精确上游浮点断言复用球面运算 canary，不匹配时说明跳过。
+
 ## simplex-noise MIT 许可
 
 包内 LICENSE 声明 Copyright (c) 2018 Jonas Wagner；移植的 4.0.3 实现文件声明

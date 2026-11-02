@@ -8,6 +8,15 @@ export const SOURCE_PINS = Object.freeze({
   'civ/engine/rand.ts': '09cb84edb16e3b21930eeb0ee669eb11748380227132f5af27608b1a20afecf8',
   'geometry.ts': 'deec31f1a9003fe5ce6116f19ff718540770daa1d3e756f7967d97bbb6ec6ce1',
   'mesh.ts': 'd1dca22d575fe0628876324947e3583df2f5072bfbe8b75eb241e2f2b49f8b99',
+  'tectonics.ts': 'f4592a01f8abd0fbcf3927823a0d63134085aaf70bb896b5997982f8e68d9209',
+  'inlandSea.ts': '14bcc5e44a79c83bfd043a7902bdd721ef5f0c2b18fad56b72b35d8ad9455b73',
+  'erosion.ts': '32f787f0ec22fe5a254ff526d1ee6f0522ed8aae02e21e16e166fb0fff71b9b9',
+  'climate.ts': '488e911073544e82a7d5d9db2ac78378cc96b12d1bae3996184cb07d15bb7a25',
+  'currents.ts': '4f5dc38a20fe65325e5dba70adbc028c362da9a8d877ff18f9a5438efff282e6',
+  'world.ts': '62a6b2c61b7ef14d57f611cf3353d454cfe423f2ac41b8f69c88a9bc33b18f05',
+  'params.ts': 'da0d32750d227975091bf6836567c0081d85c68664d7f4ba5166610ac8514ec3',
+  '../ui/genesisSliders.ts': '956cec6b8bc0ec5f219b2f3c58e58627a62b1431fc1899e70a31ad173b228efd',
+  '../ui/ParamField.tsx': '3746799e3f24c4be4e2fbc56fe78d703aeb371f7c2cf2cf3a081f0c6f1028bad',
 });
 
 export const DEPENDENCY_PINS = Object.freeze({
