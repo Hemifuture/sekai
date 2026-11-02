@@ -8,6 +8,8 @@ use std::{
     cell::RefCell,
     f64::consts::{PI, TAU},
 };
+// Civ Atlas geometry.ts uses the same six latitude bands for cuts and ordering.
+const WIND_BANDS: usize = 6;
 /// Return the upstream round24 sine of x in radians.
 pub(super) fn sin(x: f64) -> f64 {
     round24(x.sin())
@@ -234,7 +236,8 @@ impl<'a> SphereGeometry<'a> {
         let Some(cuts) = cuts else {
             return x * v[0] + y * v[1];
         };
-        let b = ((by.unwrap_or(y) * 6. / self.mesh.height).floor() as isize).clamp(0, 5) as usize;
+        let b = ((by.unwrap_or(y) * WIND_BANDS as f64 / self.mesh.height).floor() as isize)
+            .clamp(0, (WIND_BANDS - 1) as isize) as usize;
         let mut xr = x - cuts[b];
         if xr < 0. {
             xr += self.mesh.width
@@ -243,22 +246,21 @@ impl<'a> SphereGeometry<'a> {
     }
     /// Return each wind band longitude cut minimizing land in the upstream moving window.
     pub(crate) fn wind_cuts(&self, water: &[u8]) -> Vec<f64> {
-        const BANDS: usize = 6;
         const BINS: usize = 256;
         const WINDOW: isize = 12;
-        let mut counts = vec![0.; BANDS * BINS];
+        let mut counts = vec![0.; WIND_BANDS * BINS];
         for (i, &water) in water.iter().enumerate().take(self.mesh.n) {
             if water == 1 {
                 continue;
             }
-            let b = ((f64::from(self.mesh.y[i]) * BANDS as f64 / self.mesh.height).floor()
+            let b = ((f64::from(self.mesh.y[i]) * WIND_BANDS as f64 / self.mesh.height).floor()
                 as usize)
-                .min(BANDS - 1);
+                .min(WIND_BANDS - 1);
             let c = ((f64::from(self.mesh.x[i]) * BINS as f64 / self.mesh.width).floor() as usize)
                 .min(BINS - 1);
             counts[b * BINS + c] += 1.;
         }
-        let mut cuts = vec![0.; BANDS];
+        let mut cuts = vec![0.; WIND_BANDS];
         for (b, cut) in cuts.iter_mut().enumerate() {
             let mut best = 0;
             let mut best_value = f64::INFINITY;
@@ -636,7 +638,11 @@ impl SphereFinder {
         let b1 = self.cell(q[1] + e);
         let c0 = self.cell(q[2] - e);
         let c1 = self.cell(q[2] + e);
-        let bins = f64::from(a1 - a0 + 1) * f64::from(b1 - b0 + 1) * f64::from(c1 - c0 + 1);
+        // cell() can saturate at both i32 endpoints for a large finite radius.
+        // Widen before subtraction so the upstream full-scan fallback still wins.
+        let bins = (f64::from(a1) - f64::from(a0) + 1.)
+            * (f64::from(b1) - f64::from(b0) + 1.)
+            * (f64::from(c1) - f64::from(c0) + 1.);
         if bins >= mesh.n as f64 {
             return (0..mesh.n).filter(|&i| keep(i)).collect();
         }
@@ -750,6 +756,15 @@ mod tests {
             values.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
             GEOMETRY
         );
+    }
+
+    #[test]
+    fn spatial_queries_with_huge_finite_radius_return_all_sites() {
+        let m = mesh();
+        let g = SphereGeometry::new(&m);
+        let all_sites = (0..m.n).collect::<Vec<_>>();
+        assert_eq!(g.cells_near(0, 1e12), all_sites);
+        assert_eq!(g.cells_near_point([0., 500.], 1e12), all_sites);
     }
 
     #[test]
