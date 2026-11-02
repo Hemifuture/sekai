@@ -195,7 +195,8 @@ impl FineTerrain {
     }
     /// Evaluate the fixed bed for any finite nonzero direction.
     ///
-    /// Direction magnitude is ignored. Returns `InvalidDirection` for zero/nonfinite
+    /// Direction magnitude is ignored; exact poles use longitude zero.
+    /// Returns `InvalidDirection` for zero/nonfinite
     /// inputs, or `InvalidOutput` if the source cannot locate a valid triangle.
     pub fn sample_surface(&self, direction: [f64; 3]) -> Result<SurfaceSample, TerrainError> {
         self.sample(direction, &mut self.source.detail.workspace())
@@ -285,7 +286,13 @@ fn coordinates(d: [f64; 3]) -> Result<[f64; 2], TerrainError> {
     let p = d.map(|v| v / max);
     let norm = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
     let lat = (p[2] / norm).clamp(-1., 1.).asin();
-    let lon = p[1].atan2(p[0]);
+    // Longitude is undefined at true poles. Test the original components because
+    // normalization can underflow a nonzero horizontal component into zero.
+    let lon = if d[0] == 0. && d[1] == 0. {
+        0.
+    } else {
+        p[1].atan2(p[0])
+    };
     Ok([
         ((lon + PI) / TAU * WIDTH as f64).rem_euclid(WIDTH as f64),
         (PI / 2. - lat) / PI * HEIGHT as f64,
@@ -307,6 +314,35 @@ mod tests {
         let lon = xy[0] / WIDTH as f64 * TAU - PI;
         let lat = PI / 2. - xy[1] / HEIGHT as f64 * PI;
         [lat.cos() * lon.cos(), lat.cos() * lon.sin(), lat.sin()]
+    }
+    fn pole_directions(sign: f64) -> impl Iterator<Item = [f64; 3]> {
+        [1., f64::MAX, f64::from_bits(1)]
+            .into_iter()
+            .flat_map(move |amplitude| {
+                [0., -0.]
+                    .into_iter()
+                    .flat_map(move |x| [0., -0.].into_iter().map(move |y| [x, y, sign * amplitude]))
+            })
+    }
+    #[test]
+    fn true_poles_have_one_longitude_for_signed_zero_and_amplitude() {
+        for sign in [1., -1.] {
+            let expected = coordinates([0., 0., sign]).expect("pole").map(f64::to_bits);
+            for direction in pole_directions(sign) {
+                assert_eq!(
+                    coordinates(direction)
+                        .expect("equivalent pole")
+                        .map(f64::to_bits),
+                    expected,
+                    "{direction:?}"
+                );
+            }
+        }
+        // A nonzero horizontal component remains outside this exact-pole convention.
+        assert_eq!(
+            coordinates([-f64::from_bits(1), 0., 1.]).expect("near pole")[0],
+            0.
+        );
     }
     #[test]
     fn finite_direction_domain_and_immutable_thread_safety() {
@@ -417,6 +453,16 @@ mod tests {
             let fine = FineTerrain::from_source(Arc::clone(&source), &lines, scale, &|| false)
                 .expect("fixed fine");
             let mut scratch = source.detail.workspace();
+            for sign in [1., -1.] {
+                let expected = fine.sample_surface([0., 0., sign]).expect("pole surface");
+                for direction in pole_directions(sign) {
+                    assert_eq!(
+                        fine.sample_surface(direction)
+                            .expect("equivalent pole surface"),
+                        expected
+                    );
+                }
+            }
             let mut anchor_error = 0_f64;
             for p in fine.lake_priors() {
                 let b = fine
