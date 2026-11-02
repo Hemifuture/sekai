@@ -44,18 +44,23 @@
 文件：新增包内 `src/mesh.rs`、`src/geometry.rs`。
 接口：`Mesh` 保留上游 width/height/spacing、x/y/xyz、CSR 邻接及三角形；`build_mesh(width,height,spacing,&mut Mulberry32,&dyn Fn()->bool)->Result<Mesh,TerrainError>`；`blur_field(&Mesh,&[f32],usize)->Vec<f32>`。几何方法按上游真实调用逐项迁移，不实现无消费者的 UI 查询辅助。
 
-- [ ] 上游一个小球面夹具记录点、三角形、邻接与跨接缝标记；测试缺失接口应失败。
-- [ ] 移植 Poisson 球面点、球面 Delaunay、邻接排序、球面距离/噪声/运动；若库的拓扑次序不同，不默许结果差异。
-- [ ] 拓扑欧拉关系、无孤立点、邻接对称和参照样本通过；执行包测试并提交。
+- [x] 上游一个小球面夹具记录点、三角形、邻接与跨接缝标记；测试缺失接口应失败。
+- [x] 移植 Poisson 球面点、球面 Delaunay、邻接排序、球面距离/噪声/运动；若库的拓扑次序不同，不默许结果差异。
+- [x] 拓扑欧拉关系、无孤立点、邻接对称和参照样本通过；执行包测试并提交。
+  `b4346f4` 实现；`d834e4f` 修复大半径查询及风带常量；`c76acda` 合并 oracle 来源。
+  本包 13 项通过，严格 Clippy/fmt 通过，独立复审通过；原数值夹具未重钉。
 
 ## Task 3: 粗地形与侵蚀初态
 
 文件：包内 `src/{params,tectonics,erosion,initial_climate,terrain}.rs` 与对应测试夹具。
 接口：`TerrainParams` 对应上游当前用户可用参数；`generate_terrain(&TerrainParams,&dyn Fn()->bool)->Result<Terrain,TerrainError>`；`Terrain` 包含 mesh、高程、海陆/湖泊、水面及来源参数。中间算法类型私有。
 
-- [ ] 写一个固定 seed 的上游中间输出对照：大陆场、海底、抬升、侵蚀后高程和湖泊。
-- [ ] 依赖顺序移植 tectonics、inlandSea、erosion、world 的初态步骤及其真实气候依赖；不移植文明或无用历史。
-- [ ] 每个中间边界先验证再接下游；确定性与取消测试通过后提交。
+- [x] 写一个固定 seed 的上游中间输出对照：大陆场、海底、抬升、侵蚀后高程和湖泊。
+- [x] 依赖顺序移植 tectonics、inlandSea、erosion、world 的初态步骤及其真实气候依赖；不移植文明或无用历史。
+- [x] 每个中间边界先验证再接下游；确定性与取消测试通过后提交。
+  `ce5aa51`：Release 22 项、Clippy/fmt 通过，独立审阅通过。
+  两个小场景逐项匹配，其中组合作者参数包含真实非零湖面；一次默认规模
+  34,031 格高程/海陆哈希匹配。未把粗生成诊断耗时当作全链时延。
 
 ## Task 4: 权威细地形
 
