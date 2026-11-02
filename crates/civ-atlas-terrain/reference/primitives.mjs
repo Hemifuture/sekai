@@ -4,27 +4,19 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { stripTypeScriptTypes } from 'node:module';
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { SOURCE_PINS, DEPENDENCY_PINS, verifyPin } from './source-pins.mjs';
 
 const [upstream, prefix, output] = process.argv.slice(2).map(p => resolve(p));
 const temp = join(prefix, 'primitive-modules');
 await mkdir(temp, { recursive: true });
 const hashes = [];
-const pinnedHashes = {
-  'util.ts': 'a5b9c35b769579b2d0f18bd865b5f54e57ad501a01234b3a7c04f4eb00828c51',
-  'noise.ts': '6f1a0d080d33f50e282a40fce2f216869c1f5c9a5f747720a1d16ab4a87ac3f8',
-  'civ/engine/rand.ts': '09cb84edb16e3b21930eeb0ee669eb11748380227132f5af27608b1a20afecf8',
-};
-const simplex = await readFile(join(prefix, 'node_modules/simplex-noise/dist/esm/simplex-noise.js'));
-if (createHash('sha256').update(simplex).digest('hex') !== '64e571e6d28da06fdd230110b8ce242285e76137e7258938f3b68a0fd6ff8146') {
-  throw new Error('Expected the pinned simplex-noise 4.0.3 ESM source');
-}
+const simplexEntry = 'simplex-noise/dist/esm/simplex-noise.js';
+hashes.push(verifyPin(DEPENDENCY_PINS, simplexEntry,
+  await readFile(join(prefix, 'node_modules', simplexEntry))));
 for (const [name, relative] of [['util', 'util.ts'], ['noise', 'noise.ts'], ['rand', 'civ/engine/rand.ts']]) {
   const source = await readFile(join(upstream, 'src/gen', relative), 'utf8');
-  const hash = createHash('sha256').update(source).digest('hex');
-  if (hash !== pinnedHashes[relative]) throw new Error(`Unexpected pinned source: ${relative}`);
-  hashes.push(`${relative} SHA256 ${hash}`);
+  hashes.push(verifyPin(SOURCE_PINS, relative, source));
   const js = stripTypeScriptTypes(source).replaceAll("'./util'", "'./util.mjs'").replaceAll("'../../util'", "'./util.mjs'");
   await writeFile(join(temp, `${name}.mjs`), js);
 }

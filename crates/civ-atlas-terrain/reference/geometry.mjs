@@ -3,30 +3,17 @@ import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {stripTypeScriptTypes} from 'node:module';
-import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
+import {SOURCE_PINS,DEPENDENCY_PINS,verifyPin} from './source-pins.mjs';
 const [root,prefix,out]=process.argv.slice(2).map(p=>resolve(p));
 const temp=join(prefix,'geometry-modules'); mkdirSync(temp,{recursive:true});
 const hashes=[];
-const pins={
-'util.ts':'a5b9c35b769579b2d0f18bd865b5f54e57ad501a01234b3a7c04f4eb00828c51',
-'noise.ts':'6f1a0d080d33f50e282a40fce2f216869c1f5c9a5f747720a1d16ab4a87ac3f8',
-'civ/engine/rand.ts':'09cb84edb16e3b21930eeb0ee669eb11748380227132f5af27608b1a20afecf8',
-'geometry.ts':'deec31f1a9003fe5ce6116f19ff718540770daa1d3e756f7967d97bbb6ec6ce1',
-'mesh.ts':'d1dca22d575fe0628876324947e3583df2f5072bfbe8b75eb241e2f2b49f8b99'};
-const dependencyPins={
-'delaunator/index.js':'1a941d291859ebe1f6755dfbc2024686103c5ab2f31659177c01088ab88c2ca3',
-'d3-delaunay/src/delaunay.js':'21b26b06b768e5f248adff6301638b87cf9ac32edf423eccb7784e60b9851292',
-'robust-predicates/esm/orient2d.js':'ba1af2b1ea71924fa2e0a3e50b8972d3a83ab9a9f406dd73e851c9763a8eb741'};
-for(const [file,hash]of Object.entries(dependencyPins)) {
- const actual=createHash('sha256').update(readFileSync(join(prefix,'node_modules',file))).digest('hex');
- if(actual!==hash)throw new Error('Dependency does not match pinned oracle: '+file);
- hashes.push(`${file}: ${actual}`);
+for(const file of Object.keys(DEPENDENCY_PINS)) {
+ hashes.push(verifyPin(DEPENDENCY_PINS,file,readFileSync(join(prefix,'node_modules',file))));
 }
 for(const [name,rel] of [['util','util.ts'],['noise','noise.ts'],['rand','civ/engine/rand.ts'],['geometry','geometry.ts'],['mesh','mesh.ts']]) {
  const src=readFileSync(join(root,'src/gen',rel),'utf8');
- hashes.push(`${rel}: ${createHash('sha256').update(src).digest('hex')}`);
- if(createHash('sha256').update(src).digest('hex')!==pins[rel])throw new Error('Unexpected upstream source: '+rel);
+ hashes.push(verifyPin(SOURCE_PINS,rel,src));
  const js=stripTypeScriptTypes(src,{mode:"transform"}).replaceAll("'./util'","'./util.mjs'").replaceAll("'../../util'","'./util.mjs'").replaceAll("'./noise'","'./noise.mjs'").replaceAll("'./geometry'","'./geometry.mjs'").replaceAll("'./civ/engine/rand'","'./rand.mjs'");
  writeFileSync(join(temp,name+'.mjs'),js);
 }
