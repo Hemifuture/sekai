@@ -30,15 +30,34 @@ pub struct Terrain {
     pub(crate) initial_currents: InitialCurrents,
     pub(crate) initial_flux: Vec<f32>,
     pub(crate) initial_rivers: Vec<River>,
+    pub(crate) initial_receiver: Vec<usize>,
+    continental_origin: Vec<u8>,
     pub(crate) river_threshold: f64,
     pub(crate) max_elevation: f64,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct River {
     pub pts: Vec<f32>,
     pub cells: Vec<usize>,
 }
 impl Terrain {
+    /// Return original plate crust origin: one continental, zero oceanic.
+    /// This author substrate tag is independent of the final elevation or water class.
+    pub fn continental_origin(&self) -> &[u8] {
+        &self.continental_origin
+    }
+    /// Return original spherical triangle site indices, three consecutive indices per face.
+    pub fn site_triangles(&self) -> &[usize] {
+        &self.mesh.triangles
+    }
+    /// Return ordered neighbor CSR offsets, including the final sentinel.
+    pub fn site_neighbor_offsets(&self) -> &[usize] {
+        &self.mesh.adj_start
+    }
+    /// Return ordered neighbor site indices, indexed by `site_neighbor_offsets`.
+    pub fn site_neighbors(&self) -> &[usize] {
+        &self.mesh.adj
+    }
     /// Return the validated author controls used to create this terrain.
     pub fn params(&self) -> &TerrainParams {
         &self.params
@@ -241,6 +260,11 @@ fn generate_on_mesh(
         .filter(|&i| tect.land[i] != 0)
         .fold(0.0_f64, |m, i| m.max(f64::from(elevation[i])));
     check_cancel(cancel)?;
+    let continental_origin = tect
+        .plate
+        .iter()
+        .map(|&p| tect.plate_continental[p])
+        .collect();
     let terrain = Terrain {
         params: params.clone(),
         mesh,
@@ -251,6 +275,8 @@ fn generate_on_mesh(
         initial_currents,
         initial_flux,
         initial_rivers,
+        initial_receiver: flow.receiver,
+        continental_origin,
         river_threshold,
         max_elevation,
     };
@@ -281,6 +307,21 @@ impl Terrain {
         if self.water.len() != n || self.water.iter().any(|&w| w > 2) {
             return Err(TerrainError::InvalidOutput {
                 field: "water classification",
+            });
+        }
+        if self.continental_origin.len() != n || self.continental_origin.iter().any(|&v| v > 1) {
+            return Err(TerrainError::InvalidOutput {
+                field: "continental origin",
+            });
+        }
+        if self.initial_receiver.len() != n
+            || self
+                .initial_receiver
+                .iter()
+                .any(|&i| i != usize::MAX && i >= n)
+        {
+            return Err(TerrainError::InvalidOutput {
+                field: "initial drainage receiver",
             });
         }
         if !self.max_elevation.is_finite()
@@ -628,6 +669,17 @@ mod tests {
                 .map(|&v| usize::from(v))
                 .collect::<Vec<_>>(),
             r::WATER
+        );
+        assert_eq!(
+            terrain
+                .continental_origin()
+                .iter()
+                .map(|&v| usize::from(v))
+                .collect::<Vec<_>>(),
+            r::TECT_PLATE
+                .iter()
+                .map(|&p| r::TECT_PLATE_CONTINENTAL[p])
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             terrain

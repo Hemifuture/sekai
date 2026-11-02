@@ -3,6 +3,14 @@
 import { createHash } from 'node:crypto';
 
 export const SOURCE_PINS = Object.freeze({
+  'raster.ts': 'af5ddaa9f5227cc998051596b4fa9bdc91ade0bfb8246b1be0884f6982e88af8',
+  'rasterWindow.ts': 'f803eceab2930a7bd38cda36bc0058a7a82bc824aa01df0c0bff4293f608cd07',
+  'gully.ts': 'f5d1d2db9567be1289ed48ef0af8819f2910e3ed1ee7af990697de5138d1f1bb',
+  'riverGeometry.ts': '154b2c359b5b7c05455bb970656a7578f0ccce3a5f45044b5945356f662f61d4',
+  'valleys.ts': '8be3251014105c4eed012a7cb7bcc5eb192176600e00a2f41780e62f92a321c7',
+  'creeks.ts': 'ed0c77f15c7ca3691a7061f56813970bb377514b05dd14f0fc1c78aa010e0b8d',
+  'estuary.ts': 'db524a64107a57d44676420721a6ff7073af341aeb324ca2c3734eb315dc580d',
+  'seaice.ts': '7952e3745bb27832cf5a489644b16e450c8bc616fac02a39a64e0ecdeb27df57',
   'util.ts': 'a5b9c35b769579b2d0f18bd865b5f54e57ad501a01234b3a7c04f4eb00828c51',
   'noise.ts': '6f1a0d080d33f50e282a40fce2f216869c1f5c9a5f747720a1d16ab4a87ac3f8',
   'civ/engine/rand.ts': '09cb84edb16e3b21930eeb0ee669eb11748380227132f5af27608b1a20afecf8',

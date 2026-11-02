@@ -25,8 +25,6 @@ pub(crate) struct Mesh {
     /// Interleaved unit-sphere positions, with north along positive z.
     pub(crate) xyz: Vec<f32>,
     /// Triangle vertex indices, with seam/pole triangles partitioned first.
-    // Task 4's sphere raster cover consumes this triangulation.
-    #[allow(dead_code)]
     pub(crate) triangles: Vec<usize>,
     /// CSR neighbor offsets, including a final sentinel offset.
     pub(crate) adj_start: Vec<usize>,

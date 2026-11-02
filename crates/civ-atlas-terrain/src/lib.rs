@@ -6,7 +6,22 @@ pub const UPSTREAM_PACKAGE_VERSION: &str = "1.5.0";
 /// Source GENERATOR_VERSION from the pinned src/gen/edits.ts.
 pub const UPSTREAM_GENERATOR_VERSION: u32 = 7;
 
+mod creeks;
 mod erosion;
+mod estuary;
+mod fine;
+mod gully;
+mod initial_sea_ice;
+mod raster;
+mod river_geometry;
+mod shoreline;
+mod valleys;
+pub use fine::{FineScale, FineTerrain, LakePrior, SurfaceSample, FINE_TERRAIN_VERSION};
+#[cfg(test)]
+#[allow(dead_code)]
+mod fine_reference {
+    include!("../reference/fine.rs");
+}
 mod initial_climate;
 mod initial_currents;
 mod inland_sea;
@@ -27,6 +42,9 @@ pub(crate) mod random;
 /// Invalid parameters or interruption while building terrain.
 #[derive(Debug, thiserror::Error, PartialEq)]
 pub enum TerrainError {
+    /// Surface sampling requires a finite, nonzero direction vector.
+    #[error("invalid surface direction")]
+    InvalidDirection,
     /// A named author control is outside the supported source UI domain.
     #[error("invalid terrain parameter: {name}")]
     InvalidParameter {

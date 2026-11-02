@@ -12,6 +12,36 @@ JavaScript 32 位溢出、UTF-16 字符串散列和 Float32Array 写回边界；
 
 ## 文件映射
 
+- `src/raster.rs`、`src/shoreline.rs`、`src/fine.rs`：原 `raster.ts` 与
+  `rasterWindow.ts` 的球面覆盖、Float32 重心插值、两遍球面盒式模糊、周期 B 样条、
+  三向细节纹理、细岸扭曲及 zoom 高程求值。仅保留基础分辨率底图；高倍查询使用
+  固定的原尺度，不保存全球高倍 Raster，不从相机读取 scale。
+- `src/river_geometry.rs`、`src/valleys.rs`、`src/creeks.rs`：原同名 TypeScript
+  文件（大小写按上游），保留主干重串、汇合点、Catmull–Rom、分层曲流、河谷及溪流。
+  溪流复用生成结束时同一参数的原 receiver，省去完全相同的第二次 Priority-Flood。
+- `src/gully.rs`：原 `gully.ts` 的全部实际 zoom 高程消费者；每个采样批次独占
+  Layer 的最近格缓存，世界只持有不可变输入。原余弦/正弦 Float32 LUT 不变。
+- `src/initial_sea_ice.rs`：原 `seaice.ts::computeSeaIce/seaIceNodes`，它通过
+  `dropSpecks` 影响河口参考的全图水类；只排除后续浮冰绘色。
+- `src/estuary.rs`：原 `estuary.ts` 的海口选择、桥接、喇叭口、三角洲/水下浅滩、
+  分汊水道的所有高程及水类写入，按原 mouths 顺序执行。仅删除无形状消费者的
+  plume/rivTint/rivCore、湿地/温雨绘色和对应洋流查询。
+- `src/noise.rs::value_noise`：原 `valueNoise/hash2`，保留 Number 乘法后 ToInt32
+  与 Math.imul 的边界，为河口真实地形消费者服务。
+
+这些函数中的数值、振幅、作者 floor 与分支阈值全部来自固定上游，是已批准的
+作者初态规则，不宣称地球物理常量、侵蚀演化或物质守恒。湖床 A3 残差是明确的
+Sekai 初态适配；公开湖先验仍未闭合，不能当最终水面或水深发布。
+无原湖顶点的三角形直接保留源高程。A3b允许湖节点star内的初态海平面交线随床恢复
+改变，不使用海岸切割器、taper或clamp；所有最终水体必须从恢复床重新闭合。
+原输出的 noisy lake 掩膜只用于离线保真对照。
+
+`reference/fine.mjs` 和 `reference/fine-world.mjs` 使用离线 tsx 直接执行经
+`source-pins.mjs` 校验的原 TypeScript。前者是最低成本几何/噪声夹具；后者沿用
+同一个默认 seed42 世界的首河口、首湖、接缝、首桥接，以及固定输入流量的三角洲
+分支夹具。没有另写 JavaScript 地形算法或将 Rust 输出反钉成 oracle。
+运行时不依赖 Node，不加载预制世界；大尺寸诊断二进制只存离线 scratch。
+
 - `src/random.rs`：`src/gen/util.ts` 的 `mulberry32`、`subSeed`、`keyed`、
   `fmix`；`src/gen/civ/engine/rand.ts` 的 `round24`。
 - `src/noise.rs`：`src/gen/noise.ts` 的 `noise3`、`fbm3`、`ridged3`、

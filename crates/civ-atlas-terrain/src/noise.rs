@@ -4,6 +4,29 @@
 
 use crate::random::Mulberry32;
 
+// Civ Atlas hash2 uses Number multiplication before its first ToInt32 boundary.
+pub(crate) fn value_noise(x: f64, y: f64, seed: u32) -> f64 {
+    let hash = |x: f64, y: f64| {
+        let mut h = (x * 374761393. + y * 668265263. + seed as f64 * 982451653.)
+            .trunc()
+            .rem_euclid(4294967296.) as u32;
+        h = (h ^ (h >> 13)).wrapping_mul(1274126177);
+        h ^= h >> 16;
+        h as f64 / 4294967296.
+    };
+    let xi = x.floor();
+    let yi = y.floor();
+    let fx = x - xi;
+    let fy = y - yi;
+    let ux = fx * fx * (3. - 2. * fx);
+    let uy = fy * fy * (3. - 2. * fy);
+    let a = hash(xi, yi);
+    let b = hash(xi + 1., yi);
+    let c = hash(xi, yi + 1.);
+    let d = hash(xi + 1., yi + 1.);
+    a + (b - a) * ux + (c - a) * uy + (a - b - c + d) * ux * uy
+}
+
 // simplex-noise 4.0.3: Gustavson's 3D simplex skew, gradients and output scale.
 const F3: f64 = 1.0 / 3.0;
 const G3: f64 = 1.0 / 6.0;
@@ -159,8 +182,6 @@ pub(crate) fn ridged3(n: &Noise3, [x, y, z]: [f64; 3], octaves: usize, persisten
 
 // Civ Atlas raster.ts consumes this periodic texture for authoritative fine elevation.
 // Preconditions match upstream: size is a power of two; cells and octaves are positive.
-// Task 4's raster noise tiles consume this exact upstream operator.
-#[allow(dead_code)]
 pub(crate) fn tileable_fbm(
     seed: u32,
     size: usize,
@@ -236,7 +257,6 @@ pub(crate) fn tileable_fbm(
     out
 }
 
-#[allow(dead_code)]
 fn fade(t: f64) -> f64 {
     t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
 }
