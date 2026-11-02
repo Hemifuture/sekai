@@ -9,7 +9,7 @@ mod fractal;
 mod geologic_rule_input;
 mod geology;
 mod hierarchical_derivation;
-pub(crate) use hierarchical_derivation::subdivision_children_from_midpoints;
+pub(crate) use hierarchical_derivation::{interior_margin, subdivision_children_from_midpoints};
 mod hierarchical_rivers;
 mod hydro_erosion;
 mod hydro_erosion_rule_input;

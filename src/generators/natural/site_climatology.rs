@@ -15,8 +15,8 @@ use crate::world::natural::{
     SurfaceWaterKind, ANCHOR_INLAND_MIN_CLIMATE_SPACINGS, ANCHOR_RECOMMENDATION_COUNT,
     CELSIUS_TO_KELVIN_OFFSET_K, CLIMATE_MONTH_COUNT, CLIMATE_OROGRAPHIC_LAPSE_RATE_C_PER_M,
     EADY_GROWTH_RATE_COEFFICIENT, EARTH_ROTATION_RATE_RAD_S,
-    P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K, SITE_CLIMATOLOGY_SCHEMA_V1, STANDARD_GRAVITY_M_S2,
-    WET_DAY_THRESHOLD_MM,
+    P4_DRY_AIR_SPECIFIC_HEAT_CAPACITY_J_KG_K, SITE_CLIMATOLOGY_SCHEMA_VERSION,
+    STANDARD_GRAVITY_M_S2, WET_DAY_THRESHOLD_MM,
 };
 use crate::world::spatial::{
     canonical_east_north_basis, central_angle, gnomonic_forward, gnomonic_inverse,
@@ -572,7 +572,7 @@ pub fn sample_site_climatology(
         .collect();
 
     Ok(SiteClimatology {
-        schema_version: SITE_CLIMATOLOGY_SCHEMA_V1,
+        schema_version: SITE_CLIMATOLOGY_SCHEMA_VERSION,
         source,
         region: SiteRegionSummary {
             anchor_cell: region.anchor_cell().raw(),

@@ -1372,7 +1372,7 @@ pub(super) fn signed_unit_noise(seed: &[u8; 32]) -> f64 {
 
 /// The smallest signed side margin of `direction` against the CCW
 /// spherical triangle: positive strictly inside, negative outside.
-fn interior_margin(corners: &[UnitVector3; 3], direction: UnitVector3) -> f64 {
+pub(crate) fn interior_margin(corners: &[UnitVector3; 3], direction: UnitVector3) -> f64 {
     side(corners[0], corners[1], direction)
         .min(side(corners[1], corners[2], direction))
         .min(side(corners[2], corners[0], direction))

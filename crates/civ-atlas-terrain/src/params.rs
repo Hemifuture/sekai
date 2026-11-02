@@ -7,6 +7,15 @@
 pub struct TerrainParams {
     /// Deterministic 32-bit random seed.
     pub seed: u32,
+    /// Seed-independent author controls, shared with recipe editors.
+    #[serde(flatten)]
+    pub shape: TerrainShape,
+}
+
+/// Seed-independent controls from the pinned upstream parameter contract.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerrainShape {
     /// Requested sphere cell count (the sampled count is approximate).
     pub cells: usize,
     /// Target land fraction, before inland-sea treatment.
@@ -35,6 +44,28 @@ impl Default for TerrainParams {
     fn default() -> Self {
         Self {
             seed: 1,
+            shape: TerrainShape::default(),
+        }
+    }
+}
+
+impl std::ops::Deref for TerrainParams {
+    type Target = TerrainShape;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shape
+    }
+}
+
+impl std::ops::DerefMut for TerrainParams {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shape
+    }
+}
+
+impl Default for TerrainShape {
+    fn default() -> Self {
+        Self {
             cells: 36000,
             land_fraction: 0.33,
             plates: 30,
@@ -54,6 +85,16 @@ impl TerrainParams {
     ///
     /// # Errors
     /// Returns `TerrainError::InvalidParameter` for non-finite or unsupported controls.
+    pub fn validate(&self) -> Result<(), crate::TerrainError> {
+        self.shape.validate()
+    }
+}
+
+impl TerrainShape {
+    /// Checks author controls against the pinned upstream UI domain.
+    ///
+    /// # Errors
+    /// Returns `TerrainError::InvalidParameter` for unsupported or non-finite controls.
     pub fn validate(&self) -> Result<(), crate::TerrainError> {
         use crate::TerrainError::InvalidParameter;
         // genesisSliders.ts bounds and ParamField.tsx CONTINENT_CHOICES.

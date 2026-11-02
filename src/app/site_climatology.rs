@@ -5,7 +5,9 @@
 //! The app only assembles published products into the read-only query and
 //! writes the bytes; sampling lives in `generators::natural::site_climatology`.
 
-use crate::app::{SphericalFormationFieldDocument, SphericalWorldFieldDocument};
+#[cfg(all(test, not(debug_assertions)))]
+use crate::app::SphericalFormationFieldDocument;
+use crate::app::SphericalWorldFieldDocument;
 use crate::generators::natural::{
     recommend_site_anchors, sample_site_climatology, SiteAnchorCandidate, SiteClimatologyInputs,
     SiteFootprint,
@@ -77,23 +79,32 @@ impl Default for SiteClimatologyPanel {
     }
 }
 
-fn inputs(document: &SphericalFormationFieldDocument) -> SiteClimatologyInputs<'_> {
+fn inputs(world: &SphericalWorldFieldDocument) -> Option<SiteClimatologyInputs<'_>> {
+    if let Some(document) = world.atlas() {
+        return Some(SiteClimatologyInputs {
+            surface: document.surface(),
+            climate: document.snapshot().climate(),
+            surface_water: &document.water,
+            elevation_m: document.snapshot().fields().exposed_elevation_m(),
+            climate_face_resolution: document.quality_profile().climate_face_resolution(),
+        });
+    }
+    let document = world.formation()?;
     let formation = document.formation_snapshot();
-    SiteClimatologyInputs {
+    Some(SiteClimatologyInputs {
         surface: document.surface(),
         climate: document.formation_climate(),
         surface_water: formation.hydrology().surface_water(),
         elevation_m: formation.terrain_fields().current_elevation_m(),
         climate_face_resolution: document.quality_profile().climate_face_resolution(),
-    }
+    })
 }
 
-fn source(
-    world: &SphericalWorldFieldDocument,
-    document: &SphericalFormationFieldDocument,
-) -> SiteClimatologySource {
+fn source(world: &SphericalWorldFieldDocument) -> SiteClimatologySource {
     let presentation = world.presentation_source();
-    let climate = document.formation_climate();
+    let climate = inputs(world)
+        .expect("supported current-climate document")
+        .climate;
     let hex = |bytes: [u8; 32]| blake3::Hash::from(bytes).to_hex().to_string();
     SiteClimatologySource {
         world_seed: presentation.root_seed().raw(),
@@ -103,17 +114,24 @@ fn source(
         global_circulation_fingerprint: hex(climate.fields().fingerprint()),
         global_circulation_schema: climate.schema_version(),
         climate_profile: climate.profile(),
-        quality_profile: document.quality_profile(),
+        quality_profile: climate.checkpoint().quality_profile(),
+        terrain_source: if world.atlas().is_some() {
+            crate::world::natural::SiteTerrainSource::CivAtlas
+        } else {
+            crate::world::natural::SiteTerrainSource::Formation
+        },
+        fixed_terrain_scale: world
+            .atlas()
+            .map(|_| crate::world::natural::ATLAS_FINE_SCALE.pixels_per_unit()),
         sekai_package_version: env!("CARGO_PKG_VERSION").to_owned(),
     }
 }
 
 fn sample(
     world: &SphericalWorldFieldDocument,
-    document: &SphericalFormationFieldDocument,
     region_inputs: RegionInputs,
 ) -> Result<SampledSite, String> {
-    let query = inputs(document);
+    let query = inputs(world).ok_or("This source has no current climate")?;
     let region = SiteRegion::new(
         region_inputs.anchor,
         region_inputs.heading_deg,
@@ -121,7 +139,7 @@ fn sample(
         region_inputs.half_extent_m,
     )
     .map_err(|error| error.to_string())?;
-    let export = sample_site_climatology(&query, &region, source(world, document))
+    let export = sample_site_climatology(&query, &region, source(world))
         .map_err(|error| error.to_string())?;
     let footprint = SiteFootprint::new(&query, &region).map_err(|error| error.to_string())?;
     let bytes = export.to_json_bytes();
@@ -185,18 +203,18 @@ impl SiteClimatologyPanel {
         ));
         ui.separator();
         ui.collapsing(SITE_CLIMATOLOGY_HEADING, |ui| {
-            let Some(document) = world.formation() else {
+            let Some(_) = inputs(world) else {
                 ui.label(SITE_FORMATION_ONLY_HINT);
                 return;
             };
             self.show_region_controls(ui, selection);
-            self.show_recommendations(ui, document);
+            self.show_recommendations(ui, world);
             let Some(region_inputs) = self.region_inputs() else {
                 ui.weak(SITE_NO_ANCHOR_HINT);
                 return;
             };
             if !matches!(&self.sampled, Some(Ok(site)) if site.inputs == region_inputs) {
-                self.sampled = Some(sample(world, document, region_inputs));
+                self.sampled = Some(sample(world, region_inputs));
                 self.message = None;
             }
             match &self.sampled {
@@ -262,11 +280,7 @@ impl SiteClimatologyPanel {
         });
     }
 
-    fn show_recommendations(
-        &mut self,
-        ui: &mut egui::Ui,
-        document: &SphericalFormationFieldDocument,
-    ) {
+    fn show_recommendations(&mut self, ui: &mut egui::Ui, world: &SphericalWorldFieldDocument) {
         if ui.button(SITE_RECOMMEND_LABEL).clicked() {
             let region = SiteRegion::new(
                 CellId::from_raw(0),
@@ -275,7 +289,9 @@ impl SiteClimatologyPanel {
                 self.half_extent_m,
             );
             self.candidates = region
-                .and_then(|region| recommend_site_anchors(&inputs(document), &region))
+                .and_then(|region| {
+                    recommend_site_anchors(&inputs(world).expect("supported document"), &region)
+                })
                 .map_err(|error| self.message = Some(error.to_string()))
                 .ok();
         }
@@ -287,7 +303,7 @@ impl SiteClimatologyPanel {
         }
         let mut chosen = None;
         for candidate in candidates {
-            let centroid = document.surface().cells()[candidate.cell.raw() as usize].centroid;
+            let centroid = world.surface().cells()[candidate.cell.raw() as usize].centroid;
             let (latitude, longitude) = crate::world::spatial::latitude_longitude_radians(centroid);
             let assessment = &candidate.assessment;
             ui.horizontal(|ui| {
@@ -482,7 +498,7 @@ mod tests {
             anchor: Some(anchor),
             ..Default::default()
         };
-        let sampled = sample(&world, &document, panel.region_inputs().unwrap()).unwrap();
+        let sampled = sample(&world, panel.region_inputs().unwrap()).unwrap();
         assert_eq!(
             sampled.export.source.build_result_hash,
             blake3::Hash::from(*world.presentation_source().build_result_hash().as_bytes())

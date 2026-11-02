@@ -12,7 +12,7 @@ use crate::world::natural::{ClimateModelProfile, NaturalQualityProfile};
 use crate::world::CellId;
 
 /// The only export schema written by this build.
-pub const SITE_CLIMATOLOGY_SCHEMA_V1: u16 = 1;
+pub const SITE_CLIMATOLOGY_SCHEMA_VERSION: u16 = 2;
 
 /// Wet-day definition: daily precipitation above 0.1 mm.
 ///
@@ -112,16 +112,30 @@ impl SiteRegion {
     }
 }
 
+/// Terrain source of a site query; current climate is independent of author history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteTerrainSource {
+    /// Sekai formation product.
+    Formation,
+    /// Fixed-scale Civ Atlas terrain with current Sekai climate.
+    CivAtlas,
+}
+
 /// Identity of the published world the export was sampled from.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SiteClimatologySource {
+    /// Actual terrain source, without implying a formation history.
+    pub terrain_source: SiteTerrainSource,
+    /// Fixed Atlas author scale; independent of climate and display resolution.
+    pub fixed_terrain_scale: Option<u8>,
     /// Root seed of the build.
     pub world_seed: u64,
     /// `SurfaceRef` fingerprint of the authoritative surface, hex.
     pub surface_fingerprint: String,
     /// Engine-audited result hash of the whole build, hex.
     pub build_result_hash: String,
-    /// Graph contract version of the formation product.
+    /// Presentation graph contract version for the recorded terrain source.
     pub graph_contract_version: u16,
     /// Canonical P4 field-state fingerprint (`GlobalCirculationFields::fingerprint`), hex.
     pub global_circulation_fingerprint: String,
@@ -129,7 +143,7 @@ pub struct SiteClimatologySource {
     pub global_circulation_schema: u16,
     /// Closed P4 model profile.
     pub climate_profile: ClimateModelProfile,
-    /// Natural quality profile the world was built at.
+    /// Actual C2 work-domain quality profile; not the terrain cell count.
     pub quality_profile: NaturalQualityProfile,
     /// Cargo package version of the exporting build.
     pub sekai_package_version: String,
@@ -160,9 +174,9 @@ pub struct SiteRegionSummary {
     pub footprint_expanded: bool,
     /// Authoritative cells whose centroid lies in the effective footprint.
     pub cell_count: u32,
-    /// Area fraction of dry land among sampled cells.
+    /// Area-weighted fraction of source cells classified as dry land.
     pub land_fraction: f64,
-    /// Area fraction of published lakes among sampled cells.
+    /// Area-weighted fraction of source cells classified as lakes.
     pub lake_fraction: f64,
     /// Elevation statistics of sampled cells.
     pub elevation_m: SiteElevationSummary,

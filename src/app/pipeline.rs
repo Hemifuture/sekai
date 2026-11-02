@@ -19,7 +19,9 @@ pub(super) const PRODUCT_RECIPE_GENERATOR_VERSION: u32 = 2;
 /// Which authoritative generation chain the spherical canvas builds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorldPipeline {
-    /// The formation product chain (P2v5→P5); the interactive product default.
+    /// Pinned Civ Atlas initial terrain with current Sekai climate and hydrology.
+    CivAtlas,
+    /// The formation product chain (P2v5→P5), preserved for existing recipes.
     Formation,
     /// The spherical natural-foundation chain.
     ///
@@ -32,14 +34,14 @@ pub enum WorldPipeline {
 impl Default for WorldPipeline {
     fn default() -> Self {
         // Unit tests author tiny (162-cell) worlds that only the foundation
-        // chain accepts; the interactive product always starts on formation.
+        // chain accepts; newly authored interactive worlds start on Civ Atlas.
         #[cfg(test)]
         {
             Self::LegacyFoundation
         }
         #[cfg(not(test))]
         {
-            Self::Formation
+            Self::CivAtlas
         }
     }
 }
@@ -54,6 +56,8 @@ pub enum PersistedWorldOrigin {
 /// The graph family selected for runtime initialization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppRuntimeGraph {
+    /// Civ Atlas terrain and current C2/hydrology graph.
+    CivAtlas,
     /// The spherical natural foundation graph.
     SphericalNaturalFoundation,
     /// The formation-product graph (P2v5→P5).

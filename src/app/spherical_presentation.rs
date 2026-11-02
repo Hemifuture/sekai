@@ -57,10 +57,11 @@ use crate::world::{RootSeed, SphericalSpaceSpec, SphericalSpecError};
 ///
 /// Everything downstream of the document boundary (locator, meshes, layers,
 /// presenters) is document-agnostic, so one candidate/publication pipeline
-/// carries either the legacy natural-foundation product or the formation
-/// product (P2v5→P5).
+/// carries the legacy foundation, formation product (P2v5→P5), or Atlas current state.
 #[derive(Clone)]
 pub enum SphericalWorldFieldDocument {
+    /// Civ Atlas current terrain, water and climate.
+    CivAtlas(Arc<super::atlas_display::AtlasFieldDocument>),
     /// Legacy spherical natural-foundation chain document.
     NaturalFoundation(Arc<SphericalNaturalFieldDocument>),
     /// Formation-product chain (P2v5→P5) document.
@@ -68,11 +69,20 @@ pub enum SphericalWorldFieldDocument {
 }
 
 impl SphericalWorldFieldDocument {
+    /// Returns the current Atlas source when active.
+    pub fn atlas(&self) -> Option<&super::atlas_display::AtlasFieldDocument> {
+        if let Self::CivAtlas(document) = self {
+            Some(document)
+        } else {
+            None
+        }
+    }
     /// Returns the verified presentation source derived from the document.
     pub fn presentation_source(&self) -> SphericalPresentationSource {
         match self {
             Self::NaturalFoundation(document) => document.presentation_source(),
             Self::Formation(document) => document.presentation_source(),
+            Self::CivAtlas(document) => document.presentation_source(),
         }
     }
 
@@ -81,6 +91,7 @@ impl SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.surface(),
             Self::Formation(document) => document.surface(),
+            Self::CivAtlas(document) => document.surface(),
         }
     }
 
@@ -88,14 +99,14 @@ impl SphericalWorldFieldDocument {
     pub fn natural_foundation(&self) -> Option<&SphericalNaturalFieldDocument> {
         match self {
             Self::NaturalFoundation(document) => Some(document),
-            Self::Formation(_) => None,
+            Self::Formation(_) | Self::CivAtlas(_) => None,
         }
     }
 
     /// Returns the formation-product document when it is active.
     pub fn formation(&self) -> Option<&SphericalFormationFieldDocument> {
         match self {
-            Self::NaturalFoundation(_) => None,
+            Self::NaturalFoundation(_) | Self::CivAtlas(_) => None,
             Self::Formation(document) => Some(document),
         }
     }
@@ -105,6 +116,7 @@ impl SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.catalog(),
             Self::Formation(document) => document.catalog(),
+            Self::CivAtlas(document) => document.catalog(),
         }
     }
 
@@ -113,6 +125,7 @@ impl SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.diagnostics(),
             Self::Formation(document) => document.diagnostics(),
+            Self::CivAtlas(document) => document.diagnostics(),
         }
     }
 
@@ -121,6 +134,7 @@ impl SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.preferred_field(),
             Self::Formation(document) => document.preferred_field(),
+            Self::CivAtlas(document) => document.preferred_field(),
         }
     }
 
@@ -132,6 +146,7 @@ impl SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.preferred_range(field),
             Self::Formation(document) => document.preferred_range(field),
+            Self::CivAtlas(document) => document.preferred_range(field),
         }
     }
 
@@ -152,17 +167,19 @@ impl SphericalWorldFieldDocument {
         self.surface()
     }
 
-    /// Returns the published quality tier when the formation product is active.
+    /// Returns published current-climate quality for Formation and Atlas products.
     pub fn quality_profile(&self) -> Option<NaturalQualityProfile> {
         match self {
             Self::NaturalFoundation(_) => None,
             Self::Formation(document) => Some(document.quality_profile()),
+            Self::CivAtlas(document) => Some(document.quality_profile()),
         }
     }
 
     /// Returns the build-time authoring-compliance summary for product panels.
     pub fn area_summary(&self) -> SphericalWorldAreaSummary {
         match self {
+            Self::CivAtlas(_) => SphericalWorldAreaSummary::CivAtlas,
             Self::NaturalFoundation(document) => {
                 SphericalWorldAreaSummary::NaturalFoundation(*document.area_summary())
             }
@@ -176,6 +193,8 @@ impl SphericalWorldFieldDocument {
 /// Authoring-compliance measurements exposed by whichever document is active.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SphericalWorldAreaSummary {
+    /// Independent Atlas summary is read directly from its published snapshot.
+    CivAtlas,
     /// Legacy natural-foundation compliance (land target driven).
     NaturalFoundation(super::spherical_natural_display::SphericalNaturalAreaSummary),
     /// Formation-product compliance (selected sea-level driver, conserved crust).
@@ -187,6 +206,7 @@ impl FieldDocument for SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.catalog(),
             Self::Formation(document) => document.catalog(),
+            Self::CivAtlas(document) => document.catalog(),
         }
     }
 
@@ -194,6 +214,7 @@ impl FieldDocument for SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.diagnostics(),
             Self::Formation(document) => document.diagnostics(),
+            Self::CivAtlas(document) => document.diagnostics(),
         }
     }
 
@@ -201,6 +222,7 @@ impl FieldDocument for SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.preferred_field(),
             Self::Formation(document) => document.preferred_field(),
+            Self::CivAtlas(document) => document.preferred_field(),
         }
     }
 
@@ -211,6 +233,7 @@ impl FieldDocument for SphericalWorldFieldDocument {
         match self {
             Self::NaturalFoundation(document) => document.preferred_range(field),
             Self::Formation(document) => document.preferred_range(field),
+            Self::CivAtlas(document) => document.preferred_range(field),
         }
     }
 }
@@ -1788,6 +1811,8 @@ pub struct SphericalWorldBuildRequest {
 
 /// Chain selection for one world-build request.
 pub enum SphericalWorldBuildTarget {
+    /// Fully authored Atlas request, including the checked root seed.
+    CivAtlas(crate::generators::natural::AtlasTerrainRequest),
     /// Formation-product chain on an already-built profile surface.
     Formation {
         /// The fixed quality profile driving the build.
@@ -1842,6 +1867,38 @@ pub(super) fn run_spherical_world_build_observed(
         ),
     };
     match request.target {
+        SphericalWorldBuildTarget::CivAtlas(atlas) => {
+            use crate::generators::natural::{atlas_terrain_graph, AtlasTerrainRequestArtifact};
+            let mut external = ExternalArtifacts::new();
+            external.insert(
+                AtlasTerrainRequestArtifact::new(atlas)
+                    .map_err(|e| SphericalPresentationError::Atlas(e.to_string()))?,
+            )?;
+            WorldBuildPhase::Graph.enter(phase);
+            let graph_timing = observation.map(|o| o.span(BuildPhase::Graph, Some(1)));
+            let mut private_cache =
+                MemoryStageCache::with_max_entries(1).expect("one cache entry is valid");
+            let outcome = BuildEngine::new(atlas_terrain_graph()?).build_with_cancellation(
+                request.root_seed,
+                external,
+                &mut private_cache,
+                cancellation,
+            )?;
+            drop(graph_timing);
+            WorldBuildPhase::Presentation.enter(phase);
+            let _timing = observation.map(|o| o.span(BuildPhase::Presentation, Some(1)));
+            let document = super::atlas_display::AtlasFieldDocument::from_build_outcome(&outcome)
+                .map_err(SphericalPresentationError::Atlas)?;
+            assemble_spherical_candidate(
+                Arc::new(SphericalWorldFieldDocument::CivAtlas(Arc::new(document))),
+                outcome.report,
+                request.view_state,
+                &request.requested_state,
+                &clock,
+                FailureInjector::NONE,
+                lineage,
+            )
+        }
         SphericalWorldBuildTarget::Formation {
             quality_profile,
             surface,
@@ -2180,6 +2237,8 @@ impl FailureInjector {
 /// Structured failures from spherical composition or candidate validation.
 #[derive(Debug, Error)]
 pub enum SphericalPresentationError {
+    #[error("{0}")]
+    Atlas(String),
     #[error(transparent)]
     SphericalSpec(#[from] SphericalSpecError),
     #[error(transparent)]

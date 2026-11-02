@@ -231,10 +231,9 @@ impl FormationAreaSummary {
     }
 }
 
-/// Owned display arrays derived once from the formation product's own
-/// published end-state circulation, so the climate on screen is consistent
-/// with the terrain on screen.
-struct FormationDisplayCache {
+/// Display arrays derived once from published current circulation.
+/// Formation and Atlas documents share the same monthly reductions and units.
+pub(super) struct FormationDisplayCache {
     annual_evaporation_mm: Vec<f32>,
     annual_precipitation_mm: Vec<f32>,
     mean_absorbed_shortwave_w_m2: Vec<f32>,
@@ -244,7 +243,36 @@ struct FormationDisplayCache {
 }
 
 impl FormationDisplayCache {
-    fn build(
+    pub(super) fn payloads(&self) -> Vec<(FieldId, FieldPayloadRef<'_>)> {
+        vec![
+            (
+                circulation_annual_evaporation_mm_field_id(),
+                FieldPayloadRef::ScalarF32(&self.annual_evaporation_mm),
+            ),
+            (
+                circulation_annual_precipitation_mm_field_id(),
+                FieldPayloadRef::ScalarF32(&self.annual_precipitation_mm),
+            ),
+            (
+                circulation_mean_absorbed_shortwave_w_m2_field_id(),
+                FieldPayloadRef::ScalarF32(&self.mean_absorbed_shortwave_w_m2),
+            ),
+            (
+                circulation_mean_air_temperature_c_field_id(),
+                FieldPayloadRef::ScalarF32(&self.mean_air_temperature_c),
+            ),
+            (
+                circulation_mean_outgoing_longwave_w_m2_field_id(),
+                FieldPayloadRef::ScalarF32(&self.mean_outgoing_longwave_w_m2),
+            ),
+            (
+                circulation_prevailing_wind_m_s_field_id(),
+                FieldPayloadRef::Vector2F32(&self.prevailing_wind_m_s),
+            ),
+        ]
+    }
+
+    pub(super) fn build(
         surface: &SphericalSurfaceSnapshot,
         fields: &GlobalCirculationFields,
     ) -> Result<Self, SphericalFormationDisplayError> {
@@ -537,7 +565,7 @@ impl FieldDocument for SphericalFormationFieldDocument {
         let components = terrain.elevation_components();
         let rates = formation.process_rates();
         let hydrology = formation.hydrology();
-        let payloads: Vec<(FieldId, FieldPayloadRef<'_>)> = vec![
+        let mut payloads: Vec<(FieldId, FieldPayloadRef<'_>)> = vec![
             (
                 plate_id_field_id(),
                 FieldPayloadRef::CategoryU32(compatibility.cell_plates().raw_values()),
@@ -635,30 +663,6 @@ impl FieldDocument for SphericalFormationFieldDocument {
                 FieldPayloadRef::CategoryU32(terrain.land_ocean().raw_values()),
             ),
             (
-                circulation_annual_evaporation_mm_field_id(),
-                FieldPayloadRef::ScalarF32(&self.cache.annual_evaporation_mm),
-            ),
-            (
-                circulation_annual_precipitation_mm_field_id(),
-                FieldPayloadRef::ScalarF32(&self.cache.annual_precipitation_mm),
-            ),
-            (
-                circulation_mean_absorbed_shortwave_w_m2_field_id(),
-                FieldPayloadRef::ScalarF32(&self.cache.mean_absorbed_shortwave_w_m2),
-            ),
-            (
-                circulation_mean_air_temperature_c_field_id(),
-                FieldPayloadRef::ScalarF32(&self.cache.mean_air_temperature_c),
-            ),
-            (
-                circulation_mean_outgoing_longwave_w_m2_field_id(),
-                FieldPayloadRef::ScalarF32(&self.cache.mean_outgoing_longwave_w_m2),
-            ),
-            (
-                circulation_prevailing_wind_m_s_field_id(),
-                FieldPayloadRef::Vector2F32(&self.cache.prevailing_wind_m_s),
-            ),
-            (
                 circulation_surface_albedo_field_id(),
                 FieldPayloadRef::ScalarF32(
                     self.formation.bundle().climate().fields().surface_albedo(),
@@ -689,6 +693,7 @@ impl FieldDocument for SphericalFormationFieldDocument {
                 FieldPayloadRef::CategoryU32(hydrology.strahler_order().raw_values()),
             ),
         ];
+        payloads.extend(self.cache.payloads());
         FieldCatalog::from_payloads(&self.registry, payloads)
     }
 
@@ -729,7 +734,7 @@ impl crate::app::field_document::SphericalFieldLayerDocument for SphericalFormat
 }
 
 /// Returns the shared formation-field range preference for the atomic surface.
-fn formation_preferred_range(
+pub(super) fn formation_preferred_range(
     registry: &FieldRegistry,
     sea_level_m: f32,
     elevation_display_radius_m: Option<f32>,

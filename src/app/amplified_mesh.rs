@@ -26,13 +26,16 @@
 //! Edge midpoints depend symmetrically on their two endpoint directions
 //! only, so shared borders stay crack-free across batches and cells.
 
+use super::atlas_detail::{DetailEvaluator, DetailReading as DerivedReading};
+#[cfg(test)]
+use crate::generators::natural::HierarchicalEvaluator;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::generators::natural::{
-    geometric_midpoint, subdivision_children, DerivedReading, HierarchicalEvaluator,
-    HierarchicalPath, LocatedPrimitive, HIERARCHICAL_PATH_DEPTH_MAX,
+    geometric_midpoint, subdivision_children, HierarchicalPath, LocatedPrimitive,
+    HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::view::{
     project_unit_direction, AmplifiedSurfaceMesh, GlobeCamera, MapScreenTransform, ProjectionPoint,
@@ -84,7 +87,7 @@ const TRIANGLE_CORNERS: usize = 3;
 /// Everything the detail worker needs per published world.
 pub(super) struct AmplifiedDetailContext {
     /// The T1 v2 hierarchical engine (owns geometry and values).
-    pub(super) evaluator: HierarchicalEvaluator,
+    pub(super) evaluator: DetailEvaluator,
     /// The shared hypsometric color anchor: sea level in metres.
     pub(super) sea_level_m: f64,
     /// The shared hypsometric color anchor: display radius in metres.
@@ -200,7 +203,9 @@ pub(super) fn uniform_selection(
     let mut leaves = 0_usize;
     for cell_index in 0..context.evaluator.cell_count() as u32 {
         let cell = CellId::from_raw(cell_index);
-        for sector in 0..context.evaluator.sector_count(cell) as u8 {
+        for sector in
+            0..u8::try_from(context.evaluator.sector_count(cell)).expect("validated sector domain")
+        {
             let batch = DetailBatch {
                 cell: cell_index,
                 sector,
@@ -508,7 +513,7 @@ const CENTER_PROBE_RADIANS: f64 = 1e-3;
 /// instead of per-cell measurements — removes per-cell threshold
 /// patchwork and makes the level monotone in zoom by construction.
 fn view_leaf_level(
-    evaluator: &HierarchicalEvaluator,
+    evaluator: &DetailEvaluator,
     probe: Option<&CenterProbe>,
     target_px: f64,
     floor_level: u8,
@@ -558,9 +563,17 @@ fn classify_cells_striped(
         for cell_index in start as u32..end as u32 {
             let cell = CellId::from_raw(cell_index);
             let corners = evaluator.sector_corners(cell, 0);
-            let level = cell_leaf_level(cap, corners, view_level, shrink);
+            let level = cell_leaf_level_with_cap(
+                cap,
+                corners[0],
+                evaluator.cell_cap(cell),
+                view_level,
+                shrink,
+            );
             levels.push(level);
-            for sector in 0..evaluator.sector_count(cell) as u8 {
+            for sector in
+                0..u8::try_from(evaluator.sector_count(cell)).expect("validated sector domain")
+            {
                 if level <= CELL_UNIFORM_MAX_LEVEL {
                     let batch = DetailBatch {
                         cell: cell_index,
@@ -638,13 +651,24 @@ fn classify_cells_striped(
 /// the far side of the world still costs almost nothing. The budget
 /// `shrink` demotes only this off-viewport arm; a visible cell always
 /// keeps the full `view_level`.
+#[cfg(test)]
 fn cell_leaf_level(cap: &ViewCap, corners: [UnitVector3; 3], view_level: u8, shrink: u8) -> u8 {
     // Twice the first sector's circumradius covers the whole cell (the
     // sector fans from the cell anchor), so a cell containing the
     // deep-zoom viewport measures distance zero.
     let circumradius_rad =
         angle_between(corners[0], corners[1]).max(angle_between(corners[0], corners[2])) * 2.0;
-    let distance_rad = cap.angle_to(corners[0]) - circumradius_rad - cap.radius_rad;
+    cell_leaf_level_with_cap(cap, corners[0], circumradius_rad, view_level, shrink)
+}
+
+fn cell_leaf_level_with_cap(
+    cap: &ViewCap,
+    center: UnitVector3,
+    radius: f64,
+    view_level: u8,
+    shrink: u8,
+) -> u8 {
+    let distance_rad = cap.angle_to(center) - radius - cap.radius_rad;
     if distance_rad <= 0.0 {
         return view_level;
     }
@@ -656,7 +680,7 @@ fn cell_leaf_level(cap: &ViewCap, corners: [UnitVector3; 3], view_level: u8, shr
 }
 
 /// The angle in radians between two unit directions.
-fn angle_between(a: UnitVector3, b: UnitVector3) -> f64 {
+pub(super) fn angle_between(a: UnitVector3, b: UnitVector3) -> f64 {
     let [ax, ay, az] = a.components();
     let [bx, by, bz] = b.components();
     (ax * bx + ay * by + az * bz).clamp(-1.0, 1.0).acos()
@@ -937,7 +961,7 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
 
 /// Walks a prefix geometrically with the shared child order and the
 /// commutative renormalized-sum midpoint.
-fn descend_prefix(mut corners: [UnitVector3; 3], steps: &[u8]) -> [UnitVector3; 3] {
+pub(super) fn descend_prefix(mut corners: [UnitVector3; 3], steps: &[u8]) -> [UnitVector3; 3] {
     for &child in steps {
         corners = subdivision_children(corners)[usize::from(child)];
     }
@@ -1025,6 +1049,18 @@ pub(super) fn build_river_polylines(
     context: &AmplifiedDetailContext,
     selection: &DetailSelection,
 ) -> Vec<RiverPolylineSegment> {
+    if let DetailEvaluator::Atlas { document, .. } = &context.evaluator {
+        return document
+            .snapshot()
+            .rivers()
+            .iter()
+            .map(|river| RiverPolylineSegment {
+                start: river.endpoints[0],
+                end: river.endpoints[1],
+                width_m: None,
+            })
+            .collect();
+    }
     if context.river_cells.is_empty() {
         return Vec::new();
     }
@@ -1067,7 +1103,7 @@ pub(super) fn build_river_polylines(
                 polylines.push(RiverPolylineSegment {
                     start: pair[0].components(),
                     end: pair[1].components(),
-                    width_m,
+                    width_m: Some(width_m),
                 });
             }
         }
@@ -1172,7 +1208,7 @@ mod tests {
             )
             .unwrap();
         AmplifiedDetailContext {
-            evaluator,
+            evaluator: evaluator.into(),
             sea_level_m: 0.0,
             display_radius_m: 2_000.0,
             river_cells: Vec::new(),
@@ -1314,7 +1350,7 @@ mod tests {
             )
             .unwrap();
         AmplifiedDetailContext {
-            evaluator,
+            evaluator: evaluator.into(),
             sea_level_m: 0.0,
             display_radius_m: 2_000.0,
             river_cells: segments
@@ -1377,7 +1413,7 @@ mod tests {
                 .expect("the production reach owns one physical width");
             assert!(polylines[cursor..cursor + segment_count]
                 .iter()
-                .all(|segment| segment.width_m.to_bits() == width_m.to_bits()));
+                .all(|segment| segment.width_m.map(f32::to_bits) == Some(width_m.to_bits())));
             cursor += segment_count;
         }
         assert_eq!(cursor, polylines.len());

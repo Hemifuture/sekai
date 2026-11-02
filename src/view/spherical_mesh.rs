@@ -11,10 +11,7 @@ use super::{
 use crate::world::spatial::{
     cross, SphericalSurfaceSnapshot, SurfaceRef, SurfaceRefError, UnitVector3,
 };
-use crate::world::{
-    CellId, EdgeId, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE, MAX_SPHERICAL_CELL_COUNT,
-    MAX_SPHERICAL_EDGE_COUNT,
-};
+use crate::world::{CellId, EdgeId, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT};
 
 const MAX_CLIPPED_TRIANGLES_PER_FAN_TRIANGLE: usize = 4;
 const TRIANGLE_VERTEX_COUNT: usize = 3;
@@ -26,9 +23,8 @@ const SPAN_EPSILON: f64 = 2.0e-12;
 const GLOBE_RADIUS_EPSILON: f32 = 2.0e-6;
 
 const DEFAULT_CELL_BUDGET: usize = MAX_SPHERICAL_CELL_COUNT as usize;
-const DEFAULT_TRIANGLE_BUDGET: usize = DEFAULT_CELL_BUDGET
-    * MAX_SPHERICAL_CELL_BOUNDARY_DEGREE
-    * MAX_CLIPPED_TRIANGLES_PER_FAN_TRIANGLE;
+const DEFAULT_TRIANGLE_BUDGET: usize =
+    2 * MAX_SPHERICAL_EDGE_COUNT as usize * MAX_CLIPPED_TRIANGLES_PER_FAN_TRIANGLE;
 const DEFAULT_VERTEX_BUDGET: usize = DEFAULT_TRIANGLE_BUDGET * TRIANGLE_VERTEX_COUNT;
 const DEFAULT_INDEX_BUDGET: usize = DEFAULT_VERTEX_BUDGET;
 const DEFAULT_EDGE_SEGMENT_BUDGET: usize = MAX_SPHERICAL_EDGE_COUNT as usize * 2;
@@ -1385,8 +1381,8 @@ pub struct RiverPolylineSegment {
     pub start: [f64; 3],
     /// The downstream path-node direction.
     pub end: [f64; 3],
-    /// The production hydraulic width, in metres.
-    pub width_m: f32,
+    /// Published hydraulic width in metres; absent sources use the renderer raster floor only.
+    pub width_m: Option<f32>,
 }
 
 /// Physical cross-channel vectors for the two presenters.

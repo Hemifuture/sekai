@@ -72,8 +72,8 @@ pub use evolved_tectonics::{
     MAX_TECTONIC_FORCING_RATE_MM_PER_YEAR,
 };
 pub use fields::{
-    annual_local_runoff_mm_field_id, bedrock_kind_field_id, boundary_kind_field_id,
-    boundary_strength_field_id, circulation_annual_evaporation_mm_field_id,
+    annual_local_runoff_mm_field_id, atlas_field_registry, bedrock_kind_field_id,
+    boundary_kind_field_id, boundary_strength_field_id, circulation_annual_evaporation_mm_field_id,
     circulation_annual_precipitation_mm_field_id,
     circulation_mean_absorbed_shortwave_w_m2_field_id, circulation_mean_air_temperature_c_field_id,
     circulation_mean_outgoing_longwave_w_m2_field_id, circulation_prevailing_wind_m_s_field_id,
@@ -255,8 +255,8 @@ pub use site_climatology::{
     site_climatology_fingerprint, AnchorAssessment, SiteAvailability, SiteCapabilityId,
     SiteCapabilityReason, SiteCapabilityStatus, SiteClimatology, SiteClimatologyError,
     SiteClimatologyMonth, SiteClimatologySource, SiteElevationSummary, SiteMethods, SiteRegion,
-    SiteRegionSummary, SiteSubstitute, ANCHOR_INLAND_MIN_CLIMATE_SPACINGS,
-    ANCHOR_RECOMMENDATION_COUNT, EADY_GROWTH_RATE_COEFFICIENT, SITE_CLIMATOLOGY_SCHEMA_V1,
+    SiteRegionSummary, SiteSubstitute, SiteTerrainSource, ANCHOR_INLAND_MIN_CLIMATE_SPACINGS,
+    ANCHOR_RECOMMENDATION_COUNT, EADY_GROWTH_RATE_COEFFICIENT, SITE_CLIMATOLOGY_SCHEMA_VERSION,
     WET_DAY_THRESHOLD_MM,
 };
 pub use spec::{

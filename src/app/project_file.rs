@@ -23,8 +23,8 @@ use crate::{
 };
 
 const PROJECT_MAGIC: &str = "sekai.recipe";
-/// The sole project transport schema interpreted by this codec.
-pub(super) const PROJECT_FORMAT_VERSION: u16 = 1;
+/// Current project transport schema; the reader also verifies historical V1 checksums.
+pub(super) const PROJECT_FORMAT_VERSION: u16 = 2;
 // The full legacy graph and upgrade-source identities, all inputs/preferences and 8 KiB
 // of notes measured 13,755 bytes. Four times its next power of two leaves headroom.
 // This is a file-parser resource budget, not a scientific or generation threshold.
@@ -116,8 +116,39 @@ pub(super) struct GeneratorIdentity {
     #[serde(deserialize_with = "explicit_option")]
     pub profile_plan: Option<GeneratorProfilePlan>,
     pub fixed_input_hashes: BTreeMap<String, [u8; 32]>,
+    /// Explicit pinned source metadata; absent on historical Formation/Foundation recipes.
+    /// Boxing keeps the existing legacy confirmation variants small without changing JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    atlas_source: Option<Box<AtlasSourceIdentity>>,
     /// Environment signal, not proof of bit-identical results on different platforms.
     pub float_platform_canary: [u8; 32],
+}
+
+/// Human-inspectable version facts for the parallel Atlas product.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AtlasSourceIdentity {
+    upstream_revision: String,
+    upstream_package_version: String,
+    upstream_generator_version: u32,
+    fine_terrain_version: u32,
+    terrain_model_version: u32,
+    fixed_scale: civ_atlas_terrain::FineScale,
+    support_depth: u8,
+}
+
+impl AtlasSourceIdentity {
+    fn current() -> Self {
+        Self {
+            upstream_revision: civ_atlas_terrain::UPSTREAM_REVISION.into(),
+            upstream_package_version: civ_atlas_terrain::UPSTREAM_PACKAGE_VERSION.into(),
+            upstream_generator_version: civ_atlas_terrain::UPSTREAM_GENERATOR_VERSION,
+            fine_terrain_version: civ_atlas_terrain::FINE_TERRAIN_VERSION,
+            terrain_model_version: crate::world::natural::ATLAS_TERRAIN_MODEL_VERSION,
+            fixed_scale: crate::world::natural::ATLAS_FINE_SCALE,
+            support_depth: crate::world::natural::ATLAS_SUPPORT_DEPTH,
+        }
+    }
 }
 
 /// Explicit decision before rebuilding a decoded project.
@@ -162,6 +193,7 @@ pub(super) fn current_generator_identity(
 ) -> Result<GeneratorIdentity, ProjectFileError> {
     inputs.validate().map_err(input_error)?;
     let graph = match inputs.world_pipeline {
+        WorldPipeline::CivAtlas => crate::generators::natural::atlas_terrain_graph(),
         WorldPipeline::Formation => causal_natural_formation_graph(),
         WorldPipeline::LegacyFoundation => spherical_natural_foundation_graph(),
     }
@@ -177,6 +209,14 @@ pub(super) fn current_generator_identity(
         .collect();
     let mut fixed_input_hashes = BTreeMap::new();
     let profile_plan = match inputs.world_pipeline {
+        WorldPipeline::CivAtlas => {
+            let request = inputs.atlas_request().map_err(input_error)?;
+            fixed_input_hashes.insert(
+                "atlas.current-models".into(),
+                serialized_hash(&(request.climate, request.hydrology, request.quality))?,
+            );
+            None
+        }
         WorldPipeline::Formation => {
             let profile = inputs.formation_quality_profile;
             // Formation chooses resolution from the profile; the legacy authored cell count
@@ -265,6 +305,8 @@ pub(super) fn current_generator_identity(
         stages,
         profile_plan,
         fixed_input_hashes,
+        atlas_source: (inputs.world_pipeline == WorldPipeline::CivAtlas)
+            .then(|| Box::new(AtlasSourceIdentity::current())),
         float_platform_canary: float_platform_canary(),
     })
 }
@@ -282,6 +324,10 @@ pub(super) fn compare_generator(
     let mut differences = Vec::new();
     for (changed, label) in [
         (saved.pipeline != current.pipeline, "pipeline"),
+        (
+            saved.atlas_source != current.atlas_source,
+            "Atlas source versions and fixed scale",
+        ),
         (
             saved.product_recipe_version != current.product_recipe_version,
             "product recipe version",
@@ -314,6 +360,7 @@ pub(super) fn compare_generator(
 #[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
 pub(super) fn upgrade_copy(file: &ProjectFile, current: GeneratorIdentity) -> ProjectFile {
     let mut upgraded = file.clone();
+    upgraded.format_version = PROJECT_FORMAT_VERSION;
     upgraded.upgraded_from = Some(file.generator.clone());
     upgraded.generator = current;
     upgraded
@@ -348,7 +395,12 @@ fn checksum(file: &ProjectFile) -> Result<[u8; 32], ProjectFileError> {
         magic: PROJECT_MAGIC,
         format_version: file.format_version,
         // T1 supplies the canonical field order, finite validation and negative-zero policy.
-        inputs: file.inputs.canonical_bytes().map_err(input_error)?,
+        inputs: if file.format_version == 1 {
+            file.inputs.legacy_canonical_bytes()
+        } else {
+            file.inputs.canonical_bytes()
+        }
+        .map_err(input_error)?,
         generator: &file.generator,
         view: &file.view,
         extensions: &file.extensions,
@@ -357,11 +409,23 @@ fn checksum(file: &ProjectFile) -> Result<[u8; 32], ProjectFileError> {
 }
 
 fn validate_file(file: &ProjectFile) -> Result<(), ProjectFileError> {
-    if file.format_version != PROJECT_FORMAT_VERSION {
+    if !(1..=PROJECT_FORMAT_VERSION).contains(&file.format_version) {
         return Err(ProjectFileError::UnsupportedSchema(format!(
             "format version {}",
             file.format_version
         )));
+    }
+    if file.format_version == 1 && file.inputs.world_pipeline == WorldPipeline::CivAtlas {
+        return Err(ProjectFileError::UnsupportedSchema(
+            "Atlas requires recipe V2".into(),
+        ));
+    }
+    if file.format_version == 1
+        && file.inputs.atlas_shape != civ_atlas_terrain::TerrainShape::default()
+    {
+        return Err(ProjectFileError::UnsupportedSchema(
+            "V1 has no authored Atlas controls".into(),
+        ));
     }
     file.inputs.validate().map_err(input_error)?;
     file.view.clone().try_into_state().map_err(input_error)?;
@@ -421,7 +485,7 @@ fn validate_metadata(key: &str, value: &Value) -> Result<(), ProjectFileError> {
     }
 }
 
-/// Validates and encodes V1. Returns input/schema/limit errors before producing a file.
+/// Validates and encodes the declared transport version, without generated world data.
 #[cfg_attr(all(not(test), target_arch = "wasm32"), allow(dead_code))]
 pub(super) fn encode_project(file: &ProjectFile) -> Result<Vec<u8>, ProjectFileError> {
     validate_file(file)?;
@@ -464,10 +528,23 @@ pub(super) fn decode_project(bytes: &[u8]) -> Result<ProjectFile, ProjectFileErr
     if object.get("magic").and_then(Value::as_str) != Some(PROJECT_MAGIC) {
         return Err(ProjectFileError::Format("unrecognized magic".into()));
     }
-    if object.get("format_version").and_then(Value::as_u64)
-        != Some(u64::from(PROJECT_FORMAT_VERSION))
+    if object
+        .get("format_version")
+        .and_then(Value::as_u64)
+        .is_none_or(|version| !(1..=u64::from(PROJECT_FORMAT_VERSION)).contains(&version))
     {
         return Err(ProjectFileError::UnsupportedSchema("format version".into()));
+    }
+    if object.get("format_version").and_then(Value::as_u64)
+        == Some(u64::from(PROJECT_FORMAT_VERSION))
+        && object
+            .get("inputs")
+            .and_then(Value::as_object)
+            .is_some_and(|inputs| !inputs.contains_key("atlas_shape"))
+    {
+        return Err(ProjectFileError::Format(
+            "V2 recipe requires atlas_shape".into(),
+        ));
     }
     // Serde normally allows absent Option fields. V1 deliberately requires them explicitly.
     for required in [
@@ -570,6 +647,44 @@ impl<'de> Deserialize<'de> for UniqueJson {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn atlas_recipe_records_source_versions_and_legacy_v1_keeps_its_source() {
+        let atlas = project(WorldPipeline::CivAtlas);
+        let decoded = decode_project(&encode_project(&atlas).unwrap()).unwrap();
+        assert_eq!(decoded, atlas);
+        assert_eq!(
+            atlas.generator.atlas_source,
+            Some(Box::new(AtlasSourceIdentity::current()))
+        );
+        let mut changed = atlas.generator.clone();
+        changed
+            .atlas_source
+            .as_mut()
+            .unwrap()
+            .upstream_generator_version += 1;
+        assert!(matches!(
+            compare_generator(&atlas.generator, &changed),
+            Compatibility::UpgradeRequired(_)
+        ));
+        let mut legacy = project(WorldPipeline::Formation);
+        legacy.format_version = 1;
+        let mut wire: serde_json::Value =
+            serde_json::from_slice(&encode_project(&legacy).unwrap()).unwrap();
+        wire["inputs"]
+            .as_object_mut()
+            .unwrap()
+            .remove("atlas_shape");
+        let restored = decode_project(&serde_json::to_vec(&wire).unwrap()).unwrap();
+        assert_eq!(restored.inputs.world_pipeline, WorldPipeline::Formation);
+        assert_eq!(restored.inputs.world_seed, legacy.inputs.world_seed);
+        assert_eq!(
+            compare_generator(
+                &restored.generator,
+                &current_generator_identity(&restored.inputs).unwrap()
+            ),
+            Compatibility::Exact
+        );
+    }
     use super::*;
 
     fn project(pipeline: WorldPipeline) -> ProjectFile {
@@ -683,8 +798,8 @@ mod tests {
             String::from_utf8(encode_project(&project(WorldPipeline::Formation)).unwrap()).unwrap();
         for duplicate in [
             text.replacen(
-                "\"format_version\":1",
-                "\"format_version\":1,\"format_version\":1",
+                &format!("\"format_version\":{PROJECT_FORMAT_VERSION}"),
+                &format!("\"format_version\":{PROJECT_FORMAT_VERSION},\"format_version\":{PROJECT_FORMAT_VERSION}"),
                 1,
             ),
             text.replacen(

@@ -5,6 +5,64 @@ use crate::world::fields::{EntityKind, FieldDomain, FieldSchema, FieldValueType,
 
 const NATURAL_FIELD_PREFIX: &str = "field.sekai.core.natural.";
 
+pub(crate) const TERRAIN_SOURCE_LABEL: &str = "地形来源";
+pub(crate) const UNPUBLISHED_WORLD_LABEL: &str = "当前尚未发布世界";
+pub(crate) const ATLAS_SOURCE_LABEL: &str = "Civ Atlas 地形 + 当前 C2 气候";
+pub(crate) const FORMATION_SOURCE_LABEL: &str = "Sekai 形成链（旧配方）";
+pub(crate) const FOUNDATION_SOURCE_LABEL: &str = "Sekai 自然基础（旧配方）";
+pub(crate) const ATLAS_SUMMARY_LABEL: &str = "Civ Atlas 地形 / Sekai 当前气候与水文";
+pub(crate) const ATLAS_AUTHOR_HINT: &str =
+    "作者初态参数（修改后需重建）；温度和雨量仅用于私有地形初始化。";
+pub(crate) const ATLAS_QUALITY_LABEL: &str = "C2 气候工作质量";
+pub(crate) const ATLAS_AUTHOR_DETAILS_LABEL: &str = "地形形状（作者初态）";
+pub(crate) const ATLAS_SOURCE_DETAILS_LABEL: &str = "来源、尺度与已解析范围";
+pub(crate) const ATLAS_INTEGER_LABELS: [&str; 3] = ["来源请求格数", "板块数", "大陆数（0 为自动）"];
+pub(crate) const ATLAS_SHAPE_LABELS: [&str; 8] = [
+    "初态陆地比例",
+    "造山强度",
+    "初态温度偏移 °C",
+    "初态雨量倍率",
+    "大陆聚集",
+    "破碎度",
+    "硬度",
+    "南北偏向",
+];
+pub(crate) const ATLAS_SCOPE_HINT: &str =
+    "地形采用固定规范尺度与地球参考半径；气候质量不改变来源格数。";
+pub(crate) const ATLAS_HYDROLOGY_HINT: &str = "河流使用当前年均流量与端点，线宽仅为显示样式；未解析湖蒸发、地下水与长期稳态。站点统计为来源格面积尺度。";
+pub(crate) const ATLAS_PERFORMANCE_HINT: &str =
+    "当前原生默认场景为分钟级生成，尚未达到秒级目标；浏览器运行与内存未验收。";
+
+pub(crate) fn atlas_source_version(package: &str, revision: &str) -> String {
+    format!("上游 {package} · {revision}")
+}
+pub(crate) fn atlas_source_cells(seed: u32, actual: usize, requested: usize) -> String {
+    format!("已发布种子 {seed}；来源格数 {actual}（请求 {requested}）")
+}
+pub(crate) fn atlas_source_scales(scale: u8, climate: u16) -> String {
+    format!("固定地形 S{scale}；C2 面分辨率 {climate}；显示 LOD 不增加气候解析度")
+}
+pub(crate) fn atlas_source_water(rivers: usize, lakes: usize, inventory: f64) -> String {
+    format!("当前河段 {rivers}；初始化湖泊 {lakes}；水库存 {inventory:.6e} m³")
+}
+pub(crate) fn atlas_current_flow_range(min: f64, max: f64) -> String {
+    format!("已发布河段年均流量范围：{min:.3}–{max:.3} m³/s")
+}
+pub(crate) fn atlas_climate_quality_label(
+    profile: crate::world::natural::NaturalQualityProfile,
+) -> String {
+    use crate::world::natural::NaturalQualityProfile;
+    let label = match profile {
+        NaturalQualityProfile::Draft => "草稿",
+        NaturalQualityProfile::Standard => "标准",
+        NaturalQualityProfile::High => "高",
+    };
+    format!(
+        "{label} · C2 面分辨率 {}",
+        profile.climate_face_resolution()
+    )
+}
+
 /// Formats a measured climate advisory using the report's registered bounds;
 /// no acceptance threshold is duplicated in presentation code.
 pub(crate) fn climate_quality_advisory_text(
@@ -41,11 +99,13 @@ pub(crate) const P4_WATER_FLUX_UNIT: &str = "mm/day";
 pub(crate) const P4_RADIATIVE_FLUX_UNIT: &str = "W/m²";
 pub(crate) const EARTH_REFERENCE_LABEL: &str = "地球参考";
 /// Inspector row: the P5 L0 elevation beside a derived pick (LOD-1 §3.5).
-pub(crate) const L0_ELEVATION_LABEL: &str = "高程（L0 权威，P5）";
+pub(crate) const L0_ELEVATION_LABEL: &str = "高程（来源格统计）";
 /// Inspector row: the P5 whole-cell water class (discrete hydrology terminal).
-pub(crate) const L0_WATER_LABEL: &str = "海陆类别（L0，离散水文终端）";
+pub(crate) const L0_WATER_LABEL: &str = "海陆类别（来源格中心）";
 /// Inspector row: P5's published sub-cell ocean area fraction.
-pub(crate) const P5_OCEAN_AREA_FRACTION_LABEL: &str = "海洋面积分数（P5 亚格元）";
+pub(crate) const P5_OCEAN_AREA_FRACTION_LABEL: &str = "海洋面积分数（来源格积分）";
+pub(crate) const INITIALIZED_WATER_SURFACE_LABEL: &str = "初始化水面（当前叶片采样）";
+pub(crate) const INITIALIZED_WATER_DEPTH_LABEL: &str = "初始化水深（当前叶片采样）";
 
 /// Inspector row label of the elevation the display derives at level `level`.
 pub(crate) fn derived_elevation_label(level: u8) -> String {
@@ -67,7 +127,7 @@ pub(crate) const SITE_USE_CANDIDATE_LABEL: &str = "使用";
 pub(crate) const SITE_EXPORT_LABEL: &str = "导出";
 pub(crate) const SITE_FINGERPRINT_LABEL: &str = "导出指纹";
 pub(crate) const SITE_NO_ANCHOR_HINT: &str = "在地图或球体上点击一个单元，然后设为锚点";
-pub(crate) const SITE_FORMATION_ONLY_HINT: &str = "站点气候只对形成链世界可用";
+pub(crate) const SITE_FORMATION_ONLY_HINT: &str = "该来源尚未提供当前 C2 站点气候";
 pub(crate) const SITE_NO_CANDIDATE_HINT: &str = "没有满足全部条件的锚点";
 pub(crate) const SITE_UNAVAILABLE_LABEL: &str = "不可得";
 pub(crate) const SITE_MONTH_COLUMNS: [&str; 9] = [

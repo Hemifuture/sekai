@@ -778,9 +778,12 @@ fn persisted_origin_defaults_new_apps_and_missing_tags_to_spherical() {
     let encoded = serde_json::to_value(&app).unwrap();
 
     assert_eq!(app.world_origin(), PersistedWorldOrigin::SphericalV1);
-    // The formation product chain is the interactive default since 7323cba
-    // (G1: crust follows the plates and the formation chain closes).
-    assert_eq!(app.runtime_graph(), AppRuntimeGraph::SphericalFormation);
+    // New interactive worlds use Atlas; old persisted files below retain their old source.
+    assert_eq!(app.runtime_graph(), AppRuntimeGraph::CivAtlas);
+    assert_eq!(
+        encoded["inputs"]["atlas_shape"]["cells"],
+        civ_atlas_terrain::TerrainShape::default().cells
+    );
     assert!(encoded.get("world_origin").is_none());
     assert!(encoded.get("spherical_space_spec").is_none());
     assert_eq!(

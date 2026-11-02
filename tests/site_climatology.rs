@@ -208,6 +208,8 @@ fn elevation(surface: &SphericalSurfaceSnapshot) -> Vec<f32> {
 
 fn source() -> SiteClimatologySource {
     SiteClimatologySource {
+        terrain_source: sekai::world::natural::SiteTerrainSource::Formation,
+        fixed_terrain_scale: None,
         world_seed: 42,
         surface_fingerprint: "surface".to_owned(),
         build_result_hash: "build".to_owned(),

@@ -17,6 +17,17 @@ use sekai::world::natural::{
     NaturalFieldRegistryError, ANNUAL_PRECIPITATION_MAX_MM, CLIMATOLOGICAL_YEAR_SECONDS,
 };
 
+#[test]
+fn atlas_registry_does_not_require_or_publish_formation_plate_history() {
+    let registry = sekai::world::natural::atlas_field_registry().unwrap();
+    assert!(registry
+        .get(&sekai::world::natural::plate_id_field_id())
+        .is_none());
+    assert!(registry
+        .get(&circulation_annual_precipitation_mm_field_id())
+        .is_some());
+}
+
 fn maximum(registry: &FieldRegistry, id: FieldId) -> f32 {
     registry.get(&id).unwrap().valid_range.unwrap().max()
 }

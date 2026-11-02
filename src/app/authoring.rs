@@ -21,6 +21,8 @@ pub(super) fn default_formation_quality_profile() -> NaturalQualityProfile {
 #[serde(deny_unknown_fields)]
 pub(super) struct AuthorInputs {
     pub world_seed: u64,
+    #[serde(default)]
+    pub atlas_shape: civ_atlas_terrain::TerrainShape,
     #[serde(with = "super::pipeline::spherical_space_spec_serde")]
     pub spherical_space_spec: SphericalSpaceSpec,
     pub world_pipeline: WorldPipeline,
@@ -35,6 +37,7 @@ impl Default for AuthorInputs {
     fn default() -> Self {
         Self {
             world_seed: PRODUCT_DEFAULT_WORLD_SEED.raw(),
+            atlas_shape: Default::default(),
             spherical_space_spec: default_spherical_space_spec(),
             world_pipeline: WorldPipeline::default(),
             formation_quality_profile: default_formation_quality_profile(),
@@ -49,6 +52,10 @@ impl Default for AuthorInputs {
 /// A recipe failing an existing domain input contract.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum AuthorInputError {
+    #[error("Civ Atlas seed must be in 0..={}", u32::MAX)]
+    AtlasSeed,
+    #[error(transparent)]
+    Atlas(#[from] civ_atlas_terrain::TerrainError),
     #[error(transparent)]
     Space(#[from] SphericalSpecError),
     #[error(transparent)]
@@ -66,8 +73,44 @@ pub(super) enum AuthorInputError {
 pub(super) struct RecipeId(pub [u8; 32]);
 
 impl AuthorInputs {
+    /// Constructs the upstream request from the sole root seed and authored shape.
+    pub fn atlas_params(&self) -> Result<civ_atlas_terrain::TerrainParams, AuthorInputError> {
+        let seed = u32::try_from(self.world_seed).map_err(|_| AuthorInputError::AtlasSeed)?;
+        let mut shape = self.atlas_shape.clone();
+        // The port preserves parameter float bits in its identity. The recipe's signed-zero
+        // equivalence must therefore reach the actual request, not only its local RecipeId.
+        for value in [
+            &mut shape.land_fraction,
+            &mut shape.mountains,
+            &mut shape.temperature,
+            &mut shape.rainfall,
+            &mut shape.gather,
+            &mut shape.rugged,
+            &mut shape.hardness,
+            &mut shape.north,
+        ] {
+            *value = f64::from_bits(canonical_f64_bits(*value));
+        }
+        Ok(civ_atlas_terrain::TerrainParams { seed, shape })
+    }
+
+    /// Binds current C2 quality and the checked source author controls into one request.
+    pub(super) fn atlas_request(
+        &self,
+    ) -> Result<crate::generators::natural::AtlasTerrainRequest, AuthorInputError> {
+        Ok(crate::generators::natural::AtlasTerrainRequest {
+            author: self.atlas_params()?,
+            quality: self.formation_quality_profile,
+            ..Default::default()
+        })
+    }
+
     /// Validates every input, including currently inactive inputs, using domain validators.
     pub fn validate(&self) -> Result<(), AuthorInputError> {
+        self.atlas_shape.validate()?;
+        if self.world_pipeline == WorldPipeline::CivAtlas {
+            self.atlas_params()?;
+        }
         self.spherical_space_spec.validate()?;
         self.formation_spec.validate()?;
         self.tectonic_spec.validate()?;
@@ -78,19 +121,30 @@ impl AuthorInputs {
 
     /// Returns versioned recipe bytes for identity and project-format consumers.
     ///
-    /// V1 uses this fixed field order, little-endian integers, explicit enum tags,
+    /// V2 appends source shape controls to the V1 order using little-endian integers and
+    /// IEEE f64 values. Both versions use explicit enum tags,
     /// and IEEE float bits with either zero sign encoded as positive zero. Domain
     /// validation runs first, so non-finite and unsupported values cannot be hashed.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, AuthorInputError> {
+        self.encode_canonical(false)
+    }
+
+    pub(super) fn legacy_canonical_bytes(&self) -> Result<Vec<u8>, AuthorInputError> {
+        self.encode_canonical(true)
+    }
+
+    fn encode_canonical(&self, legacy: bool) -> Result<Vec<u8>, AuthorInputError> {
         self.validate()?;
-        let mut wire = Vec::with_capacity(80);
-        wire.extend_from_slice(b"sekai.author-inputs\0\x01");
+        let mut wire = Vec::with_capacity(176);
+        wire.extend_from_slice(b"sekai.author-inputs\0");
+        wire.push(if legacy { 1 } else { 2 });
         wire.extend_from_slice(&self.world_seed.to_le_bytes());
         wire.extend_from_slice(
             &canonical_f64_bits(self.spherical_space_spec.radius.get()).to_le_bytes(),
         );
         wire.extend_from_slice(&self.spherical_space_spec.target_cell_count.to_le_bytes());
         wire.push(match self.world_pipeline {
+            WorldPipeline::CivAtlas => 2,
             WorldPipeline::Formation => 0,
             WorldPipeline::LegacyFoundation => 1,
         });
@@ -138,6 +192,24 @@ impl AuthorInputs {
             MantleActivity::Moderate => 1,
             MantleActivity::Active => 2,
         });
+        if !legacy {
+            let shape = &self.atlas_shape;
+            for value in [shape.cells, shape.plates, shape.continents] {
+                wire.extend_from_slice(&(value as u64).to_le_bytes());
+            }
+            for value in [
+                shape.land_fraction,
+                shape.mountains,
+                shape.temperature,
+                shape.rainfall,
+                shape.gather,
+                shape.rugged,
+                shape.hardness,
+                shape.north,
+            ] {
+                wire.extend_from_slice(&canonical_f64_bits(value).to_le_bytes());
+            }
+        }
         Ok(wire)
     }
 
@@ -360,6 +432,92 @@ impl AuthoringSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn atlas_request_identity_uses_the_recipe_zero_policy() {
+        use crate::engine::ExternalArtifacts;
+        use crate::generators::natural::AtlasTerrainRequestArtifact;
+        let plus = super::AuthorInputs {
+            world_pipeline: crate::app::WorldPipeline::CivAtlas,
+            ..Default::default()
+        };
+        let mut minus = plus.clone();
+        minus.atlas_shape.temperature = -0.0;
+        minus.atlas_shape.gather = -0.0;
+        minus.atlas_shape.north = -0.0;
+        assert_eq!(plus.recipe_id().unwrap(), minus.recipe_id().unwrap());
+        let request_hash = |inputs: &super::AuthorInputs| {
+            let mut external = ExternalArtifacts::new();
+            external
+                .insert(AtlasTerrainRequestArtifact::new(inputs.atlas_request().unwrap()).unwrap())
+                .unwrap();
+            *external
+                .hash::<AtlasTerrainRequestArtifact>()
+                .unwrap()
+                .as_bytes()
+        };
+        assert_eq!(request_hash(&plus), request_hash(&minus));
+    }
+
+    #[test]
+    fn atlas_seed_shape_and_source_changes_revoke_publication_authority() {
+        let mut inputs = super::AuthorInputs {
+            world_pipeline: crate::app::WorldPipeline::CivAtlas,
+            ..Default::default()
+        };
+        let params = inputs.atlas_params().unwrap();
+        let wire = serde_json::to_value(&params).unwrap();
+        assert!(wire.get("shape").is_none());
+        assert_eq!(
+            serde_json::from_value::<civ_atlas_terrain::TerrainParams>(wire).unwrap(),
+            params
+        );
+        inputs.world_seed = u64::from(u32::MAX);
+        assert_eq!(inputs.atlas_params().unwrap().seed, u32::MAX);
+        let mut session = super::AuthoringSession::new(inputs.clone()).unwrap();
+        let old = session.begin_build();
+        inputs.atlas_shape.gather = 0.5;
+        assert!(session
+            .commit("Atlas shape".into(), inputs.clone())
+            .unwrap());
+        assert!(!session.accepts(old));
+        assert!(session.undo());
+        assert!(!session.accepts(old));
+        inputs.world_seed += 1;
+        assert!(matches!(
+            inputs.validate(),
+            Err(super::AuthorInputError::AtlasSeed)
+        ));
+        inputs.world_pipeline = crate::app::WorldPipeline::Formation;
+        inputs.world_seed = u64::MAX;
+        assert!(inputs.validate().is_ok());
+        let wire = serde_json::to_value(&inputs).unwrap();
+        let mut old_wire = wire;
+        old_wire.as_object_mut().unwrap().remove("atlas_shape");
+        let recovered: super::AuthorInputs = serde_json::from_value(old_wire).unwrap();
+        assert_eq!(
+            recovered.world_pipeline,
+            crate::app::WorldPipeline::Formation
+        );
+        assert_eq!(recovered.world_seed, u64::MAX);
+        let mut changed_source = recovered;
+        assert!(session
+            .commit("Switch source".into(), changed_source.clone())
+            .unwrap());
+        let source_token = session.begin_build();
+        changed_source.world_pipeline = crate::app::WorldPipeline::CivAtlas;
+        changed_source.world_seed = 42;
+        session.reset_project(changed_source, true).unwrap();
+        assert!(!session.accepts(source_token));
+        let cancel_token = session.begin_build();
+        session.invalidate_build();
+        assert!(!session.accepts(cancel_token));
+        let mut minus_zero = session.draft().clone();
+        minus_zero.atlas_shape.north = -0.0;
+        assert_eq!(
+            minus_zero.recipe_id().unwrap(),
+            session.draft().recipe_id().unwrap()
+        );
+    }
     use super::*;
 
     fn session() -> AuthoringSession {

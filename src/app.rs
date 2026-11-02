@@ -4,6 +4,8 @@ use eframe::egui_wgpu::RenderState;
 use thiserror::Error;
 
 mod amplified_mesh;
+mod atlas_detail;
+mod atlas_display;
 mod authoring;
 mod build_metrics;
 mod field_document;
@@ -671,19 +673,24 @@ fn derived_pick(
     if reading.cell != cell {
         return None;
     }
-    let ocean_area_fraction = *presentation
-        .document()
-        .formation()?
-        .formation_snapshot()
-        .terrain_fields()
-        .surface_water_geometry()
-        .ocean_area_fraction()
-        .get(cell.raw() as usize)?;
+    let document = presentation.document();
+    let fractions = if let Some(atlas) = document.atlas() {
+        atlas.snapshot().fields().ocean_fraction()
+    } else {
+        document
+            .formation()?
+            .formation_snapshot()
+            .terrain_fields()
+            .surface_water_geometry()
+            .ocean_area_fraction()
+    };
+    let ocean_area_fraction = *fractions.get(cell.raw() as usize)?;
     Some(SphericalDerivedPick {
         cell,
         level,
         elevation_m: reading.value.elevation_m,
         water: reading.water,
+        initialized_water_m: reading.initialized_water_m,
         ocean_area_fraction,
     })
 }
@@ -719,7 +726,9 @@ fn prepare_pending_world_build(
     replacement: bool,
 ) -> (MemoryStageCache, PendingWorldBuild) {
     let (token, cancellation) = request;
-    let (working_stage_cache, retained_stage_cache) = if pipeline == WorldPipeline::Formation {
+    let (working_stage_cache, retained_stage_cache) = if pipeline == WorldPipeline::CivAtlas {
+        (MemoryStageCache::new(), Some(published_stage_cache))
+    } else if pipeline == WorldPipeline::Formation {
         (published_stage_cache.clone(), Some(published_stage_cache))
     } else {
         (published_stage_cache, None)
@@ -788,6 +797,8 @@ pub struct TemplateApp {
     #[cfg(not(target_arch = "wasm32"))]
     project_ui: project_ui::ProjectUiState,
     spherical_canvas_state: crate::ui::spherical::SphericalCanvasState,
+    /// Last real canvas dimensions; the initial request uses the actual viewport conservatively.
+    build_canvas_size: [f64; 2],
     reduce_loading_motion: bool,
     formation_geometry: Option<FormationGeometrySlot>,
     amplified_mesh: Option<std::sync::Arc<crate::view::AmplifiedSurfaceMesh>>,
@@ -827,7 +838,7 @@ struct AppPersistenceWire<'a> {
     reduce_loading_motion: bool,
 }
 
-const APP_AUTOSAVE_SCHEMA_V1: u16 = 1;
+const APP_AUTOSAVE_SCHEMA_VERSION: u16 = 2;
 
 /// Reads pre-session autosaves once; these fields never become editable runtime state.
 #[derive(serde::Deserialize, Default)]
@@ -881,7 +892,7 @@ impl serde::Serialize for TemplateApp {
         S: serde::Serializer,
     {
         AppPersistenceWire {
-            schema_version: APP_AUTOSAVE_SCHEMA_V1,
+            schema_version: APP_AUTOSAVE_SCHEMA_VERSION,
             inputs: Some(self.authoring.draft()),
             spherical_canvas_state: &self.spherical_canvas_state,
             reduce_loading_motion: self.reduce_loading_motion,
@@ -897,7 +908,7 @@ impl<'de> serde::Deserialize<'de> for TemplateApp {
     {
         let wire = LegacyAppInputsWire::deserialize(deserializer)?;
         let inputs = match (wire.schema_version, wire.inputs) {
-            (schema, Some(inputs)) if schema == APP_AUTOSAVE_SCHEMA_V1 => {
+            (schema, Some(inputs)) if (1..=APP_AUTOSAVE_SCHEMA_VERSION).contains(&schema) => {
                 if wire.world_seed.is_some()
                     || wire.spherical_space_spec.is_some()
                     || wire.formation_spec.is_some()
@@ -918,7 +929,8 @@ impl<'de> serde::Deserialize<'de> for TemplateApp {
                     spherical_space_spec: wire
                         .spherical_space_spec
                         .unwrap_or(defaults.spherical_space_spec),
-                    world_pipeline: wire.world_pipeline.unwrap_or(defaults.world_pipeline),
+                    world_pipeline: wire.world_pipeline.unwrap_or(WorldPipeline::Formation),
+                    atlas_shape: Default::default(),
                     formation_quality_profile: wire
                         .formation_quality_profile
                         .unwrap_or(defaults.formation_quality_profile),
@@ -957,6 +969,7 @@ impl Default for TemplateApp {
             #[cfg(not(target_arch = "wasm32"))]
             project_ui: project_ui::ProjectUiState::default(),
             spherical_canvas_state: crate::ui::spherical::SphericalCanvasState::default(),
+            build_canvas_size: [0.0; 2],
             reduce_loading_motion: false,
             amplified_mesh: None,
             amplified_pick_batches: None,
@@ -998,6 +1011,7 @@ impl TemplateApp {
     /// Returns the runtime graph family for the current pipeline.
     pub fn runtime_graph(&self) -> AppRuntimeGraph {
         match self.authoring.draft().world_pipeline {
+            WorldPipeline::CivAtlas => AppRuntimeGraph::CivAtlas,
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         }
@@ -1055,6 +1069,8 @@ impl TemplateApp {
         }
 
         app.render_state = cc.wgpu_render_state.clone();
+        let viewport_size = cc.egui_ctx.input(|input| input.screen_rect().size());
+        app.build_canvas_size = [f64::from(viewport_size.x), f64::from(viewport_size.y)];
         if app.frame_sampler.is_requested_or_enabled() {
             let adapter = cc
                 .wgpu_render_state
@@ -1094,6 +1110,35 @@ impl TemplateApp {
         app
     }
 
+    fn build_atlas_candidate_sync(
+        &mut self,
+    ) -> Result<SphericalPresentationCandidate, AppRuntimeError> {
+        let inputs = self.authoring.draft();
+        let replacement = self
+            .spherical_presentation
+            .read_resource(|current| current.as_ref().map(|current| current.replacement_token()));
+        run_spherical_world_build(
+            SphericalWorldBuildRequest {
+                root_seed: RootSeed::new(inputs.world_seed),
+                target: SphericalWorldBuildTarget::CivAtlas(
+                    inputs
+                        .atlas_request()
+                        .map_err(|e| SphericalPresentationError::Atlas(e.to_string()))?,
+                ),
+                formation: inputs.formation_spec.clone(),
+                tectonic: inputs.tectonic_spec.clone(),
+                relief: inputs.relief_spec.clone(),
+                geologic: inputs.geologic_spec.clone(),
+                view_state: self.spherical_canvas_state.presentation_view_state(),
+                requested_state: self.spherical_canvas_state.field_state().clone(),
+                replacement,
+            },
+            &mut self.stage_cache,
+            &crate::engine::BuildCancellation::new(),
+        )
+        .map_err(AppRuntimeError::from)
+    }
+
     fn try_initialize_spherical_world(
         &mut self,
         render_state: &RenderState,
@@ -1101,6 +1146,7 @@ impl TemplateApp {
     ) -> Result<(), AppRuntimeError> {
         let requested_state = self.spherical_canvas_state.field_state().clone();
         let candidate = match self.authoring.draft().world_pipeline {
+            WorldPipeline::CivAtlas => self.build_atlas_candidate_sync()?,
             WorldPipeline::Formation => {
                 let surface = self.formation_profile_surface()?;
                 build_spherical_formation_candidate_for_view(
@@ -1183,6 +1229,7 @@ impl TemplateApp {
             *current = Some(published);
         });
         self.active_runtime_graph = Some(match self.authoring.draft().world_pipeline {
+            WorldPipeline::CivAtlas => AppRuntimeGraph::CivAtlas,
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         });
@@ -1455,13 +1502,21 @@ impl TemplateApp {
         let mut map = Vec::with_capacity(rivers.len());
         let mut globe = Vec::with_capacity(rivers.len());
         for segment in rivers {
-            let Some(width_vectors) = crate::view::river_width_vectors(
-                projection,
-                segment.start,
-                segment.end,
-                segment.width_m,
-                radius_m,
-            ) else {
+            let width_vectors = if let Some(width_m) = segment.width_m {
+                crate::view::river_width_vectors(
+                    projection,
+                    segment.start,
+                    segment.end,
+                    width_m,
+                    radius_m,
+                )
+            } else {
+                Some(crate::view::RiverWidthVectors {
+                    map: Some([0.0; 2]),
+                    globe: [0.0; 3],
+                })
+            };
+            let Some(width_vectors) = width_vectors else {
                 continue;
             };
             globe.push(crate::gpu::spherical::RiverGlobeSegment {
@@ -1612,9 +1667,12 @@ impl TemplateApp {
                 ));
             }
         }
+        let build_canvas_size = self.build_canvas_size;
         let worker = std::thread::spawn(move || {
+            let atlas_request = inputs.atlas_request();
             let AuthorInputs {
                 world_seed,
+                atlas_shape: _,
                 spherical_space_spec: space,
                 world_pipeline: pipeline,
                 formation_quality_profile: quality_profile,
@@ -1626,11 +1684,14 @@ impl TemplateApp {
             let root_seed = RootSeed::new(world_seed);
             let mut stage_cache = stage_cache;
             let mut formation_geometry = formation_geometry;
-            let result = (|| -> Result<SphericalPresentationCandidate, String> {
+            let mut result = (|| -> Result<SphericalPresentationCandidate, String> {
                 let input_timing = observation
                     .as_ref()
                     .map(|o| o.span(BuildPhase::InputAndSurface, Some(1)));
                 let target = match pipeline {
+                    WorldPipeline::CivAtlas => SphericalWorldBuildTarget::CivAtlas(
+                        atlas_request.map_err(|e| e.to_string())?,
+                    ),
                     WorldPipeline::Formation => {
                         let (geometry, slot) = take_formation_geometry(
                             formation_geometry.take(),
@@ -1707,6 +1768,39 @@ impl TemplateApp {
                 None
             } else {
                 result.as_ref().ok().and_then(|candidate| {
+                    if let SphericalWorldFieldDocument::CivAtlas(document) = candidate.document() {
+                        let detail = Arc::new(amplified_mesh::AmplifiedDetailContext {
+                            evaluator: atlas_detail::DetailEvaluator::atlas(
+                                Arc::clone(document),
+                                Arc::clone(candidate.locator_arc()),
+                            )
+                            .ok()?,
+                            sea_level_m: 0.0,
+                            display_radius_m: f64::from(document.display_radius_m),
+                            river_cells: Vec::new(),
+                            river_orders: Vec::new(),
+                            river_drainage_area_km2: Vec::new(),
+                        });
+                        let selection = amplified_mesh::select_detail_batches(
+                            &detail,
+                            candidate.view_state(),
+                            build_canvas_size,
+                        );
+                        let mesh = amplified_mesh::build_detail_mesh(
+                            &detail,
+                            &selection,
+                            &mut amplified_mesh::BatchCache::default(),
+                        )?;
+                        let rivers = amplified_mesh::build_river_polylines(&detail, &selection);
+                        return Some(AmplifiedDisplayBundle {
+                            mesh,
+                            rivers,
+                            river_radius_m: detail.evaluator.radius_m(),
+                            detail,
+                            initial_hash: selection.hash,
+                            pick_batches: selection.into_pick_batches(),
+                        });
+                    }
                     let document = candidate.document().formation()?;
                     let (sea_level_m, display_radius_m) = document.amplified_color_anchors()?;
                     let evaluator =
@@ -1724,7 +1818,7 @@ impl TemplateApp {
                     let hydrology = document.formation_snapshot().hydrology();
                     let segments = hydrology.river_segments();
                     let detail = std::sync::Arc::new(amplified_mesh::AmplifiedDetailContext {
-                        evaluator,
+                        evaluator: evaluator.into(),
                         sea_level_m: f64::from(sea_level_m),
                         display_radius_m: f64::from(display_radius_m.max(1.0)),
                         river_cells: segments
@@ -1756,6 +1850,9 @@ impl TemplateApp {
                     })
                 })
             };
+            if pipeline == WorldPipeline::CivAtlas && result.is_ok() && amplified.is_none() {
+                result = Err("Atlas final display preparation failed or was cancelled; the previous world remains published".into());
+            }
             drop(amplified_timing);
             if observation.is_some() {
                 let report = match &result {
@@ -2136,6 +2233,7 @@ impl TemplateApp {
             amplified: completion.amplified,
             projected,
             graph: match self.authoring.draft().world_pipeline {
+                WorldPipeline::CivAtlas => AppRuntimeGraph::CivAtlas,
                 WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
                 WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
             },
@@ -2294,6 +2392,7 @@ impl TemplateApp {
         render_state: &RenderState,
     ) -> Result<(), AppRuntimeError> {
         let candidate = match self.authoring.draft().world_pipeline {
+            WorldPipeline::CivAtlas => self.build_atlas_candidate_sync()?,
             WorldPipeline::Formation => {
                 let surface = self.formation_profile_surface()?;
                 self.spherical_presentation.read_resource(|current| {
@@ -2374,6 +2473,7 @@ impl TemplateApp {
         self.spherical_canvas_state
             .replace_field_state(reconciled_state);
         self.active_runtime_graph = Some(match self.authoring.draft().world_pipeline {
+            WorldPipeline::CivAtlas => AppRuntimeGraph::CivAtlas,
             WorldPipeline::Formation => AppRuntimeGraph::SphericalFormation,
             WorldPipeline::LegacyFoundation => AppRuntimeGraph::SphericalNaturalFoundation,
         });
@@ -2488,6 +2588,7 @@ impl TemplateApp {
                 return;
             };
             let rect = output.response().rect;
+            self.build_canvas_size = [f64::from(rect.width()), f64::from(rect.height())];
             for action in output.into_actions() {
                 self.apply_spherical_action(action);
             }
@@ -2692,8 +2793,12 @@ impl eframe::App for TemplateApp {
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(match self.active_runtime_graph {
+                    Some(AppRuntimeGraph::CivAtlas) => {
+                        crate::ui::field::localization::ATLAS_SUMMARY_LABEL
+                    }
                     Some(AppRuntimeGraph::SphericalFormation) => FORMATION_SLICE_STATUS_TEXT,
-                    _ => CURRENT_SLICE_STATUS_TEXT,
+                    Some(AppRuntimeGraph::SphericalNaturalFoundation) => CURRENT_SLICE_STATUS_TEXT,
+                    None => crate::ui::field::localization::UNPUBLISHED_WORLD_LABEL,
                 });
                 ui.separator();
                 ui.hyperlink_to("egui", "https://github.com/emilk/egui");
@@ -2721,7 +2826,26 @@ impl eframe::App for TemplateApp {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.heading("自然世界");
-                    ui.label(CURRENT_SLICE_SUBTITLE);
+                    egui::ComboBox::from_label(
+                        crate::ui::field::localization::TERRAIN_SOURCE_LABEL,
+                    )
+                    .selected_text(pipeline_label(editing.world_pipeline))
+                    .show_ui(ui, |ui| {
+                        for pipeline in [
+                            WorldPipeline::CivAtlas,
+                            WorldPipeline::Formation,
+                            WorldPipeline::LegacyFoundation,
+                        ] {
+                            ui.selectable_value(
+                                &mut editing.world_pipeline,
+                                pipeline,
+                                pipeline_label(pipeline),
+                            );
+                        }
+                    });
+                    if editing.world_pipeline != WorldPipeline::CivAtlas {
+                        ui.label(CURRENT_SLICE_SUBTITLE);
+                    }
                     ui.separator();
 
                     ui.horizontal(|ui| {
@@ -2765,157 +2889,113 @@ impl eframe::App for TemplateApp {
                         );
                     });
                     ui.add_space(8.0);
-                    let previous_preset = editing.formation_spec.preset;
-                    egui::ComboBox::from_label("世界形态")
-                        .selected_text(formation_preset_label(editing.formation_spec.preset))
-                        .show_ui(ui, |ui| {
-                            for preset in [
-                                WorldFormationPreset::Random,
-                                WorldFormationPreset::Continents,
-                                WorldFormationPreset::ProceduralContinents,
-                                WorldFormationPreset::Archipelago,
-                                WorldFormationPreset::Supercontinent,
-                                WorldFormationPreset::GreatIsland,
-                                WorldFormationPreset::VolcanicIslands,
-                            ] {
-                                if procedural_coast_unsupported(
-                                    preset,
-                                    editing.world_pipeline,
-                                    editing.formation_quality_profile,
-                                ) {
-                                    continue;
+                    if editing.world_pipeline == WorldPipeline::CivAtlas {
+                        author_input_focused |=
+                            atlas_display::show_author_controls(ui, &mut editing);
+                    } else {
+                        let previous_preset = editing.formation_spec.preset;
+                        egui::ComboBox::from_label("世界形态")
+                            .selected_text(formation_preset_label(editing.formation_spec.preset))
+                            .show_ui(ui, |ui| {
+                                for preset in [
+                                    WorldFormationPreset::Random,
+                                    WorldFormationPreset::Continents,
+                                    WorldFormationPreset::ProceduralContinents,
+                                    WorldFormationPreset::Archipelago,
+                                    WorldFormationPreset::Supercontinent,
+                                    WorldFormationPreset::GreatIsland,
+                                    WorldFormationPreset::VolcanicIslands,
+                                ] {
+                                    if procedural_coast_unsupported(
+                                        preset,
+                                        editing.world_pipeline,
+                                        editing.formation_quality_profile,
+                                    ) {
+                                        continue;
+                                    }
+                                    ui.selectable_value(
+                                        &mut editing.formation_spec.preset,
+                                        preset,
+                                        formation_preset_label(preset),
+                                    );
                                 }
-                                ui.selectable_value(
-                                    &mut editing.formation_spec.preset,
-                                    preset,
-                                    formation_preset_label(preset),
-                                );
-                            }
-                        });
-                    if editing.formation_spec.preset != previous_preset {
-                        let selected = editing.formation_spec.preset;
-                        apply_formation_preset_selection(
-                            &mut editing.formation_spec,
-                            &mut editing.tectonic_spec,
-                            &mut editing.relief_spec,
-                            selected,
-                        );
-                    }
-                    ui.horizontal(|ui| {
-                        ui.label(INITIAL_PLATE_COUNT_LABEL);
-                        let rejected_plates = rejected_authoring_text(
-                            &self.author_input_error,
-                            INITIAL_PLATE_COUNT_LABEL,
-                        );
-                        let rejected_text = std::cell::RefCell::new(None);
-                        let response = ui.add(
-                            egui::DragValue::new(&mut editing.tectonic_spec.plate_count)
-                                .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT)
-                                .custom_formatter(move |value, _| {
-                                    rejected_plates
-                                        .clone()
-                                        .unwrap_or_else(|| (value as u16).to_string())
-                                })
-                                .custom_parser(|text| {
-                                    parse_authoring_plate_count(text, &rejected_text)
-                                })
-                                .update_while_editing(false),
-                        );
-                        author_input_focused |= authoring_number_stays_pending(
-                            &response,
-                            rejected_text.into_inner(),
-                            &mut self.author_input_error,
-                            "初始板块数",
-                        );
-                    });
-                    if editing.world_pipeline == WorldPipeline::Formation {
+                            });
+                        if editing.formation_spec.preset != previous_preset {
+                            let selected = editing.formation_spec.preset;
+                            apply_formation_preset_selection(
+                                &mut editing.formation_spec,
+                                &mut editing.tectonic_spec,
+                                &mut editing.relief_spec,
+                                selected,
+                            );
+                        }
                         ui.horizontal(|ui| {
-                            ui.label("驱动");
-                            ui.radio_value(
-                                &mut editing.relief_spec.sea_level_policy,
-                                SeaLevelPolicy::WaterInventory,
-                                "陆壳比例",
-                            )
-                            .on_hover_text("物理解：海平面由表层水量与地形共同决定");
-                            ui.radio_value(
-                                &mut editing.relief_spec.sea_level_policy,
-                                SeaLevelPolicy::TargetLandFraction,
-                                "陆地占比",
-                            )
-                            .on_hover_text("按目标陆地占比求解海平面，并推算所需海水量");
+                            ui.label(INITIAL_PLATE_COUNT_LABEL);
+                            let rejected_plates = rejected_authoring_text(
+                                &self.author_input_error,
+                                INITIAL_PLATE_COUNT_LABEL,
+                            );
+                            let rejected_text = std::cell::RefCell::new(None);
+                            let response = ui.add(
+                                egui::DragValue::new(&mut editing.tectonic_spec.plate_count)
+                                    .range(MIN_PLATE_COUNT..=MAX_PLATE_COUNT)
+                                    .custom_formatter(move |value, _| {
+                                        rejected_plates
+                                            .clone()
+                                            .unwrap_or_else(|| (value as u16).to_string())
+                                    })
+                                    .custom_parser(|text| {
+                                        parse_authoring_plate_count(text, &rejected_text)
+                                    })
+                                    .update_while_editing(false),
+                            );
+                            author_input_focused |= authoring_number_stays_pending(
+                                &response,
+                                rejected_text.into_inner(),
+                                &mut self.author_input_error,
+                                "初始板块数",
+                            );
                         });
-                    }
-                    let controls = formation_authoring_control_state(
-                        editing.world_pipeline,
-                        &editing.relief_spec,
-                        published_area_summary,
-                    );
-                    if controls.land_fraction_enabled {
-                        let current_fraction = editing.relief_spec.target_land_fraction;
-                        let rejected_fraction =
-                            rejected_authoring_text(&self.author_input_error, "陆地占比");
-                        let rejected_text = std::cell::RefCell::new(None);
-                        let response = ui.add(
-                            egui::Slider::new(
-                                &mut editing.relief_spec.target_land_fraction,
-                                crate::world::natural::MIN_TARGET_LAND_FRACTION
-                                    ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
-                            )
-                            .text("陆地占比")
-                            .custom_parser(|text| {
-                                parse_authoring_percentage(
-                                    text,
-                                    current_fraction,
+                        if editing.world_pipeline == WorldPipeline::Formation {
+                            ui.horizontal(|ui| {
+                                ui.label("驱动");
+                                ui.radio_value(
+                                    &mut editing.relief_spec.sea_level_policy,
+                                    SeaLevelPolicy::WaterInventory,
+                                    "陆壳比例",
+                                )
+                                .on_hover_text("物理解：海平面由表层水量与地形共同决定");
+                                ui.radio_value(
+                                    &mut editing.relief_spec.sea_level_policy,
+                                    SeaLevelPolicy::TargetLandFraction,
+                                    "陆地占比",
+                                )
+                                .on_hover_text("按目标陆地占比求解海平面，并推算所需海水量");
+                            });
+                        }
+                        let controls = formation_authoring_control_state(
+                            editing.world_pipeline,
+                            &editing.relief_spec,
+                            published_area_summary,
+                        );
+                        if controls.land_fraction_enabled {
+                            let current_fraction = editing.relief_spec.target_land_fraction;
+                            let rejected_fraction =
+                                rejected_authoring_text(&self.author_input_error, "陆地占比");
+                            let rejected_text = std::cell::RefCell::new(None);
+                            let response = ui.add(
+                                egui::Slider::new(
+                                    &mut editing.relief_spec.target_land_fraction,
                                     crate::world::natural::MIN_TARGET_LAND_FRACTION
                                         ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
-                                    &rejected_text,
                                 )
-                            })
-                            .custom_formatter(move |value, _| {
-                                rejected_fraction
-                                    .clone()
-                                    .unwrap_or_else(|| format_authoring_percentage(value))
-                            }),
-                        );
-                        author_input_focused |= authoring_number_stays_pending(
-                            &response,
-                            rejected_text.into_inner(),
-                            &mut self.author_input_error,
-                            "陆地占比",
-                        );
-                    } else {
-                        let mut measured_land_fraction = controls.displayed_land_fraction;
-                        ui.add_enabled(
-                            false,
-                            egui::Slider::new(&mut measured_land_fraction, 0.0..=1.0)
-                                .text("陆地占比（上次构建实测）")
-                                .custom_formatter(|value, _| format!("{:.1}%", value * 100.0)),
-                        )
-                        .on_disabled_hover_text("陆壳比例驱动时，陆地占比由物理水线推算");
-                    }
-                    ui.collapsing("高级", |ui| {
-                        let current_fraction = editing.tectonic_spec.continental_crust_fraction;
-                        let rejected_fraction =
-                            rejected_authoring_text(&self.author_input_error, "初始大陆地壳比例");
-                        let rejected_text = std::cell::RefCell::new(None);
-                        let response = ui
-                            .add_enabled(
-                                controls.continental_fraction_enabled,
-                                egui::Slider::new(
-                                    &mut editing.tectonic_spec.continental_crust_fraction,
-                                    MIN_CONTINENTAL_CRUST_FRACTION..=MAX_CONTINENTAL_CRUST_FRACTION,
-                                )
-                                .text(if controls.continental_fraction_enabled {
-                                    "初始大陆地壳比例"
-                                } else {
-                                    "初始大陆地壳比例（预设值）"
-                                })
+                                .text("陆地占比")
                                 .custom_parser(|text| {
                                     parse_authoring_percentage(
                                         text,
                                         current_fraction,
-                                        MIN_CONTINENTAL_CRUST_FRACTION
-                                            ..=MAX_CONTINENTAL_CRUST_FRACTION,
+                                        crate::world::natural::MIN_TARGET_LAND_FRACTION
+                                            ..=crate::world::natural::MAX_TARGET_LAND_FRACTION,
                                         &rejected_text,
                                     )
                                 })
@@ -2926,50 +3006,106 @@ impl eframe::App for TemplateApp {
                                             .unwrap_or_else(|| format_authoring_percentage(value))
                                     },
                                 ),
+                            );
+                            author_input_focused |= authoring_number_stays_pending(
+                                &response,
+                                rejected_text.into_inner(),
+                                &mut self.author_input_error,
+                                "陆地占比",
+                            );
+                        } else {
+                            let mut measured_land_fraction = controls.displayed_land_fraction;
+                            ui.add_enabled(
+                                false,
+                                egui::Slider::new(&mut measured_land_fraction, 0.0..=1.0)
+                                    .text("陆地占比（上次构建实测）")
+                                    .custom_formatter(|value, _| format!("{:.1}%", value * 100.0)),
                             )
-                            .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
-                        author_input_focused |= authoring_number_stays_pending(
-                            &response,
-                            rejected_text.into_inner(),
-                            &mut self.author_input_error,
-                            "初始大陆地壳比例",
-                        );
-                    });
-                    egui::ComboBox::from_label("构造活动")
-                        .selected_text(activity_label(editing.tectonic_spec.activity))
-                        .show_ui(ui, |ui| {
-                            for activity in [
-                                TectonicActivity::Quiet,
-                                TectonicActivity::Moderate,
-                                TectonicActivity::Active,
-                            ] {
-                                ui.selectable_value(
-                                    &mut editing.tectonic_spec.activity,
-                                    activity,
-                                    activity_label(activity),
-                                );
-                            }
+                            .on_disabled_hover_text("陆壳比例驱动时，陆地占比由物理水线推算");
+                        }
+                        ui.collapsing("高级", |ui| {
+                            let current_fraction = editing.tectonic_spec.continental_crust_fraction;
+                            let rejected_fraction = rejected_authoring_text(
+                                &self.author_input_error,
+                                "初始大陆地壳比例",
+                            );
+                            let rejected_text = std::cell::RefCell::new(None);
+                            let response = ui
+                                .add_enabled(
+                                    controls.continental_fraction_enabled,
+                                    egui::Slider::new(
+                                        &mut editing.tectonic_spec.continental_crust_fraction,
+                                        MIN_CONTINENTAL_CRUST_FRACTION
+                                            ..=MAX_CONTINENTAL_CRUST_FRACTION,
+                                    )
+                                    .text(if controls.continental_fraction_enabled {
+                                        "初始大陆地壳比例"
+                                    } else {
+                                        "初始大陆地壳比例（预设值）"
+                                    })
+                                    .custom_parser(|text| {
+                                        parse_authoring_percentage(
+                                            text,
+                                            current_fraction,
+                                            MIN_CONTINENTAL_CRUST_FRACTION
+                                                ..=MAX_CONTINENTAL_CRUST_FRACTION,
+                                            &rejected_text,
+                                        )
+                                    })
+                                    .custom_formatter(
+                                        move |value, _| {
+                                            rejected_fraction.clone().unwrap_or_else(|| {
+                                                format_authoring_percentage(value)
+                                            })
+                                        },
+                                    ),
+                                )
+                                .on_disabled_hover_text("陆地占比驱动时，陆壳比例锁定为当前作者值");
+                            author_input_focused |= authoring_number_stays_pending(
+                                &response,
+                                rejected_text.into_inner(),
+                                &mut self.author_input_error,
+                                "初始大陆地壳比例",
+                            );
                         });
-                    if editing.world_pipeline == WorldPipeline::Formation {
-                        egui::ComboBox::from_label("质量档位")
-                            .selected_text(quality_tier_label(editing.formation_quality_profile))
+                        egui::ComboBox::from_label("构造活动")
+                            .selected_text(activity_label(editing.tectonic_spec.activity))
                             .show_ui(ui, |ui| {
-                                for profile in [
-                                    crate::world::natural::NaturalQualityProfile::Draft,
-                                    crate::world::natural::NaturalQualityProfile::Standard,
-                                    crate::world::natural::NaturalQualityProfile::High,
+                                for activity in [
+                                    TectonicActivity::Quiet,
+                                    TectonicActivity::Moderate,
+                                    TectonicActivity::Active,
                                 ] {
                                     ui.selectable_value(
-                                        &mut editing.formation_quality_profile,
-                                        profile,
-                                        quality_tier_label(profile),
+                                        &mut editing.tectonic_spec.activity,
+                                        activity,
+                                        activity_label(activity),
                                     );
                                 }
-                            })
-                            .response
-                            .on_hover_text(
-                                "草稿与标准共用气候工作尺度；标准档提供更细的地形与地图。",
-                            );
+                            });
+                        if editing.world_pipeline == WorldPipeline::Formation {
+                            egui::ComboBox::from_label("质量档位")
+                                .selected_text(quality_tier_label(
+                                    editing.formation_quality_profile,
+                                ))
+                                .show_ui(ui, |ui| {
+                                    for profile in [
+                                        crate::world::natural::NaturalQualityProfile::Draft,
+                                        crate::world::natural::NaturalQualityProfile::Standard,
+                                        crate::world::natural::NaturalQualityProfile::High,
+                                    ] {
+                                        ui.selectable_value(
+                                            &mut editing.formation_quality_profile,
+                                            profile,
+                                            quality_tier_label(profile),
+                                        );
+                                    }
+                                })
+                                .response
+                                .on_hover_text(
+                                    "草稿与标准共用气候工作尺度；标准档提供更细的地形与地图。",
+                                );
+                        }
                     }
                     ui.checkbox(&mut self.reduce_loading_motion, "减少加载位移动效");
                     // Both actions must see this pass's edited preset and quality profile.
@@ -3000,7 +3136,11 @@ impl eframe::App for TemplateApp {
                     }
                     let _ = self.show_pending_world_build_status(ui);
                     if new_seed {
-                        editing.world_seed = rand::random();
+                        editing.world_seed = if editing.world_pipeline == WorldPipeline::CivAtlas {
+                            u64::from(rand::random::<u32>())
+                        } else {
+                            rand::random()
+                        };
                         rebuild = true;
                     }
                     // Settle this frame's edit before drawing its save/map status.
@@ -3033,7 +3173,13 @@ impl eframe::App for TemplateApp {
                             Some(profile) => format!(
                                 "{} 个球面单元｜{}｜单位球呈现",
                                 presentation.globe().cell_count(),
-                                quality_tier_short_label(profile),
+                                if presentation.document().atlas().is_some() {
+                                    crate::ui::field::localization::atlas_climate_quality_label(
+                                        profile,
+                                    )
+                                } else {
+                                    quality_tier_short_label(profile).to_owned()
+                                },
                             ),
                             None => format!(
                                 "{} 个球面单元｜单位球呈现",
@@ -3293,8 +3439,22 @@ fn activity_label(activity: TectonicActivity) -> &'static str {
     }
 }
 
+fn pipeline_label(pipeline: WorldPipeline) -> &'static str {
+    use crate::ui::field::localization as text;
+    match pipeline {
+        WorldPipeline::CivAtlas => text::ATLAS_SOURCE_LABEL,
+        WorldPipeline::Formation => text::FORMATION_SOURCE_LABEL,
+        WorldPipeline::LegacyFoundation => text::FOUNDATION_SOURCE_LABEL,
+    }
+}
+
 fn show_spherical_area_summary(ui: &mut egui::Ui, document: &SphericalWorldFieldDocument) {
     match document.area_summary() {
+        SphericalWorldAreaSummary::CivAtlas => {
+            if let Some(atlas) = document.atlas() {
+                atlas_display::show_summary(ui, atlas);
+            }
+        }
         SphericalWorldAreaSummary::NaturalFoundation(summary) => {
             show_natural_area_summary(ui, summary)
         }
@@ -3459,6 +3619,7 @@ fn procedural_coast_unsupported(
     profile: crate::world::natural::NaturalQualityProfile,
 ) -> bool {
     preset == WorldFormationPreset::ProceduralContinents
+        && pipeline != WorldPipeline::CivAtlas
         && (pipeline != WorldPipeline::Formation || !profile.supports_procedural_coast())
 }
 
@@ -4283,6 +4444,14 @@ mod natural_app_tests {
         // Reuse its production fields to exercise every nested strict decoder in RON.
         let inputs = imported.authoring.draft().clone();
         eframe::set_value(&mut storage, eframe::APP_KEY, &inputs);
+        // Historical flat RON predates atlas_shape. Remove the new field through the same
+        // production serializer instead of declaring a second copy of the old domain schemas.
+        eframe::set_value(&mut storage, "atlas_shape_fixture", &inputs.atlas_shape);
+        let shape = eframe::Storage::get_string(&storage, "atlas_shape_fixture").unwrap();
+        let current = eframe::Storage::get_string(&storage, eframe::APP_KEY).unwrap();
+        let legacy = current.replace(&format!("atlas_shape:{shape},"), "");
+        assert_ne!(legacy, current);
+        eframe::Storage::set_string(&mut storage, eframe::APP_KEY, legacy);
         let fully_imported: TemplateApp = eframe::get_value(&storage, eframe::APP_KEY).unwrap();
         assert_eq!(fully_imported.authoring.draft(), &inputs);
     }
@@ -4847,7 +5016,7 @@ mod natural_app_tests {
             rivers: Vec::new(),
             river_radius_m: evaluator.radius_m(),
             detail: Arc::new(super::amplified_mesh::AmplifiedDetailContext {
-                evaluator,
+                evaluator: evaluator.into(),
                 sea_level_m: 0.0,
                 display_radius_m: 2_000.0,
                 river_cells: Vec::new(),
@@ -5433,6 +5602,25 @@ mod natural_app_tests {
             identity_before,
             "the rolled-back cache must still be the published world's cache"
         );
+    }
+
+    #[test]
+    fn atlas_work_cache_is_disposable_without_changing_legacy_cache_policy() {
+        let mut authoring = super::AuthoringSession::new(super::AuthorInputs::default()).unwrap();
+        let published = MemoryStageCache::with_max_entries(3).unwrap();
+        let (_, receiver) = std::sync::mpsc::channel();
+        let (working, pending) = prepare_pending_world_build(
+            WorldPipeline::CivAtlas,
+            published,
+            receiver,
+            (authoring.begin_build(), BuildCancellation::new()),
+            true,
+        );
+        assert_eq!(working.max_entries(), MemoryStageCache::new().max_entries());
+        assert!(working.is_empty());
+        let rolled_back =
+            settle_world_build_stage_cache(working, pending.retained_stage_cache, false);
+        assert_eq!(rolled_back.max_entries(), 3);
     }
 
     #[test]

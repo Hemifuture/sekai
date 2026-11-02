@@ -742,8 +742,10 @@ mod tests {
     fn tectonic_fields_match_pinned_upstream() {
         let p = TerrainParams {
             seed: 42,
-            cells: 256,
-            ..TerrainParams::default()
+            shape: crate::TerrainShape {
+                cells: 256,
+                ..Default::default()
+            },
         };
         let mesh = build_mesh(
             2048.0,

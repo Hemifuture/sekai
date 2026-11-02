@@ -725,8 +725,10 @@ mod tests {
     fn default_world_terrain_matches_upstream() {
         let params = TerrainParams {
             seed: 42,
-            cells: 256,
-            ..TerrainParams::default()
+            shape: crate::TerrainShape {
+                cells: 256,
+                ..Default::default()
+            },
         };
         let mesh = build_mesh(
             MAP_W,
@@ -811,17 +813,19 @@ mod tests {
         // hardness and northern-bias branches that default parameters cannot exercise.
         let params = TerrainParams {
             seed: 42,
-            cells: 256,
-            plates: 24,
-            land_fraction: 0.45,
-            mountains: 1.4,
-            temperature: 5.0,
-            rainfall: 1.4,
-            continents: 2,
-            gather: 0.8,
-            rugged: 1.6,
-            hardness: 0.6,
-            north: 0.75,
+            shape: crate::TerrainShape {
+                cells: 256,
+                plates: 24,
+                land_fraction: 0.45,
+                mountains: 1.4,
+                temperature: 5.0,
+                rainfall: 1.4,
+                continents: 2,
+                gather: 0.8,
+                rugged: 1.6,
+                hardness: 0.6,
+                north: 0.75,
+            },
         };
         let mesh = build_mesh(
             MAP_W,
@@ -871,7 +875,10 @@ mod tests {
     #[test]
     fn facade_rejects_invalid_controls_before_cancellation_or_allocation() {
         let invalid = TerrainParams {
-            cells: 256,
+            shape: crate::TerrainShape {
+                cells: 256,
+                ..Default::default()
+            },
             ..TerrainParams::default()
         };
         assert!(matches!(
@@ -879,7 +886,10 @@ mod tests {
             Err(TerrainError::InvalidParameter { .. })
         ));
         let invalid = TerrainParams {
-            rugged: f64::NAN,
+            shape: crate::TerrainShape {
+                rugged: f64::NAN,
+                ..Default::default()
+            },
             ..TerrainParams::default()
         };
         assert!(matches!(
@@ -890,7 +900,10 @@ mod tests {
     #[test]
     fn facade_bounds_and_nonfinite_controls_are_rejected() {
         assert!(TerrainParams {
-            continents: 7,
+            shape: crate::TerrainShape {
+                continents: 7,
+                ..Default::default()
+            },
             ..TerrainParams::default()
         }
         .validate()
@@ -920,7 +933,10 @@ mod tests {
         }
         for cells in [0, 11999, 200001, usize::MAX] {
             assert!(TerrainParams {
-                cells,
+                shape: crate::TerrainShape {
+                    cells,
+                    ..Default::default()
+                },
                 ..TerrainParams::default()
             }
             .validate()
@@ -928,21 +944,30 @@ mod tests {
         }
         for plates in [0, 7, 61, usize::MAX] {
             assert!(TerrainParams {
-                plates,
+                shape: crate::TerrainShape {
+                    plates,
+                    ..Default::default()
+                },
                 ..TerrainParams::default()
             }
             .validate()
             .is_err());
         }
         assert!(TerrainParams {
-            continents: 9,
+            shape: crate::TerrainShape {
+                continents: 9,
+                ..Default::default()
+            },
             ..TerrainParams::default()
         }
         .validate()
         .is_err());
         assert!(TerrainParams {
-            continents: 3,
-            plates: 8,
+            shape: crate::TerrainShape {
+                continents: 3,
+                plates: 8,
+                ..Default::default()
+            },
             ..TerrainParams::default()
         }
         .validate()
@@ -958,8 +983,10 @@ mod tests {
         use std::cell::Cell;
         let params = TerrainParams {
             seed: 42,
-            cells: 256,
-            ..TerrainParams::default()
+            shape: crate::TerrainShape {
+                cells: 256,
+                ..Default::default()
+            },
         };
         let mesh = || {
             build_mesh(

@@ -28,7 +28,7 @@ mod inland_sea;
 mod params;
 mod tectonics;
 mod util;
-pub use params::TerrainParams;
+pub use params::{TerrainParams, TerrainShape};
 mod terrain;
 pub use terrain::{generate_terrain, Terrain};
 #[cfg(test)]

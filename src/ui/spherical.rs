@@ -1507,6 +1507,8 @@ pub struct SphericalDerivedPick {
     pub elevation_m: f32,
     /// The drawn leaf's fine-shoreline water class.
     pub water: SurfaceWaterKind,
+    /// Initialized Atlas water surface and depth at the drawn leaf sample, when wet.
+    pub initialized_water_m: Option<(f64, f64)>,
     /// P5's published sub-cell ocean area fraction of the cell.
     pub ocean_area_fraction: f32,
 }
@@ -1555,7 +1557,7 @@ pub fn derived_pick_rows(
         }
         _ => return Err(SphericalUiError::EntityValueMissing),
     };
-    Ok(vec![
+    let mut rows = vec![
         (
             derived_elevation_label(pick.level),
             format!("{:.precision$} {unit}", pick.elevation_m),
@@ -1570,7 +1572,18 @@ pub fn derived_pick_rows(
             P5_OCEAN_AREA_FRACTION_LABEL.to_owned(),
             format!("{:.3}", pick.ocean_area_fraction),
         ),
-    ])
+    ];
+    if let Some((surface, depth)) = pick.initialized_water_m {
+        rows.push((
+            super::field::localization::INITIALIZED_WATER_SURFACE_LABEL.into(),
+            format!("{surface:.precision$} {unit}"),
+        ));
+        rows.push((
+            super::field::localization::INITIALIZED_WATER_DEPTH_LABEL.into(),
+            format!("{depth:.precision$} {unit}"),
+        ));
+    }
+    Ok(rows)
 }
 
 /// Draws the derived-pick rows under the inspector.
