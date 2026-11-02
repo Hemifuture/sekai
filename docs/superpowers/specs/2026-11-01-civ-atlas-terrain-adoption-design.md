@@ -267,7 +267,7 @@ S4 的 70,148 个采样点中有 2 个 raw 海洋像素，S8/S16 分别有 3/13 
 
 改用保留父身份的 red/green 细分：red 四分沿用现有归一化球面共享边中点；
 green 只作临时共形闭包。green 需要进一步细化时恢复原父面并 red 四分，
-不对 green 递归生成质心扇。出处为 Cervenka，
+不对 green 递归生成质心扇。出处为 Cervenka（2004），
 《Three-Dimensional Mesh Generation for Device and Process Simulation》§2.6.1.1：
 https://www.iue.tuwien.ac.at/phd/cervenka/node14.html 。
 该出处支持父恢复策略，不直接证明球面版本；球面实现另以归一化中点的
