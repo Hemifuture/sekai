@@ -75,3 +75,42 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## 球面网格与几何移植（2026-11-01）
+
+- `src/mesh.rs`、`src/geometry.rs`：上述固定 Civ Atlas 的 `src/gen/mesh.ts` 与
+  `src/gen/geometry.ts`，保留 Poisson 撒点、立体投影、跨缝三角形稳定分区、
+  d3 邻接顺序、球面距离/局部运动/噪声、分组质心和气候风带查询。
+  数值参数均为该上游实现的作者先验或数值算法参数，不冒充地球物理常量。
+- `src/triangulation.rs`：从 `delaunator` Rust crate 1.1.0 的 `src/lib.rs`
+  移植必需的 Delaunator 内核，并依锁定的 JavaScript `delaunator@5.1.0`
+  恢复 `ceil(sqrt(n))` hull hash 大小、JS quicksort 同距顺序、首种子选择与
+  duplicate epsilon；加入插点循环取消检查，删除无消费者公共 API/no_std 支路。
+  原 Rust 源：https://github.com/mourner/delaunator-rs （crate 1.1.0）。
+  原 JS 源：https://github.com/mapbox/delaunator （npm 5.1.0）。
+  两份原 ISC 许可证与各自的 Mapbox 版权年保留于 `licenses/delaunator-*-ISC.txt`。
+- `src/mesh.rs` 的 incoming-halfedge 建表及邻居遍历来自 `d3-delaunay@6.0.4`
+  `src/delaunay.js` 与 Civ Atlas `sphereDelaunay`。保留 Observable/Mapbox 的 ISC
+  许可证于 `licenses/d3-delaunay-ISC.txt`。
+- 唯一数值依赖 `robust@1.2.0` 为实际三角剖分消费者提供 Shewchuk 自适应 orientation
+  谓词（Georust 的 Rust 实现，MIT/Apache-2.0 双许可，此处选择 MIT）。未复制
+  `robust-predicates` JavaScript 谓词；其锁定源码仅供离线 oracle 使用。
+  `licenses/robust-MIT.txt` 保留原 MIT 许可及 Spade/GeoRust 版权声明。
+- `thiserror@2` 仅用于 `TerrainError` 的参数域/取消错误；它不参与生成数值。
+
+### 球面离线参考
+
+`reference/geometry.mjs` 直接读取原 TypeScript，通过 Node transform 模式移除类型，
+仅改写模块导入路径。运行前校验五个原文件与三个 Delaunay 依赖入口的 SHA256；
+原始文件内容及校验和进入生成的 `reference/geometry.rs`。不是重新写一份 JS 算法。
+
+```text
+node crates/civ-atlas-terrain/reference/geometry.mjs <pinned-upstream-checkout> <prefix> crates/civ-atlas-terrain/reference/geometry.rs
+```
+
+`<prefix>` 是包含锁定的 `simplex-noise@4.0.3`、`d3-delaunay@6.0.4`
+（依赖 `delaunator@5.1.0`）的离线 npm 目录，运行时不需要 Node。
+夹具使用 seed 42/requested cells 256，实际 237 格；全量坐标与邻接、三角形顺序逐项比对。
+另有一个 25 点同距平面网格，只验证 Delaunator quicksort/halfedge 顺序，未扩大世界语料。
+精确球面金样以独立的上游 round24 三角函数 canary 保护；不匹配时带说明跳过精确
+比对，拓扑/有限性/最近点等不变式仍然执行。当前 Windows 主机全部精确比对通过。

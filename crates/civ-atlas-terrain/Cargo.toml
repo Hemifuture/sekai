@@ -9,3 +9,9 @@ publish = false
 
 [lints.rust]
 unsafe_code = "forbid"
+
+[dependencies]
+# Shewchuk orientation predicates for the pinned Delaunator port.
+robust = "1.2.0"
+# Typed invalid-parameter and cancellation failures at the terrain boundary.
+thiserror = "2.0.17"
