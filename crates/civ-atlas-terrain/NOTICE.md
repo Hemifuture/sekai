@@ -65,7 +65,7 @@ Gustavson 的 simplex 示例代码及 Peter Eastman 的优化，排序方法为 
 
 ```text
 npm install --prefix <prefix> --no-audit --no-fund --ignore-scripts --save-exact simplex-noise@4.0.3
-node crates/civ-atlas-terrain/reference/primitives.mjs <pinned-upstream-checkout> <prefix> crates/civ-atlas-terrain/reference/primitives.rs
+node --experimental-import-meta-resolve crates/civ-atlas-terrain/reference/primitives.mjs <pinned-upstream-checkout> <prefix> crates/civ-atlas-terrain/reference/primitives.rs
 cargo test --manifest-path crates/civ-atlas-terrain/Cargo.toml -j 2
 ```
 
@@ -113,12 +113,29 @@ cargo test --manifest-path crates/civ-atlas-terrain/Cargo.toml -j 2
 只将 `world.ts` 的模块路径改为固定源码的绝对地址，并在既有语句之后插入数组快照。
 没有重写上游算法；原回放、编辑器模块仍由上游正常加载，但不作为 Rust 运行时依赖。
 运行前引用 `source-pins.mjs` 校验实际算法源码、源 UI 域和噪声/三角剖分依赖入口；
-新脚本不复制字面哈希。原始上游输出写入 `reference/terrain.rs`，测试不从 Rust 反钉。
+新脚本不复制字面哈希。`terrain.mjs`、`fine-world.mjs` 与 `fine.mjs` 使用同一个前置校验：
+从原 `noise.ts` / `geometry.ts` 的实际 ESM 导入位置解析，再沿 d3-delaunay → delaunator →
+robust-predicates 的实际父模块解析，要求 realpath 与已校验的 prefix 文件相同。
+两个纯 re-export 入口也单独钉哈希，避免入口转发绕开原四个数值实现文件。
+`root/node_modules` 指向 prefix 的 junction 可通过；更近的或嵌套的另一份依赖即使字节
+相同也拒绝。此项约束已列出的数值实现及转发路径，不声称审计整个 npm 依赖树。
+校验不加载世界模块、不重算 fixture；原数值、算法和生成器版本不因本次校验加固改变。
+原始上游输出写入 `reference/terrain.rs`，测试不从 Rust 反钉。
 
 ```text
-<prefix>/node_modules/.bin/tsx crates/civ-atlas-terrain/reference/terrain.mjs <pinned-upstream-checkout> <prefix> crates/civ-atlas-terrain/reference/terrain.rs
+node --experimental-import-meta-resolve --import <prefix>/node_modules/tsx/dist/loader.mjs crates/civ-atlas-terrain/reference/terrain.mjs <pinned-upstream-checkout> <prefix> crates/civ-atlas-terrain/reference/terrain.rs
 cargo test --manifest-path crates/civ-atlas-terrain/Cargo.toml -j 2
 ```
+
+上述命令使用本轮 Node 24 工具链；另两个原 TS 入口使用相同 flags。
+`primitives.mjs` 与 `geometry.mjs` 也使用同一依赖校验助手，但从真实的 prefix 临时
+`.mjs` 模块处解析；它们分别校验实际消费的 simplex 或完整几何依赖链。
+`--experimental-import-meta-resolve` 使 Node 真正采用导入者参数；助手检查该行为，缺失时
+在执行算法前报错。导入者必须保持 ESM package scope，且不得启用 `--preserve-symlinks`。
+普通哈希检查为 `node --test crates/civ-atlas-terrain/reference/source-pins.test.mjs`；
+路径回归先将 `ATLAS_ORACLE_ROOT` / `ATLAS_ORACLE_PREFIX` 设为已有离线目录，再运行
+`node --experimental-import-meta-resolve --test crates/civ-atlas-terrain/reference/resolution.test.mjs`。
+该回归只复制少量来源与依赖文件并查询解析结果，包含三个生成入口的拒绝检查，不运行世界。
 
 默认小夹具覆盖板块、海陆、海底、抬升、高原、两次降水、两段侵蚀、米制高程、
 最终水体、私有季节气候/洋流/汇流及全部原河道链。另一个同 seed/同小网格的组合
@@ -184,7 +201,7 @@ SOFTWARE.
 原始文件内容及校验和进入生成的 `reference/geometry.rs`。不是重新写一份 JS 算法。
 
 ```text
-node crates/civ-atlas-terrain/reference/geometry.mjs <pinned-upstream-checkout> <prefix> crates/civ-atlas-terrain/reference/geometry.rs
+node --experimental-import-meta-resolve crates/civ-atlas-terrain/reference/geometry.mjs <pinned-upstream-checkout> <prefix> crates/civ-atlas-terrain/reference/geometry.rs
 ```
 
 `<prefix>` 是包含锁定的 `simplex-noise@4.0.3`、`d3-delaunay@6.0.4`

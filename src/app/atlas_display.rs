@@ -203,6 +203,7 @@ pub(super) fn show_author_controls(
     inputs: &mut super::authoring::AuthorInputs,
 ) -> bool {
     let mut focused = false;
+    ui.weak(text::ATLAS_PERFORMANCE_HINT);
     ui.horizontal(|ui| {
         ui.label(text::ATLAS_INTEGER_LABELS[0]);
         focused |= ui

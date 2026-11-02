@@ -1,13 +1,11 @@
 // Execute original pinned TypeScript with tsx; no replacement terrain algorithm.
-import {readFileSync,writeFileSync} from 'node:fs';
+import {writeFileSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
-import {SOURCE_PINS,DEPENDENCY_PINS,verifyPin} from './source-pins.mjs';
+import {verifyOriginalModuleProvenance} from './source-pins.mjs';
 const [root,prefix,out]=process.argv.slice(2).map(p=>resolve(p));
-const provenance=[];
-for(const file of Object.keys(DEPENDENCY_PINS))provenance.push(verifyPin(DEPENDENCY_PINS,file,readFileSync(join(prefix,'node_modules',file))));
-for(const file of Object.keys(SOURCE_PINS))provenance.push(verifyPin(SOURCE_PINS,file,readFileSync(join(root,'src/gen',file))));
+const provenance=verifyOriginalModuleProvenance(root,prefix);
 const imp=name=>import(pathToFileURL(join(root,'src/gen',name+'.ts')));
 const {Gullies}=await imp('gully');
 const {riverGeometry}=await imp('riverGeometry');

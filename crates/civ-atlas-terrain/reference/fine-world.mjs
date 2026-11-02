@@ -1,14 +1,12 @@
 // Original fixed-source world and windows: seed42/default, first mouth/lake and fixed wrap.
 // Run once with tsx; large diagnostic arrays stay outside the production crate.
-import {readFileSync,writeFileSync} from 'node:fs';
+import {writeFileSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {execFileSync} from 'node:child_process';
-import {SOURCE_PINS,DEPENDENCY_PINS,verifyPin} from './source-pins.mjs';
+import {verifyOriginalModuleProvenance} from './source-pins.mjs';
 const [root,prefix,out]=process.argv.slice(2).map(p=>resolve(p));
-const provenance=[];
-for(const file of Object.keys(DEPENDENCY_PINS))provenance.push(verifyPin(DEPENDENCY_PINS,file,readFileSync(join(prefix,'node_modules',file))));
-for(const file of Object.keys(SOURCE_PINS))provenance.push(verifyPin(SOURCE_PINS,file,readFileSync(join(root,'src/gen',file))));
+const provenance=verifyOriginalModuleProvenance(root,prefix);
 const imp=name=>import(pathToFileURL(join(root,'src/gen',name+'.ts')));
 const {generateWorld,DEFAULT_PARAMS}=await imp('world');
 const {rasterize}=await imp('raster');const {zoomSource,rasterizeWindow,WINDOW_PAD}=await imp('rasterWindow');const {mouthsOf}=await imp('estuary');

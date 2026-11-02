@@ -1,6 +1,10 @@
 // SHA256 of the original pinned Civ Atlas files and the installed oracle dependency entries.
 // Civ Atlas commit: 176cc9168a69be30d1e09bfd85db84a5f3fb99da.
 import { createHash } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
+import { findPackageJSON } from 'node:module';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const SOURCE_PINS = Object.freeze({
   'raster.ts': 'af5ddaa9f5227cc998051596b4fa9bdc91ade0bfb8246b1be0884f6982e88af8',
@@ -38,6 +42,15 @@ export const DEPENDENCY_PINS = Object.freeze({
     'ba1af2b1ea71924fa2e0a3e50b8972d3a83ab9a9f406dd73e851c9763a8eb741',
 });
 
+// These re-export-only entries connect package exports to the existing numerical pins.
+// Keep historical fixture headers unchanged; these are additional pre-execution route checks.
+const DEPENDENCY_FORWARDER_PINS = Object.freeze({
+  'd3-delaunay/src/index.js':
+    'c68b94d0d0a4d82fd8a71f30f9f09c65724fc212981687a18d0a98338074cb59',
+  'robust-predicates/index.js':
+    '1e26fb2e616a0fa84dadb3a15633d9743671884d82f1abb124e20292fd0ab86d',
+});
+
 // Return provenance only after the content matches a known pin.
 export function verifyPin(pins, name, content) {
   const actual = createHash('sha256').update(content).digest('hex');
@@ -45,4 +58,64 @@ export function verifyPin(pins, name, content) {
     throw new Error(`Unexpected pinned source: ${name}`);
   }
   return `${name} SHA256 ${actual}`;
+}
+
+// Shared preflight for runners that import original modules from the upstream checkout.
+export function verifyOriginalModuleProvenance(root, prefix) {
+  const sources = Object.keys(SOURCE_PINS).map(file =>
+    verifyPin(SOURCE_PINS, file, readFileSync(join(root, 'src/gen', file))));
+  return [
+    ...verifyDependencyProvenance(prefix, join(root, 'src/gen/noise.ts'),
+      join(root, 'src/gen/geometry.ts')),
+    ...sources,
+  ];
+}
+
+// The two stripped-module runners use their generated .mjs locations as importers.
+// Primitives consume only simplex; geometry and original-world runners consume all four pins.
+export function verifyDependencyProvenance(prefix, noiseImporter, geometryImporter) {
+  // Canonical realpath parents match Node's default ESM loader. A different symlink policy
+  // would require a different lookup contract, so reject it rather than checking another tree.
+  if (process.execArgv.some(arg => arg.startsWith('--preserve-symlinks')) ||
+      /--preserve-symlinks/.test(process.env.NODE_OPTIONS ?? '')) {
+    throw new Error('Oracle dependency verification requires default Node symlink resolution');
+  }
+  const verified = new Map();
+  const entry = (specifier, importer, relative) => {
+    const importerFile = realpathSync(importer);
+    const parent = pathToFileURL(importerFile);
+    // Node ignores the second resolve argument without this flag. Check its behavior,
+    // including when enabled through NODE_OPTIONS, before trusting any parent lookup.
+    const probe = './.sekai-resolution-probe';
+    if (import.meta.resolve(probe, parent.href) !== new URL(probe, parent).href) {
+      throw new Error('Run the oracle with node --experimental-import-meta-resolve');
+    }
+    if (!importerFile.endsWith('.mjs')) {
+      const packageFile = findPackageJSON(parent);
+      if (!packageFile || JSON.parse(readFileSync(packageFile, 'utf8')).type !== 'module') {
+        throw new Error(`Oracle importer must use ESM dependency conditions: ${importer}`);
+      }
+    }
+    const actual = realpathSync(fileURLToPath(import.meta.resolve(specifier, parent.href)));
+    const expected = realpathSync(join(prefix, 'node_modules', relative));
+    if (actual !== expected) {
+      throw new Error(`Unexpected oracle dependency location: ${specifier} from ${importer}: ${actual}; expected ${expected}`);
+    }
+    const pins = Object.hasOwn(DEPENDENCY_PINS, relative) ? DEPENDENCY_PINS : DEPENDENCY_FORWARDER_PINS;
+    const annotation = verifyPin(pins, relative, readFileSync(actual));
+    verified.set(relative, annotation);
+    return actual;
+  };
+  const simplex = 'simplex-noise/dist/esm/simplex-noise.js';
+  entry('simplex-noise', noiseImporter, simplex);
+  if (!geometryImporter) return [verified.get(simplex)];
+  const d3 = entry('d3-delaunay', geometryImporter, 'd3-delaunay/src/index.js');
+  const delaunay = entry('./delaunay.js', d3, 'd3-delaunay/src/delaunay.js');
+  const delaunator = entry('delaunator', delaunay, 'delaunator/index.js');
+  const robust = entry('robust-predicates', delaunator, 'robust-predicates/index.js');
+  entry('./esm/orient2d.js', robust, 'robust-predicates/esm/orient2d.js');
+  return Object.keys(DEPENDENCY_PINS).map(file => {
+    if (!verified.has(file)) throw new Error(`Unresolved pinned dependency: ${file}`);
+    return verified.get(file);
+  });
 }

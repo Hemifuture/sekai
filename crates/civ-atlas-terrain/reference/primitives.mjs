@@ -5,21 +5,19 @@ import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { stripTypeScriptTypes } from 'node:module';
 import { execFileSync } from 'node:child_process';
-import { SOURCE_PINS, DEPENDENCY_PINS, verifyPin } from './source-pins.mjs';
+import { SOURCE_PINS, verifyPin, verifyDependencyProvenance } from './source-pins.mjs';
 
 const [upstream, prefix, output] = process.argv.slice(2).map(p => resolve(p));
 const temp = join(prefix, 'primitive-modules');
 await mkdir(temp, { recursive: true });
-const hashes = [];
-const simplexEntry = 'simplex-noise/dist/esm/simplex-noise.js';
-hashes.push(verifyPin(DEPENDENCY_PINS, simplexEntry,
-  await readFile(join(prefix, 'node_modules', simplexEntry))));
+const sourceHashes = [];
 for (const [name, relative] of [['util', 'util.ts'], ['noise', 'noise.ts'], ['rand', 'civ/engine/rand.ts']]) {
   const source = await readFile(join(upstream, 'src/gen', relative), 'utf8');
-  hashes.push(verifyPin(SOURCE_PINS, relative, source));
+  sourceHashes.push(verifyPin(SOURCE_PINS, relative, source));
   const js = stripTypeScriptTypes(source).replaceAll("'./util'", "'./util.mjs'").replaceAll("'../../util'", "'./util.mjs'");
   await writeFile(join(temp, `${name}.mjs`), js);
 }
+const hashes = [...verifyDependencyProvenance(prefix, join(temp, 'noise.mjs')), ...sourceHashes];
 const { mulberry32, subSeed, keyed } = await import(pathToFileURL(join(temp, 'util.mjs')));
 const { noise3, fbm3, ridged3, tileableFbm } = await import(pathToFileURL(join(temp, 'noise.mjs')));
 const { round24 } = await import(pathToFileURL(join(temp, 'rand.mjs')));

@@ -4,19 +4,17 @@ import {resolve,join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {stripTypeScriptTypes} from 'node:module';
 import {execFileSync} from 'node:child_process';
-import {SOURCE_PINS,DEPENDENCY_PINS,verifyPin} from './source-pins.mjs';
+import {SOURCE_PINS,verifyPin,verifyDependencyProvenance} from './source-pins.mjs';
 const [root,prefix,out]=process.argv.slice(2).map(p=>resolve(p));
 const temp=join(prefix,'geometry-modules'); mkdirSync(temp,{recursive:true});
-const hashes=[];
-for(const file of Object.keys(DEPENDENCY_PINS)) {
- hashes.push(verifyPin(DEPENDENCY_PINS,file,readFileSync(join(prefix,'node_modules',file))));
-}
+const sourceHashes=[];
 for(const [name,rel] of [['util','util.ts'],['noise','noise.ts'],['rand','civ/engine/rand.ts'],['geometry','geometry.ts'],['mesh','mesh.ts']]) {
  const src=readFileSync(join(root,'src/gen',rel),'utf8');
- hashes.push(verifyPin(SOURCE_PINS,rel,src));
+ sourceHashes.push(verifyPin(SOURCE_PINS,rel,src));
  const js=stripTypeScriptTypes(src,{mode:"transform"}).replaceAll("'./util'","'./util.mjs'").replaceAll("'../../util'","'./util.mjs'").replaceAll("'./noise'","'./noise.mjs'").replaceAll("'./geometry'","'./geometry.mjs'").replaceAll("'./civ/engine/rand'","'./rand.mjs'");
  writeFileSync(join(temp,name+'.mjs'),js);
 }
+const hashes=[...verifyDependencyProvenance(prefix,join(temp,'noise.mjs'),join(temp,'geometry.mjs')),...sourceHashes];
 const {mulberry32,subSeed}=await import(pathToFileURL(join(temp,'util.mjs')));
 const {buildMesh,blurField}=await import(pathToFileURL(join(temp,'mesh.mjs')));
 const {geometryOf,sphereSpacing}=await import(pathToFileURL(join(temp,'geometry.mjs')));
