@@ -103,3 +103,4 @@
 - 随机/噪声/三角剖分：固定版本 util/noise/geometry 与其锁定的 simplex-noise、d3-delaunay/delaunator；移植依赖许可一并记录。
 - 侵蚀：上游 erosion.ts 的 Braun & Willett (2013) 与 Priority-Flood 实现，保留实际离散顺序。
 - 气候、守恒、身份与 UI：现有 Sekai 生产算子和冻结规格；不复写公式，不新增无出处阈值。
+- 局部水体支持的共形细分：Cervenka（2004）§2.6.1.1 的 red/green 父面恢复策略（https://www.iue.tuwien.ac.at/phd/cervenka/node14.html）；球面适用前提、实测故障与验证要求见规格修订 A7。
