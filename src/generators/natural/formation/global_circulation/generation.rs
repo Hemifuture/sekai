@@ -21,19 +21,19 @@ use crate::generators::spatial::{
 use crate::world::natural::PlanetForcing;
 use crate::world::natural::{
     atmosphere_surface_wind_weights, expected_global_circulation_dense_state_bytes,
-    reconstruct_atmosphere_surface_wind_m_s, water_cycle_relative_imbalance, ClimateBudgetReport,
-    ClimateCapabilitySet, ClimateCheckpoint, ClimateCheckpointError, ClimateLayerLayout,
-    ClimateLayerRole, ClimateModelProfile, ClimateQuantizationId, ClimateRemapReport,
-    ClimateReportError, ClimateSolveReport, ClimateValidationError, ClimateWorkDomainSnapshot,
-    ClimateWorkDomainValidationError, GlobalCirculationFields, GlobalCirculationSnapshot,
-    GlobalCirculationValidationError, MonthlyScalarField, MonthlyVector3Field, CLIMATE_MONTH_COUNT,
+    global_circulation_schema_for_source, reconstruct_atmosphere_surface_wind_m_s,
+    water_cycle_relative_imbalance, ClimateBudgetReport, ClimateCapabilitySet, ClimateCheckpoint,
+    ClimateCheckpointError, ClimateLayerLayout, ClimateLayerRole, ClimateModelProfile,
+    ClimateQuantizationId, ClimateRemapReport, ClimateReportError, ClimateSolveReport,
+    ClimateValidationError, ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError,
+    GlobalCirculationFields, GlobalCirculationSnapshot, GlobalCirculationValidationError,
+    MonthlyScalarField, MonthlyVector3Field, CLIMATE_MONTH_COUNT,
     EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2, EARTH_ROTATION_RATE_RAD_S,
     GLOBAL_CIRCULATION_FAST_CFL_TARGET, GLOBAL_CIRCULATION_MACRO_STEP_SECONDS,
     GLOBAL_CIRCULATION_MECHANICAL_COARSE_CYCLES,
     GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
-    GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S, GLOBAL_CIRCULATION_SCHEMA_V2,
-    GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2, GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
-    WATER_VAPORIZATION_LATENT_HEAT_J_KG,
+    GLOBAL_CIRCULATION_REFERENCE_WAVE_SPEED_M_S, GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
+    GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX, WATER_VAPORIZATION_LATENT_HEAT_J_KG,
 };
 use crate::world::spatial::{ConservativeSurfaceMap, SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -560,7 +560,8 @@ impl GlobalCirculationGenerator {
             state_fingerprint,
         )?;
         let snapshot = GlobalCirculationSnapshot::new_cancellable(
-            GLOBAL_CIRCULATION_SCHEMA_V2,
+            global_circulation_schema_for_source(forcing.source_ref().geometry_kind())
+                .expect("validated climate domain has a supported source schema"),
             surface_ref,
             layout,
             SELECTED_PRODUCTION_INTEGRATOR,
@@ -720,13 +721,16 @@ fn initialize_atmosphere_mechanics(
             .gradient_cancellable(&relative_elevation, cancellation)
             .map_err(|error| map_mechanical_input_error(error, cancellation))?;
         let evapotranspiration = restrict(forcing.land_evapotranspiration_fraction())?;
-        let water_geometry = build_surface_water_geometry(
-            &coarse_surface,
-            coarse_planet.elevation_m(),
-            forcing.sea_level_m(),
-            cancellation,
-        )
-        .map_err(|error| map_mechanical_input_error(error, cancellation))?;
+        let legacy_water_geometry;
+        let coarse_wet_edges = match forcing.mechanical_ocean_edge_permeability() {
+            Some(edges) => edges,
+            None => {
+                legacy_water_geometry = build_surface_water_geometry(
+                    &coarse_surface, coarse_planet.elevation_m(), forcing.sea_level_m(), cancellation,
+                ).map_err(|error| map_mechanical_input_error(error, cancellation))?;
+                legacy_water_geometry.wet_edge_fraction()
+            }
+        };
         let coarse_integrator = SplitExplicitRk3Integrator::with_tendency_system(
             &coarse_grid,
             LayeredTendencySystem::with_terrain(
@@ -795,7 +799,7 @@ fn initialize_atmosphere_mechanics(
             grid: &coarse_grid,
             integrator: &coarse_integrator,
             forcing: &coarse_planet,
-            ocean_edge_permeability: water_geometry.wet_edge_fraction(),
+            ocean_edge_permeability: coarse_wet_edges,
             terrain_floor: &terrain_floor,
             temperature: [
                 &air_temperature,

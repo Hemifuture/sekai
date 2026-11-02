@@ -211,13 +211,7 @@ fn substrate_properties(
     fracture_intensity: f32,
     subsidence_rate_mm_per_year: f32,
 ) -> (f32, f32) {
-    let (base_erodibility, base_permeability) = match bedrock {
-        BedrockKind::OceanicMafic => (0.42, 0.34),
-        BedrockKind::ContinentalCrystalline => (0.20, 0.16),
-        BedrockKind::Sedimentary => (0.72, 0.56),
-        BedrockKind::Metamorphic => (0.14, 0.10),
-        BedrockKind::Volcanic => (0.34, 0.28),
-    };
+    let (base_erodibility, base_permeability) = bedrock.base_transport_properties();
     let basin_term = subsidence_rate_mm_per_year / (subsidence_rate_mm_per_year + 0.25_f32);
     (
         (base_erodibility + 0.14 * fracture_intensity + 0.06 * basin_term).clamp(0.0, 1.0),

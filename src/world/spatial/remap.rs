@@ -566,11 +566,7 @@ fn check_fingerprint_cancelled(
 }
 
 fn hash_surface_ref(hasher: &mut blake3::Hasher, surface: SurfaceRef) {
-    let geometry_tag = match surface.geometry_kind() {
-        super::SurfaceGeometryKind::PlanarV1 => 0_u8,
-        super::SurfaceGeometryKind::SphericalV1 => 1,
-        super::SurfaceGeometryKind::SphericalGeodesicV2 => 2,
-    };
+    let geometry_tag = surface.geometry_kind().identity_tag();
     hasher.update(&[geometry_tag]);
     hasher.update(&surface.geometry_schema().to_le_bytes());
     hasher.update(&surface.cell_count().to_le_bytes());

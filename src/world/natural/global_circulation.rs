@@ -117,8 +117,29 @@ where
 
 /// The first strict schema for the reconstructable climate work domain.
 pub const CLIMATE_WORK_DOMAIN_SCHEMA_V1: u16 = 1;
+/// Work domain bound to a generic source polygon surface (surface schema V3).
+pub const CLIMATE_WORK_DOMAIN_SCHEMA_V2: u16 = 2;
 /// The physical-budget layered atmosphere-ocean climatology schema.
 pub const GLOBAL_CIRCULATION_SCHEMA_V2: u16 = 2;
+/// The unchanged C2 fields projected onto a generic source polygon surface.
+pub const GLOBAL_CIRCULATION_SCHEMA_V3: u16 = 3;
+
+pub(crate) const fn climate_work_domain_schema_for_source(
+    kind: SurfaceGeometryKind,
+) -> Option<u16> {
+    match kind {
+        SurfaceGeometryKind::SphericalV1 => Some(CLIMATE_WORK_DOMAIN_SCHEMA_V1),
+        SurfaceGeometryKind::SphericalPolygonV3 => Some(CLIMATE_WORK_DOMAIN_SCHEMA_V2),
+        SurfaceGeometryKind::PlanarV1 | SurfaceGeometryKind::SphericalGeodesicV2 => None,
+    }
+}
+pub(crate) const fn global_circulation_schema_for_source(kind: SurfaceGeometryKind) -> Option<u16> {
+    match kind {
+        SurfaceGeometryKind::SphericalV1 => Some(GLOBAL_CIRCULATION_SCHEMA_V2),
+        SurfaceGeometryKind::SphericalPolygonV3 => Some(GLOBAL_CIRCULATION_SCHEMA_V3),
+        SurfaceGeometryKind::PlanarV1 | SurfaceGeometryKind::SphericalGeodesicV2 => None,
+    }
+}
 /// The first fixed-layout schema.
 pub const CLIMATE_LAYER_LAYOUT_SCHEMA_V1: u16 = 1;
 /// The forcing-phase continuation checkpoint identity schema.
@@ -4094,10 +4115,13 @@ impl GlobalCirculationSnapshot {
         cancellation: CancellationCheck<'_>,
     ) -> Result<(), GlobalCirculationValidationError> {
         check_global_circulation_cancelled(cancellation)?;
-        if self.schema_version != GLOBAL_CIRCULATION_SCHEMA_V2 {
+        if !matches!(
+            self.schema_version,
+            GLOBAL_CIRCULATION_SCHEMA_V2 | GLOBAL_CIRCULATION_SCHEMA_V3
+        ) {
             return Err(GlobalCirculationValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: GLOBAL_CIRCULATION_SCHEMA_V2,
+                supported: GLOBAL_CIRCULATION_SCHEMA_V3,
             });
         }
         self.surface_ref.validate().map_err(|error| {
@@ -4106,7 +4130,9 @@ impl GlobalCirculationSnapshot {
                 reason: error.to_string(),
             }
         })?;
-        if self.surface_ref.geometry_kind() != SurfaceGeometryKind::SphericalV1 {
+        if global_circulation_schema_for_source(self.surface_ref.geometry_kind())
+            != Some(self.schema_version)
+        {
             return Err(GlobalCirculationValidationError::InvalidSurfaceKind {
                 found: self.surface_ref.geometry_kind(),
             });
@@ -4722,10 +4748,13 @@ impl ClimateWorkDomainSnapshot {
         cancellation: WorkDomainCancellation<'_>,
     ) -> Result<(), ClimateWorkDomainValidationError> {
         check_work_domain_cancelled(cancellation)?;
-        if self.schema_version != CLIMATE_WORK_DOMAIN_SCHEMA_V1 {
+        if !matches!(
+            self.schema_version,
+            CLIMATE_WORK_DOMAIN_SCHEMA_V1 | CLIMATE_WORK_DOMAIN_SCHEMA_V2
+        ) {
             return Err(ClimateWorkDomainValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: CLIMATE_WORK_DOMAIN_SCHEMA_V1,
+                supported: CLIMATE_WORK_DOMAIN_SCHEMA_V2,
             });
         }
         let expected_resolution = self.profile.climate_face_resolution();
@@ -4741,7 +4770,9 @@ impl ClimateWorkDomainSnapshot {
                 reason: error.to_string(),
             }
         })?;
-        if self.source_ref.geometry_kind() != SurfaceGeometryKind::SphericalV1 {
+        if climate_work_domain_schema_for_source(self.source_ref.geometry_kind())
+            != Some(self.schema_version)
+        {
             return Err(ClimateWorkDomainValidationError::NonSphericalSource);
         }
         if self.climate_grid_fingerprint == [0; 32] {
@@ -4916,11 +4947,7 @@ impl ClimateWorkDomainSnapshot {
         };
         hasher.update(&[profile_tag]);
         hasher.update(&self.face_resolution.to_le_bytes());
-        let source_kind_tag = match self.source_ref.geometry_kind() {
-            SurfaceGeometryKind::PlanarV1 => 0_u8,
-            SurfaceGeometryKind::SphericalV1 => 1,
-            SurfaceGeometryKind::SphericalGeodesicV2 => 2,
-        };
+        let source_kind_tag = self.source_ref.geometry_kind().identity_tag();
         hasher.update(&[source_kind_tag]);
         hasher.update(&self.source_ref.geometry_schema().to_le_bytes());
         hasher.update(&self.source_ref.cell_count().to_le_bytes());

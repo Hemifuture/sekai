@@ -6,6 +6,7 @@ use super::sphere_geometry::{add, cross, dot, norm, subtract};
 use super::{
     central_angle, oriented_arc_normal, spherical_triangle_area_unit, SphericalSurfaceSnapshot,
     UnitVector3, SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V2,
+    SPHERICAL_SURFACE_SCHEMA_V3,
 };
 use crate::world::{
     CellId, EdgeId, SurfaceVertexId, UnitError, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE,
@@ -257,11 +258,11 @@ impl SphericalSurfaceSnapshot {
     fn validate_header(&self) -> Result<(), SphericalSurfaceValidationError> {
         if !matches!(
             self.schema_version,
-            SPHERICAL_SURFACE_SCHEMA_V1 | SPHERICAL_SURFACE_SCHEMA_V2
+            SPHERICAL_SURFACE_SCHEMA_V1 | SPHERICAL_SURFACE_SCHEMA_V2 | SPHERICAL_SURFACE_SCHEMA_V3
         ) {
             return Err(SphericalSurfaceValidationError::UnsupportedSchema {
                 found: self.schema_version,
-                supported: SPHERICAL_SURFACE_SCHEMA_V2,
+                supported: SPHERICAL_SURFACE_SCHEMA_V3,
             });
         }
         validate_record_count(
@@ -343,12 +344,17 @@ impl SphericalSurfaceSnapshot {
                     },
                 );
             }
-            if cell.boundary_vertices.len() > MAX_SPHERICAL_CELL_BOUNDARY_DEGREE {
+            let maximum_degree = if self.schema_version == SPHERICAL_SURFACE_SCHEMA_V3 {
+                self.cells.len().saturating_sub(1)
+            } else {
+                MAX_SPHERICAL_CELL_BOUNDARY_DEGREE
+            };
+            if cell.boundary_vertices.len() > maximum_degree {
                 return Err(
                     SphericalSurfaceValidationError::CellBoundaryDegreeOutOfRange {
                         cell: cell.id,
                         found: cell.boundary_vertices.len(),
-                        max: MAX_SPHERICAL_CELL_BOUNDARY_DEGREE,
+                        max: maximum_degree,
                     },
                 );
             }

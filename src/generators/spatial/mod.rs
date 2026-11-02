@@ -7,6 +7,7 @@ mod remap_fields;
 mod spherical_stage;
 
 pub use conservative_remap::{ConservativeRemapError, ConservativeSurfaceMapBuilder};
+pub(crate) use geodesic_voronoi::build_source_voronoi_surface;
 pub use geodesic_voronoi::{GeodesicVoronoiBuilder, SphericalSurfaceBuildError};
 pub(crate) use geodesic_voronoi::{BASE_FACE_VERTICES, BASE_VERTEX_COMPONENTS};
 pub use profile_surface::{ProfileSurfaceBuildError, ProfileSurfaceBuilder, ProfileSurfaceBundle};

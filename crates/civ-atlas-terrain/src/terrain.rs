@@ -41,6 +41,94 @@ pub(crate) struct River {
     pub cells: Vec<usize>,
 }
 impl Terrain {
+    /// Stream the canonical author content used by the fixed fine evaluator.
+    ///
+    /// This is an identity stream, not a loadable world format: private author
+    /// weather and drainage are included only because they shape the initial bed.
+    /// Integers use fixed-width little endian encoding, independent of host usize.
+    /// Returns the destination writer's I/O error without publishing partial data.
+    pub fn write_identity(&self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        out.write_all(b"civ-atlas.author-content.v1\0")?;
+        out.write_all(crate::UPSTREAM_REVISION.as_bytes())?;
+        out.write_all(&crate::UPSTREAM_GENERATOR_VERSION.to_le_bytes())?;
+        out.write_all(&self.params.seed.to_le_bytes())?;
+        for n in [
+            self.params.cells,
+            self.params.plates,
+            self.params.continents,
+            self.mesh.n,
+        ] {
+            out.write_all(&(n as u64).to_le_bytes())?;
+        }
+        for x in [
+            self.params.land_fraction,
+            self.params.mountains,
+            self.params.temperature,
+            self.params.rainfall,
+            self.params.gather,
+            self.params.rugged,
+            self.params.hardness,
+            self.params.north,
+            self.mesh.width,
+            self.mesh.height,
+            self.mesh.spacing,
+            self.river_threshold,
+            self.max_elevation,
+        ] {
+            out.write_all(&x.to_bits().to_le_bytes())?;
+        }
+        for values in [
+            &self.mesh.x,
+            &self.mesh.y,
+            &self.mesh.xyz,
+            &self.elevation,
+            &self.water_level,
+            &self.initial_flux,
+            &self.initial_climate.temperature,
+            &self.initial_climate.precipitation,
+            &self.initial_climate.wind_x,
+            &self.initial_climate.wind_y,
+            &self.initial_currents.sst,
+            &self.initial_currents.u,
+            &self.initial_currents.v,
+        ] {
+            out.write_all(&(values.len() as u64).to_le_bytes())?;
+            for x in values {
+                out.write_all(&x.to_bits().to_le_bytes())?;
+            }
+        }
+        for values in [&self.mesh.triangles, &self.mesh.adj_start, &self.mesh.adj] {
+            out.write_all(&(values.len() as u64).to_le_bytes())?;
+            for &x in values {
+                out.write_all(&(x as u64).to_le_bytes())?;
+            }
+        }
+        out.write_all(&(self.initial_receiver.len() as u64).to_le_bytes())?;
+        for &receiver in &self.initial_receiver {
+            let present = receiver != usize::MAX;
+            out.write_all(&[u8::from(present)])?;
+            if present {
+                out.write_all(&(receiver as u64).to_le_bytes())?;
+            }
+        }
+        for values in [&self.water, &self.continental_origin] {
+            out.write_all(&(values.len() as u64).to_le_bytes())?;
+            out.write_all(values)?;
+        }
+        out.write_all(&(self.initial_rivers.len() as u64).to_le_bytes())?;
+        for river in &self.initial_rivers {
+            out.write_all(&(river.pts.len() as u64).to_le_bytes())?;
+            for x in &river.pts {
+                out.write_all(&x.to_bits().to_le_bytes())?;
+            }
+            out.write_all(&(river.cells.len() as u64).to_le_bytes())?;
+            for &x in &river.cells {
+                out.write_all(&(x as u64).to_le_bytes())?;
+            }
+        }
+        Ok(())
+    }
+
     /// Return original plate crust origin: one continental, zero oceanic.
     /// This author substrate tag is independent of the final elevation or water class.
     pub fn continental_origin(&self) -> &[u8] {

@@ -4,8 +4,8 @@ use super::super::circulation::{CubedSphereGrid, CubedSphereGridError};
 use crate::engine::BuildCancellation;
 use crate::generators::spatial::{ConservativeRemapError, ConservativeSurfaceMapBuilder};
 use crate::world::natural::{
-    ClimateWorkDomainSnapshot, ClimateWorkDomainValidationError, NaturalQualityProfile,
-    CLIMATE_WORK_DOMAIN_SCHEMA_V1,
+    climate_work_domain_schema_for_source, ClimateWorkDomainSnapshot,
+    ClimateWorkDomainValidationError, NaturalQualityProfile,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, SurfaceRef};
 
@@ -43,7 +43,12 @@ impl ClimateWorkDomainBuilder {
         check_cancelled(cancellation)?;
 
         let snapshot = ClimateWorkDomainSnapshot::new_cancellable(
-            CLIMATE_WORK_DOMAIN_SCHEMA_V1,
+            climate_work_domain_schema_for_source(
+                SurfaceRef::for_spherical(source).geometry_kind(),
+            )
+            .ok_or_else(|| {
+                domain_validation_error(ClimateWorkDomainValidationError::NonSphericalSource)
+            })?,
             profile,
             resolution,
             SurfaceRef::for_spherical(source),

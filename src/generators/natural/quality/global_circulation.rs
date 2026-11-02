@@ -4,9 +4,9 @@ use super::{MetricAccumulator, MetricObservation, NaturalQualityReportBuilder, Q
 use crate::engine::BuildCancellation;
 use crate::generators::natural::formation::global_circulation::GlobalClimateForcing;
 use crate::world::natural::{
-    FormationTerrainFields, GlobalCirculationSnapshot, LandOceanField, LandOceanKind,
-    NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId, QualityMetricStatus,
-    CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
+    AtlasCellFields, FormationTerrainFields, GlobalCirculationSnapshot, LandOceanField,
+    LandOceanKind, NaturalQualityReport, PrimaryReliefSnapshot, QualityMetricId,
+    QualityMetricStatus, CLIMATE_MONTH_COUNT, GLOBAL_CIRCULATION_TOA_NET_ABS_MAX_W_M2,
     GLOBAL_CIRCULATION_WATER_CYCLE_RELATIVE_IMBALANCE_MAX,
 };
 use crate::world::spatial::{canonical_east_north_basis, SphericalSurfaceSnapshot, SurfaceRef};
@@ -29,6 +29,11 @@ const NO_HIGH_LATITUDE_PRECIPITATION_REASON: &str =
 pub(crate) enum ClimateQualityTerrain<'a> {
     Primary(&'a PrimaryReliefSnapshot),
     Formation(&'a FormationTerrainFields),
+    Atlas {
+        fields: &'a AtlasCellFields,
+        surface_ref: SurfaceRef,
+        fingerprint: [u8; 32],
+    },
 }
 
 impl<'a> ClimateQualityTerrain<'a> {
@@ -36,6 +41,7 @@ impl<'a> ClimateQualityTerrain<'a> {
         match self {
             Self::Primary(relief) => relief.surface_ref(),
             Self::Formation(terrain) => terrain.surface_water_geometry().surface_ref(),
+            Self::Atlas { surface_ref, .. } => surface_ref,
         }
     }
 
@@ -43,6 +49,7 @@ impl<'a> ClimateQualityTerrain<'a> {
         match self {
             Self::Primary(relief) => relief.land_ocean(),
             Self::Formation(terrain) => terrain.land_ocean(),
+            Self::Atlas { fields, .. } => fields.land_ocean(),
         }
     }
 
@@ -50,6 +57,7 @@ impl<'a> ClimateQualityTerrain<'a> {
         match self {
             Self::Primary(relief) => relief.elevation_m(),
             Self::Formation(terrain) => terrain.current_elevation_m(),
+            Self::Atlas { fields, .. } => fields.exposed_elevation_m(),
         }
     }
 
@@ -61,6 +69,22 @@ impl<'a> ClimateQualityTerrain<'a> {
             Self::Formation(terrain) => terrain
                 .validate()
                 .map_err(|error| invalid_input("formation_terrain", error.to_string())),
+            Self::Atlas {
+                fields,
+                surface_ref,
+                ..
+            } => {
+                if fields.land_ocean().len() != surface_ref.cell_count() as usize
+                    || fields.exposed_elevation_m().len() != surface_ref.cell_count() as usize
+                    || fields.exposed_elevation_m().iter().any(|v| !v.is_finite())
+                {
+                    return Err(invalid_input(
+                        "atlas_terrain",
+                        "invalid dense terrain fields".into(),
+                    ));
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -177,6 +201,28 @@ pub(crate) fn evaluate_global_circulation_quality_for_formation_cancellable(
     )
 }
 
+pub(crate) fn evaluate_global_circulation_quality_for_atlas_cancellable(
+    surface: &SphericalSurfaceSnapshot,
+    terrain: (&AtlasCellFields, [u8; 32]),
+    forcing: &GlobalClimateForcing,
+    snapshot: &GlobalCirculationSnapshot,
+    cancellation: &BuildCancellation,
+) -> Result<NaturalQualityReport, QualityBuildError> {
+    let terrain = ClimateQualityTerrain::Atlas {
+        fields: terrain.0,
+        surface_ref: SurfaceRef::for_spherical(surface),
+        fingerprint: terrain.1,
+    };
+    terrain.validate()?;
+    evaluate_global_circulation_quality_impl(
+        surface,
+        terrain,
+        forcing,
+        snapshot,
+        Some(cancellation),
+    )
+}
+
 fn evaluate_global_circulation_quality_impl(
     surface: &SphericalSurfaceSnapshot,
     terrain: ClimateQualityTerrain<'_>,
@@ -227,6 +273,22 @@ fn evaluate_global_circulation_quality_impl(
         }
         (ClimateQualityTerrain::Formation(terrain), None) => {
             forcing.validate_formation_terrain_identity(terrain)
+        }
+        (
+            ClimateQualityTerrain::Atlas {
+                surface_ref,
+                fingerprint,
+                ..
+            },
+            _,
+        ) => {
+            if forcing.source_ref() == surface_ref
+                && forcing.source_relief_fingerprint() == &fingerprint
+            {
+                Ok(())
+            } else {
+                Err(crate::generators::natural::GlobalClimateForcingError::SourceMismatch)
+            }
         }
     };
     terrain_binding.map_err(|error| {

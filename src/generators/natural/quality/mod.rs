@@ -25,6 +25,7 @@ pub use global_circulation::{
     evaluate_global_circulation_quality, evaluate_global_circulation_quality_cancellable,
 };
 pub(crate) use global_circulation::{
+    evaluate_global_circulation_quality_for_atlas_cancellable,
     evaluate_global_circulation_quality_for_formation_cancellable,
     validate_global_circulation_quality_report,
 };

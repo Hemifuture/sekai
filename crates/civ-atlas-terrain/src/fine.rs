@@ -16,9 +16,9 @@ use std::{
     sync::Arc,
 };
 /// Version of the canonical source evaluator and A3 lake-bed adaptation.
-pub const FINE_TERRAIN_VERSION: u32 = 1;
+pub const FINE_TERRAIN_VERSION: u32 = 2;
 /// Supported original source zoom scales. Each terrain fixes one scale for its lifetime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FineScale {
     /// Two source pixels per world unit.
     Two,
@@ -126,6 +126,30 @@ pub struct FineTerrain {
     priors: Vec<LakePrior>,
 }
 impl FineTerrain {
+    /// Locate the source triangle and its barycentric coordinates for a direction.
+    ///
+    /// Used by the terrain adapter for material ownership and support-grid lookup;
+    /// returns the same invalid-direction/coverage errors as surface sampling.
+    pub fn source_triangle(
+        &self,
+        direction: [f64; 3],
+    ) -> Result<([usize; 3], [f64; 3]), TerrainError> {
+        let xy = coordinates(direction)?;
+        let max = direction.iter().map(|x| x.abs()).fold(0.0, f64::max);
+        let (triangle, weights) = self
+            .source
+            .cover
+            .locate_direction(
+                xy,
+                direction.map(|x| x / max),
+                &self.source.terrain.mesh.xyz,
+            )
+            .ok_or(TerrainError::InvalidOutput {
+                field: "source triangle coverage",
+            })?;
+        Ok((self.source.cover.triangles[triangle].nodes, weights))
+    }
+
     /// Borrow the original immutable coarse author data for substrate and spatial adaptation.
     pub fn coarse_terrain(&self) -> &Terrain {
         &self.source.terrain
@@ -188,6 +212,11 @@ impl FineTerrain {
     pub fn scale(&self) -> FineScale {
         self.scale
     }
+    /// Canonical north–south angular pixel interval (also longitudinal at the
+    /// equator). This describes the fixed source raster, not a physical error bound.
+    pub fn canonical_angular_step_radians(&self) -> f64 {
+        TAU / (WIDTH as f64 * f64::from(self.scale.pixels_per_unit()))
+    }
     /// Return original lake constraints. Consumers must resolve connectivity, spill and
     /// overlapping basins before integrating or publishing physical water.
     pub fn lake_priors(&self) -> &[LakePrior] {
@@ -241,7 +270,11 @@ impl FineTerrain {
         let (t, w) = self
             .source
             .cover
-            .locate(xy, direction.map(|v| v / max))
+            .locate_direction(
+                xy,
+                direction.map(|v| v / max),
+                &self.source.terrain.mesh.xyz,
+            )
             .ok_or(TerrainError::InvalidOutput {
                 field: "lake P1 coverage",
             })?;
@@ -361,6 +394,30 @@ mod tests {
                 .expect("finite direction")
                 .iter()
                 .all(|v| v.is_finite()));
+        }
+    }
+    #[test]
+    fn source_vertices_have_gap_free_direction_coverage() {
+        let mesh = crate::mesh::build_mesh(
+            2048.0,
+            1024.0,
+            crate::mesh::sphere_spacing(2048.0, 36000),
+            &mut crate::random::Mulberry32::new(crate::random::sub_seed(42, "mesh")),
+            &|| false,
+        )
+        .unwrap();
+        let cover = Coverage::new(&mesh, &|| false).unwrap();
+        for (index, p) in mesh.xyz.chunks_exact(3).enumerate() {
+            let p: [f64; 3] = std::array::from_fn(|j| f64::from(p[j]));
+            let length = p.iter().map(|v| v * v).sum::<f64>().sqrt();
+            let p = p.map(|v| v / length);
+            let maximum = p.iter().map(|v| v.abs()).fold(0.0, f64::max);
+            assert!(
+                cover
+                    .locate_direction(coordinates(p).unwrap(), p.map(|v| v / maximum), &mesh.xyz)
+                    .is_some(),
+                "source node {index}: {p:?}"
+            );
         }
     }
     #[test]

@@ -6,7 +6,7 @@ use crate::world::spatial::{
     add, central_angle, cross, dot, oriented_arc_normal, scale, spherical_polygon_metrics,
     subtract, SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot,
     SphericalSurfaceValidationError, SphericalSurfaceVertex, UnitVector3,
-    SPHERICAL_SURFACE_SCHEMA_V1,
+    SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V3,
 };
 use crate::world::{
     CellId, EdgeId, Meters, SphericalSpaceSpec, SphericalSpecError, SquareMeters, SurfaceVertexId,
@@ -200,7 +200,6 @@ enum SiteKey {
 #[derive(Debug, Clone, PartialEq)]
 struct GeodesicSite {
     id: CellId,
-    key: SiteKey,
     direction: UnitVector3,
 }
 
@@ -327,7 +326,7 @@ impl GeodesicMesh {
             let id = CellId::from_raw(raw_id);
             let direction = direction_for_key(key, frequency, &base_vertices, &faces)?;
             site_ids.insert(key, id);
-            sites.push(GeodesicSite { id, key, direction });
+            sites.push(GeodesicSite { id, direction });
         }
 
         let mut triangles = Vec::with_capacity(expected_triangles);
@@ -370,6 +369,73 @@ fn build_surface(
     mesh: &GeodesicMesh,
     cancellation: &mut CancellationPoll<'_>,
 ) -> Result<SphericalSurfaceSnapshot, SphericalSurfaceBuildError> {
+    build_surface_with_schema(radius, mesh, SPHERICAL_SURFACE_SCHEMA_V1, cancellation)
+}
+
+// The source IDs are retained; integer icosahedral keys are only a construction
+// detail of the geodesic producer, never an identity invented for another mesh.
+pub(crate) fn build_source_voronoi_surface(
+    radius: Meters,
+    directions: &[UnitVector3],
+    triangle_indices: &[usize],
+    cancelled: &mut dyn FnMut() -> bool,
+) -> Result<SphericalSurfaceSnapshot, SphericalSurfaceBuildError> {
+    let mut cancellation = CancellationPoll::new(cancelled);
+    let sites = directions
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, direction)| {
+            Ok(GeodesicSite {
+                id: CellId::from_raw(
+                    u32::try_from(index)
+                        .map_err(|_| SphericalSurfaceBuildError::IdentifierOverflow)?,
+                ),
+                direction,
+            })
+        })
+        .collect::<Result<Vec<_>, SphericalSurfaceBuildError>>()?;
+    if triangle_indices.len() % 3 != 0 {
+        return Err(SphericalSurfaceBuildError::MeshConstruction);
+    }
+    let mut triangles = Vec::with_capacity(triangle_indices.len() / 3);
+    for (index, triangle) in triangle_indices.chunks_exact(3).enumerate() {
+        cancellation.work_surface()?;
+        if triangle.iter().any(|&id| id >= sites.len()) {
+            return Err(SphericalSurfaceBuildError::MeshConstruction);
+        }
+        let mut ids = [triangle[0], triangle[1], triangle[2]].map(|id| CellId::from_raw(id as u32));
+        let orientation = triangle_orientation(ids, &sites);
+        if orientation == 0.0 || !orientation.is_finite() {
+            return Err(SphericalSurfaceBuildError::DegenerateTriangle { triangle: index });
+        }
+        if orientation < 0.0 {
+            ids.swap(1, 2);
+        }
+        triangles.push(OrientedTriangle { sites: ids });
+    }
+    let edge_incidence =
+        build_edge_incidence(&triangles, triangle_indices.len() / 2, &mut cancellation)
+            .map_err(|_| SphericalSurfaceBuildError::MeshConstruction)?;
+    let mesh = GeodesicMesh {
+        sites,
+        triangles,
+        edge_incidence,
+    };
+    build_surface_with_schema(
+        radius,
+        &mesh,
+        SPHERICAL_SURFACE_SCHEMA_V3,
+        &mut cancellation,
+    )
+}
+
+fn build_surface_with_schema(
+    radius: Meters,
+    mesh: &GeodesicMesh,
+    schema: u16,
+    cancellation: &mut CancellationPoll<'_>,
+) -> Result<SphericalSurfaceSnapshot, SphericalSurfaceBuildError> {
     cancellation.check_surface()?;
     let vertices = build_voronoi_vertices(mesh, cancellation)?;
     let boundaries = order_cell_boundaries(mesh, &vertices, cancellation)?;
@@ -383,14 +449,8 @@ fn build_surface(
         cancellation,
     )?;
     cancellation.check_surface()?;
-    let snapshot = SphericalSurfaceSnapshot::new(
-        SPHERICAL_SURFACE_SCHEMA_V1,
-        radius,
-        vertices,
-        cells,
-        edges.records,
-    )
-    .map_err(SphericalSurfaceBuildError::from)?;
+    let snapshot = SphericalSurfaceSnapshot::new(schema, radius, vertices, cells, edges.records)
+        .map_err(SphericalSurfaceBuildError::from)?;
     cancellation.check_surface()?;
     Ok(snapshot)
 }
@@ -842,6 +902,46 @@ mod tests {
             assert_eq!(mesh.edge_incidence.len(), expected_edges);
             assert_eq!(mesh.triangles.len(), expected_triangles);
         }
+    }
+
+    #[test]
+    fn generic_source_degree_has_a_new_roundtrippable_schema() {
+        let mut directions = vec![
+            UnitVector3::new(0.0, 0.0, 1.0).unwrap(),
+            UnitVector3::new(0.0, 0.0, -1.0).unwrap(),
+        ];
+        for i in 0..8 {
+            let angle = std::f64::consts::TAU * i as f64 / 8.0;
+            directions.push(UnitVector3::new(angle.cos(), angle.sin(), 0.0).unwrap());
+        }
+        let mut triangles = Vec::new();
+        for i in 0..8 {
+            triangles.extend([0, 2 + i, 2 + (i + 1) % 8, 1, 2 + (i + 1) % 8, 2 + i]);
+        }
+        let surface = build_source_voronoi_surface(
+            Meters::new(1_000.0).unwrap(),
+            &directions,
+            &triangles,
+            &mut || false,
+        )
+        .unwrap();
+        assert_eq!(surface.schema_version(), SPHERICAL_SURFACE_SCHEMA_V3);
+        assert_eq!(surface.cells()[0].boundary_vertices.len(), 8);
+        let wire = serde_json::to_string(&surface).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SphericalSurfaceSnapshot>(&wire).unwrap(),
+            surface
+        );
+        assert!(matches!(
+            SphericalSurfaceSnapshot::new(
+                crate::world::spatial::SPHERICAL_SURFACE_SCHEMA_V2,
+                surface.radius(),
+                surface.vertices().to_vec(),
+                surface.cells().to_vec(),
+                surface.edges().to_vec()
+            ),
+            Err(SphericalSurfaceValidationError::CellBoundaryDegreeOutOfRange { .. })
+        ));
     }
 
     #[test]

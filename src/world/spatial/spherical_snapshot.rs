@@ -3,21 +3,25 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use super::sphere_geometry::norm;
 use super::{SphericalSurfaceValidationError, UnitVector3};
-use crate::world::serde_bounded::deserialize_bounded_vec;
+use crate::world::serde_bounded::{deserialize_bounded_vec, BoundedVecSeed};
 use crate::world::{
-    CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId, UnitError,
-    MAX_SPHERICAL_CELL_BOUNDARY_DEGREE, MAX_SPHERICAL_CELL_COUNT, MAX_SPHERICAL_EDGE_COUNT,
-    MAX_SPHERICAL_VERTEX_COUNT,
+    CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId, UnitError, MAX_SPHERICAL_CELL_COUNT,
+    MAX_SPHERICAL_EDGE_COUNT, MAX_SPHERICAL_VERTEX_COUNT,
 };
 
 /// The supported version of the serialized spherical-surface schema.
 pub const SPHERICAL_SURFACE_SCHEMA_V1: u16 = 1;
 /// A closed generic geodesic-polygon mesh whose sites need not be Voronoi generators.
 pub const SPHERICAL_SURFACE_SCHEMA_V2: u16 = 2;
+/// Generic polygons with arbitrary simple-graph degree, bounded by the existing
+/// global cell/edge allocation budgets. V1/V2 retain their six-side contract.
+pub const SPHERICAL_SURFACE_SCHEMA_V3: u16 = 3;
 
 const MAX_SPHERICAL_VERTICES: usize = MAX_SPHERICAL_VERTEX_COUNT as usize;
 const MAX_SPHERICAL_EDGES: usize = MAX_SPHERICAL_EDGE_COUNT as usize;
 const MAX_SPHERICAL_CELLS: usize = MAX_SPHERICAL_CELL_COUNT as usize;
+// A simple closed cell graph has at most n-1 distinct neighbors.
+const MAX_GENERIC_CELL_BOUNDARY_DEGREE: usize = MAX_SPHERICAL_CELLS - 1;
 
 /// A canonical vertex stored once by the authoritative spherical surface.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -143,7 +147,102 @@ fn deserialize_surface_cells<'de, D>(deserializer: D) -> Result<Vec<SphericalSur
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CELLS>(deserializer)
+    struct CellsVisitor;
+    impl<'de> serde::de::Visitor<'de> for CellsVisitor {
+        type Value = Vec<SphericalSurfaceCell>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "a sequence with at most {MAX_SPHERICAL_CELLS} elements")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            if let Some(length) = seq.size_hint() {
+                if length > MAX_SPHERICAL_CELLS {
+                    return Err(serde::de::Error::invalid_length(length, &self));
+                }
+            }
+            let mut cells = Vec::new();
+            let mut vertices = 0;
+            let mut edges = 0;
+            while cells.len() < MAX_SPHERICAL_CELLS {
+                let Some(cell) = seq.next_element_seed(CellBudgetSeed {
+                    vertices: (2 * MAX_SPHERICAL_EDGES - vertices)
+                        .min(MAX_GENERIC_CELL_BOUNDARY_DEGREE),
+                    edges: (2 * MAX_SPHERICAL_EDGES - edges).min(MAX_GENERIC_CELL_BOUNDARY_DEGREE),
+                })?
+                else {
+                    return Ok(cells);
+                };
+                vertices += cell.boundary_vertices.len();
+                edges += cell.boundary_edges.len();
+                cells.push(cell);
+            }
+            if seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom(
+                    "spherical cell allocation budget exceeded",
+                ));
+            }
+            Ok(cells)
+        }
+    }
+    deserializer.deserialize_seq(CellsVisitor)
+}
+
+struct CellBudgetSeed {
+    vertices: usize,
+    edges: usize,
+}
+impl<'de> serde::de::DeserializeSeed<'de> for CellBudgetSeed {
+    type Value = SphericalSurfaceCell;
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+impl<'de> serde::de::Visitor<'de> for CellBudgetSeed {
+    type Value = SphericalSurfaceCell;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("one spherical cell within the remaining boundary budget")
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        #[derive(Deserialize)]
+        struct StrictDirection(
+            #[serde(deserialize_with = "deserialize_strict_unit_vector")] UnitVector3,
+        );
+        let (mut id, mut site, mut centroid, mut area, mut vertices, mut edges) =
+            (None, None, None, None, None, None);
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "id" if id.is_none() => id = Some(map.next_value()?),
+                "site" if site.is_none() => site = Some(map.next_value::<StrictDirection>()?.0),
+                "centroid" if centroid.is_none() => {
+                    centroid = Some(map.next_value::<StrictDirection>()?.0)
+                }
+                "area" if area.is_none() => area = Some(map.next_value()?),
+                "boundary_vertices" if vertices.is_none() => {
+                    vertices = Some(map.next_value_seed(BoundedVecSeed::new(self.vertices))?);
+                }
+                "boundary_edges" if edges.is_none() => {
+                    edges = Some(map.next_value_seed(BoundedVecSeed::new(self.edges))?);
+                }
+                _ => {
+                    return Err(serde::de::Error::custom(format!(
+                        "duplicate or unknown spherical cell field: {key}"
+                    )))
+                }
+            }
+        }
+        Ok(SphericalSurfaceCell {
+            id: id.ok_or_else(|| serde::de::Error::missing_field("id"))?,
+            site: site.ok_or_else(|| serde::de::Error::missing_field("site"))?,
+            centroid: centroid.ok_or_else(|| serde::de::Error::missing_field("centroid"))?,
+            area: area.ok_or_else(|| serde::de::Error::missing_field("area"))?,
+            boundary_vertices: vertices
+                .ok_or_else(|| serde::de::Error::missing_field("boundary_vertices"))?,
+            boundary_edges: edges
+                .ok_or_else(|| serde::de::Error::missing_field("boundary_edges"))?,
+        })
+    }
 }
 
 fn deserialize_surface_edges<'de, D>(deserializer: D) -> Result<Vec<SphericalSurfaceEdge>, D::Error>
@@ -159,14 +258,14 @@ fn deserialize_cell_boundary_vertices<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE>(deserializer)
+    deserialize_bounded_vec::<_, _, MAX_GENERIC_CELL_BOUNDARY_DEGREE>(deserializer)
 }
 
 fn deserialize_cell_boundary_edges<'de, D>(deserializer: D) -> Result<Vec<EdgeId>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    deserialize_bounded_vec::<_, _, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE>(deserializer)
+    deserialize_bounded_vec::<_, _, MAX_GENERIC_CELL_BOUNDARY_DEGREE>(deserializer)
 }
 
 fn deserialize_strict_unit_vector<'de, D>(deserializer: D) -> Result<UnitVector3, D::Error>
@@ -514,5 +613,20 @@ mod tests {
 
         let error = deserialize_surface_cells(deserializer).unwrap_err();
         assert!(error.to_string().contains("at most 198812 elements"));
+    }
+
+    #[test]
+    fn cell_seed_limits_each_boundary_by_the_remaining_global_budget() {
+        use serde::de::DeserializeSeed;
+        let text = json!({"id":0,"site":[1.0,0.0,0.0],"centroid":[1.0,0.0,0.0],
+            "area":1.0,"boundary_vertices":[0,1,2],"boundary_edges":[0,1,2]})
+        .to_string();
+        let error = CellBudgetSeed {
+            vertices: 2,
+            edges: 3,
+        }
+        .deserialize(&mut serde_json::Deserializer::from_str(&text))
+        .unwrap_err();
+        assert!(error.to_string().contains("at most 2 elements"));
     }
 }

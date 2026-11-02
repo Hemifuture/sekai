@@ -2,7 +2,8 @@
 // Civ Atlas src/gen/params.ts and src/ui/genesisSliders.ts; see NOTICE.md.
 
 /// Author controls from the pinned Civ Atlas generator, independent of Sekai climate.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TerrainParams {
     /// Deterministic 32-bit random seed.
     pub seed: u32,

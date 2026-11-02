@@ -697,6 +697,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "civ-atlas-terrain"
+version = "0.1.0"
+dependencies = [
+ "robust",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2810,6 +2819,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "robust"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
+
+[[package]]
 name = "ron"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2892,6 +2907,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "bytemuck",
+ "civ-atlas-terrain",
  "eframe",
  "egui",
  "env_logger",

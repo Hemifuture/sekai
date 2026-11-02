@@ -1,6 +1,11 @@
 //! Causal formation pipeline (P2v5 through P5).
 
+mod atlas_terrain;
 mod causal;
+pub use atlas_terrain::{
+    atlas_terrain_graph, AtlasGenerationError, AtlasTerrainArtifact, AtlasTerrainGenerator,
+    AtlasTerrainRequest, AtlasTerrainRequestArtifact, AtlasTerrainStage, AtlasTerrainStageInputs,
+};
 mod climate_work_domain;
 mod evolved_tectonics;
 mod geologic_substrate;

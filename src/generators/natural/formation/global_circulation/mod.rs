@@ -38,6 +38,7 @@ pub use comparison::{
     IntegratorComparisonReport, LayerMassConservationDiagnostic, ProductionCandidateSelection,
     CLOSED_ANNUAL_LAYER_MASS_DRIFT_MAX, SELECTED_PRODUCTION_INTEGRATOR,
 };
+pub(crate) use forcing::ClimateBoundaryFields;
 pub use forcing::{GlobalClimateForcing, GlobalClimateForcingBuilder, GlobalClimateForcingError};
 #[cfg(test)]
 pub(crate) use generation::offline;

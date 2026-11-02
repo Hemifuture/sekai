@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use super::{
     SpatialSnapshot, SpatialValidationError, SphericalSurfaceSnapshot, SPATIAL_SCHEMA_V1,
-    SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V2,
+    SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V2, SPHERICAL_SURFACE_SCHEMA_V3,
 };
 
 /// The authoritative geometry family addressed by a natural-field snapshot.
@@ -17,20 +17,35 @@ pub enum SurfaceGeometryKind {
     SphericalV1,
     /// A closed generic geodesic-polygon spherical mesh.
     SphericalGeodesicV2,
+    /// Closed polygons admitting non-icosahedral source degrees under a global budget.
+    SphericalPolygonV3,
 }
 
 impl SurfaceGeometryKind {
+    /// Stable zero-based tag shared by canonical identity streams.
+    pub(crate) const fn identity_tag(self) -> u8 {
+        match self {
+            Self::PlanarV1 => 0,
+            Self::SphericalV1 => 1,
+            Self::SphericalGeodesicV2 => 2,
+            Self::SphericalPolygonV3 => 3,
+        }
+    }
     const fn supported_schema(self) -> u16 {
         match self {
             Self::PlanarV1 => SPATIAL_SCHEMA_V1,
             Self::SphericalV1 => SPHERICAL_SURFACE_SCHEMA_V1,
             Self::SphericalGeodesicV2 => SPHERICAL_SURFACE_SCHEMA_V2,
+            Self::SphericalPolygonV3 => SPHERICAL_SURFACE_SCHEMA_V3,
         }
     }
 
     /// Returns whether this kind belongs to the closed spherical family.
     pub const fn is_spherical(self) -> bool {
-        matches!(self, Self::SphericalV1 | Self::SphericalGeodesicV2)
+        matches!(
+            self,
+            Self::SphericalV1 | Self::SphericalGeodesicV2 | Self::SphericalPolygonV3
+        )
     }
 }
 
@@ -125,6 +140,7 @@ impl SurfaceRef {
         let geometry_kind = match snapshot.schema_version() {
             SPHERICAL_SURFACE_SCHEMA_V1 => SurfaceGeometryKind::SphericalV1,
             SPHERICAL_SURFACE_SCHEMA_V2 => SurfaceGeometryKind::SphericalGeodesicV2,
+            SPHERICAL_SURFACE_SCHEMA_V3 => SurfaceGeometryKind::SphericalPolygonV3,
             _ => unreachable!("validated spherical surface has a supported schema"),
         };
         Self::new(

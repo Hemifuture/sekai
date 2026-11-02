@@ -5,6 +5,7 @@ use sekai::engine::{
 use sekai::generators::spatial::{
     spherical_foundation_graph, SphericalSpaceArtifact, SphericalSurfaceArtifact,
 };
+use sekai::world::spatial::{SphericalSurfaceValidationError, SPHERICAL_SURFACE_SCHEMA_V3};
 use sekai::world::{
     Meters, RootSeed, SphericalSpaceSpec, MAX_SPHERICAL_TARGET_CELL_COUNT, MIN_SPHERICAL_CELL_COUNT,
 };
@@ -99,7 +100,11 @@ fn spherical_artifact_wrappers_round_trip_with_strict_validation() {
     let error = serde_json::from_value::<SphericalSurfaceArtifact>(malformed).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "unsupported spherical surface schema version 65535; latest supported version is 2"
+        SphericalSurfaceValidationError::UnsupportedSchema {
+            found: u16::MAX,
+            supported: SPHERICAL_SURFACE_SCHEMA_V3,
+        }
+        .to_string()
     );
 }
 

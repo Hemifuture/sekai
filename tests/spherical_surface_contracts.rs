@@ -1,9 +1,11 @@
 use sekai::world::spatial::{
     central_angle, SphericalSurfaceCell, SphericalSurfaceEdge, SphericalSurfaceSnapshot,
     SphericalSurfaceValidationError, SphericalSurfaceVertex, UnitVector3,
-    SPHERICAL_SURFACE_SCHEMA_V1,
+    SPHERICAL_SURFACE_SCHEMA_V1, SPHERICAL_SURFACE_SCHEMA_V3,
 };
-use sekai::world::{CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId};
+use sekai::world::{
+    CellId, EdgeId, Meters, SquareMeters, SurfaceVertexId, MAX_SPHERICAL_CELL_BOUNDARY_DEGREE,
+};
 use serde_json::{json, Value};
 
 const RADIUS: f64 = 2.0;
@@ -224,9 +226,16 @@ fn deserialization_rejects_cell_boundary_vectors_over_the_v1_degree_bound() {
     wire["cells"][0]["boundary_edges"] = json!([0, 1, 2, 3, 4, 5, 0]);
 
     let error = serde_json::from_value::<SphericalSurfaceSnapshot>(wire).unwrap_err();
-    assert!(
-        error.to_string().contains("at most 6 elements"),
-        "unexpected serde error: {error}"
+    // Generic V3 decoding enforces the shared 2E allocation budget while
+    // streaming; the decoded version still preserves the V1/V2 six-side domain.
+    assert_eq!(
+        error.to_string(),
+        SphericalSurfaceValidationError::CellBoundaryDegreeOutOfRange {
+            cell: CellId::from_raw(0),
+            found: 7,
+            max: MAX_SPHERICAL_CELL_BOUNDARY_DEGREE,
+        }
+        .to_string()
     );
 }
 
@@ -264,7 +273,7 @@ fn validation_rejects_unsupported_schema_first() {
         error,
         SphericalSurfaceValidationError::UnsupportedSchema {
             found: 7,
-            supported: 2
+            supported: SPHERICAL_SURFACE_SCHEMA_V3
         }
         .to_string()
     );

@@ -9,6 +9,7 @@ mod provenance;
 mod random;
 mod scheduler;
 mod stage;
+pub(crate) use scheduler::StageTimer;
 
 pub use artifact::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts, ContentHash,

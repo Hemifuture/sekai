@@ -181,6 +181,50 @@ impl Coverage {
                 (sum > 0.).then(|| (t, [da / sum, db / sum, dc / sum]))
             })
     }
+
+    /// Arbitrary directions can lie at source vertices where rounded dot/cross
+    /// tests reject all incident faces. Preserve the original raster evaluation
+    /// wherever it succeeds; resolve only its gaps with Shewchuk's existing
+    /// adaptive determinant predicates, without a geometric epsilon.
+    pub(crate) fn locate_direction(
+        &self,
+        xy: [f64; 2],
+        q: [f64; 3],
+        xyz: &[f32],
+    ) -> Option<(usize, [f64; 3])> {
+        self.locate(xy, q).or_else(|| {
+            let x = (xy[0].rem_euclid(WIDTH as f64) / BIN as f64) as usize;
+            let y = (xy[1] / BIN as f64)
+                .floor()
+                .clamp(0., (HEIGHT / BIN - 1) as f64) as usize;
+            let determinant = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+                let coord = |p: [f64; 3]| robust::Coord3D {
+                    x: p[0],
+                    y: p[1],
+                    z: p[2],
+                };
+                robust::orient3d(coord(a), coord(b), coord(c), coord([0.0; 3]))
+            };
+            self.bins[y * (WIDTH / BIN) + x]
+                .iter()
+                .rev()
+                .find_map(|&t| {
+                    let p = self.triangles[t]
+                        .nodes
+                        .map(|i| std::array::from_fn(|j| f64::from(xyz[3 * i + j])));
+                    let orientation = determinant(p[0], p[1], p[2]).signum();
+                    let weights = [
+                        determinant(p[1], p[2], q),
+                        determinant(p[2], p[0], q),
+                        determinant(p[0], p[1], q),
+                    ]
+                    .map(|v| v * orientation);
+                    let sum = weights.iter().sum::<f64>();
+                    (weights.iter().all(|&v| v >= 0.0) && sum > 0.0)
+                        .then(|| (t, weights.map(|v| v / sum)))
+                })
+        })
+    }
 }
 /// f32 trigonometric table boundaries of sphereGrid/rasterizeWindow.
 pub(crate) fn frame(xy: [f64; 2]) -> [f64; 4] {

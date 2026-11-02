@@ -339,11 +339,8 @@ const fn natural_quality_profile_tag(profile: NaturalQualityProfile) -> u8 {
 }
 
 const fn surface_geometry_tag(kind: SurfaceGeometryKind) -> u8 {
-    match kind {
-        SurfaceGeometryKind::PlanarV1 => 1,
-        SurfaceGeometryKind::SphericalV1 => 2,
-        SurfaceGeometryKind::SphericalGeodesicV2 => 3,
-    }
+    // P5's existing wire identity is one-based; retain those released bytes.
+    kind.identity_tag() + 1
 }
 
 /// Exact upstream identities consumed by one P5 formation build.

@@ -473,15 +473,44 @@ fn priority_flood(
         }
     }
 
-    let mut filled_height_cm = vec![i64::MAX; cell_count];
+    let (filled_height_cm, rank) = priority_flood_from_terminals(
+        original_height_cm,
+        &terminal,
+        |index| {
+            topology.arcs()[index]
+                .iter()
+                .map(|arc| arc.neighbor.raw() as usize)
+        },
+        cancellation,
+    )?;
+    Ok(FloodResult {
+        filled_height_cm,
+        rank,
+        terminal,
+    })
+}
+
+// Barnes Priority-Flood with explicit terminals. The fixed-bed terrain adapter
+// supplies its actual connected ocean, rather than classifying every B < 0 as sea.
+pub(in crate::generators::natural) fn priority_flood_from_terminals<H, I>(
+    heights: &[H],
+    terminal: &[bool],
+    neighbors: impl Fn(usize) -> I,
+    cancellation: Option<&BuildCancellation>,
+) -> Result<(Vec<H>, Vec<u32>), HydrologyGenerationError>
+where
+    H: Ord + Copy,
+    I: Iterator<Item = usize>,
+{
+    let cell_count = heights.len();
+    let mut filled_height_cm = heights.to_vec();
     let mut rank = vec![u32::MAX; cell_count];
     let mut visited = vec![false; cell_count];
     let mut heap = BinaryHeap::new();
     for index in 0..cell_count {
         if terminal[index] {
             visited[index] = true;
-            filled_height_cm[index] = original_height_cm[index];
-            heap.push(Reverse((original_height_cm[index], index as u32)));
+            heap.push(Reverse((heights[index], index as u32)));
         }
     }
 
@@ -493,25 +522,20 @@ fn priority_flood(
         next_rank = next_rank
             .checked_add(1)
             .ok_or(HydrologyGenerationError::DrainageRankOverflow)?;
-        for arc in &topology.arcs()[index] {
-            let neighbor = arc.neighbor.raw() as usize;
+        for neighbor in neighbors(index) {
             if visited[neighbor] {
                 continue;
             }
             visited[neighbor] = true;
-            let filled = original_height_cm[neighbor].max(height);
+            let filled = heights[neighbor].max(height);
             filled_height_cm[neighbor] = filled;
-            heap.push(Reverse((filled, arc.neighbor.raw())));
+            heap.push(Reverse((filled, neighbor as u32)));
         }
     }
     if rank.contains(&u32::MAX) {
         return Err(HydrologyGenerationError::DisconnectedTopology);
     }
-    Ok(FloodResult {
-        filled_height_cm,
-        rank,
-        terminal,
-    })
+    Ok((filled_height_cm, rank))
 }
 
 fn closed_local_minimum_terminals(
@@ -779,7 +803,7 @@ fn lake_outlet_key(
     )
 }
 
-fn upstream_to_downstream_order(
+pub(in crate::generators::natural) fn upstream_to_downstream_order(
     receiver: &[Option<CellId>],
     cancellation: Option<&BuildCancellation>,
 ) -> Result<Vec<CellId>, HydrologyGenerationError> {
@@ -980,22 +1004,13 @@ fn accumulate_water(
             *stored = f64::from(runoff_mm) / 1_000.0 * area_m2 / SECONDS_PER_CLIMATOLOGICAL_MONTH;
         }
     }
-    for (position, &cell) in order.iter().enumerate() {
-        poll_cancelled(cancellation, position)?;
-        let index = cell.raw() as usize;
-        if let Some(downstream) = receiver[index] {
-            let downstream_index = downstream.raw() as usize;
-            let upstream_area = area_km2[index];
-            area_km2[downstream_index] += upstream_area;
-            let upstream_discharge = discharge[index];
-            for (downstream, upstream) in discharge[downstream_index]
-                .iter_mut()
-                .zip(upstream_discharge)
-            {
-                *downstream += upstream;
-            }
-        }
-    }
+    route_monthly_discharge(
+        receiver,
+        order,
+        &mut discharge,
+        Some(&mut area_km2),
+        cancellation,
+    )?;
 
     let monthly_discharge_m3_s = discharge
         .iter()
@@ -1016,6 +1031,35 @@ fn accumulate_water(
         mean_discharge_m3_s,
         drainage_area_km2,
     })
+}
+
+/// Shared extensive flow accumulator; Atlas supplies fine dry-area precipitation
+/// volumes directly, avoiding the legacy whole-cell ocean runoff exclusion.
+pub(in crate::generators::natural) fn route_monthly_discharge<const CHANNELS: usize>(
+    receiver: &[Option<CellId>],
+    order: &[CellId],
+    discharge: &mut [[f64; CHANNELS]],
+    mut areas: Option<&mut [f64]>,
+    cancellation: Option<&BuildCancellation>,
+) -> Result<(), HydrologyGenerationError> {
+    for (position, &cell) in order.iter().enumerate() {
+        poll_cancelled(cancellation, position)?;
+        let index = cell.raw() as usize;
+        if let Some(downstream) = receiver[index] {
+            let downstream_index = downstream.raw() as usize;
+            if let Some(areas) = areas.as_deref_mut() {
+                areas[downstream_index] += areas[index];
+            }
+            let upstream_discharge = discharge[index];
+            for (downstream, upstream) in discharge[downstream_index]
+                .iter_mut()
+                .zip(upstream_discharge)
+            {
+                *downstream += upstream;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn build_lake_records(

@@ -1,7 +1,7 @@
 #[cfg(target_arch = "wasm32")]
 use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant as StageTimer;
+pub(crate) use std::time::Instant as StageTimer;
 
 use thiserror::Error;
 
@@ -20,15 +20,15 @@ use crate::world::RootSeed;
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone, Copy)]
-struct StageTimer(f64);
+pub(crate) struct StageTimer(f64);
 
 #[cfg(target_arch = "wasm32")]
 impl StageTimer {
-    fn now() -> Self {
+    pub(crate) fn now() -> Self {
         Self(browser_milliseconds())
     }
 
-    fn elapsed(self) -> Duration {
+    pub(crate) fn elapsed(self) -> Duration {
         let elapsed_milliseconds = (browser_milliseconds() - self.0).max(0.0);
         Duration::from_secs_f64(elapsed_milliseconds / 1_000.0)
     }

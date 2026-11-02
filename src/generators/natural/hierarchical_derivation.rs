@@ -1351,6 +1351,14 @@ pub fn subdivision_children(corners: [UnitVector3; 3]) -> [[UnitVector3; 3]; 4] 
     let ab = geometric_midpoint(a, b);
     let bc = geometric_midpoint(b, c);
     let ca = geometric_midpoint(c, a);
+    subdivision_children_from_midpoints([a, b, c], [ab, bc, ca])
+}
+
+/// Shared child topology for geometric corners and canonical support-node IDs.
+pub(crate) fn subdivision_children_from_midpoints<T: Copy>(
+    [a, b, c]: [T; 3],
+    [ab, bc, ca]: [T; 3],
+) -> [[T; 3]; 4] {
     [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
 }
 

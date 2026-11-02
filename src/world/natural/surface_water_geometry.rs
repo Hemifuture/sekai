@@ -307,11 +307,7 @@ impl SurfaceWaterGeometry {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"sekai.surface-water-geometry.v1\0");
         hasher.update(&self.schema_version.to_le_bytes());
-        let geometry_tag = match self.surface_ref.geometry_kind() {
-            crate::world::spatial::SurfaceGeometryKind::PlanarV1 => 0_u8,
-            crate::world::spatial::SurfaceGeometryKind::SphericalV1 => 1,
-            crate::world::spatial::SurfaceGeometryKind::SphericalGeodesicV2 => 2,
-        };
+        let geometry_tag = self.surface_ref.geometry_kind().identity_tag();
         hasher.update(&[geometry_tag]);
         hasher.update(&self.surface_ref.geometry_schema().to_le_bytes());
         hasher.update(&self.surface_ref.cell_count().to_le_bytes());

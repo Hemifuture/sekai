@@ -15,3 +15,5 @@ unsafe_code = "forbid"
 robust = "1.2.0"
 # Typed invalid-parameter and cancellation failures at the terrain boundary.
 thiserror = "2.0.17"
+# Root generation recipes persist author controls and fixed evaluator scale.
+serde = { version = "1", features = ["derive"] }

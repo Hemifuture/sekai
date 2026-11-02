@@ -9,6 +9,7 @@ mod fractal;
 mod geologic_rule_input;
 mod geology;
 mod hierarchical_derivation;
+pub(crate) use hierarchical_derivation::subdivision_children_from_midpoints;
 mod hierarchical_rivers;
 mod hydro_erosion;
 mod hydro_erosion_rule_input;
@@ -83,6 +84,10 @@ pub use formation::{
     METAMORPHIC_UPLIFT_THRESHOLD_MM_PER_YEAR, SEDIMENTARY_FRACTURE_MAX,
     SEDIMENTARY_SUBSIDENCE_THRESHOLD_MM_PER_YEAR, SELECTED_PRODUCTION_INTEGRATOR,
     VOLCANIC_COVER_INFLUENCE_THRESHOLD,
+};
+pub use formation::{
+    atlas_terrain_graph, AtlasGenerationError, AtlasTerrainArtifact, AtlasTerrainGenerator,
+    AtlasTerrainRequest, AtlasTerrainRequestArtifact, AtlasTerrainStage, AtlasTerrainStageInputs,
 };
 pub(crate) use formation::{
     validate_climate_work_domain_maps_against, validate_climate_work_domain_reconstruction,

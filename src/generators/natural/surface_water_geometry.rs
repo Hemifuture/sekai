@@ -720,7 +720,9 @@ fn normalized_fan_areas(
 }
 
 /// Returns wet area fraction and the wet-depth integral divided by full area.
-fn integrate_positive_linear_triangle(depth_m: [f64; 3]) -> (f64, f64) {
+pub(in crate::generators::natural) fn integrate_positive_linear_triangle(
+    depth_m: [f64; 3],
+) -> (f64, f64) {
     let positive = depth_m.iter().filter(|depth| **depth > 0.0).count();
     if positive == 0 {
         return (0.0, 0.0);
@@ -766,7 +768,10 @@ fn integrate_positive_linear_triangle(depth_m: [f64; 3]) -> (f64, f64) {
     (wet_fraction, (full_integral - dry_integral).max(0.0))
 }
 
-fn wet_line_fraction(first_depth_m: f64, second_depth_m: f64) -> f64 {
+pub(in crate::generators::natural) fn wet_line_fraction(
+    first_depth_m: f64,
+    second_depth_m: f64,
+) -> f64 {
     match (first_depth_m > 0.0, second_depth_m > 0.0) {
         (false, false) => 0.0,
         (true, true) => 1.0,

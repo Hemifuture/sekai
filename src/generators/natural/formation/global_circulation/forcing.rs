@@ -39,6 +39,9 @@ pub struct GlobalClimateForcing {
     ocean_depth_m: Vec<f32>,
     terrain_gradient_m_per_m: Vec<[f32; 3]>,
     ocean_edge_permeability: Vec<f32>,
+    /// Optional same-authority boundaries for C2's private mechanical coarse solve.
+    /// Legacy producers retain their original reconstruction when absent.
+    mechanical_ocean_edge_permeability: Option<Vec<f32>>,
     monthly_insolation_fraction: Vec<[f32; CLIMATE_MONTH_COUNT]>,
     /// Share of a work cell's precipitation that land returns to the
     /// atmosphere: land fraction times the complement of the P5 runoff
@@ -219,6 +222,31 @@ impl GlobalClimateForcing {
                 expected: domain.climate_surface().edges().len(),
             });
         }
+        if let Some(edges) = &self.mechanical_ocean_edge_permeability {
+            let divisor = usize::from(
+                crate::world::natural::GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
+            );
+            let expected = domain.climate_surface().edges().len() / divisor.pow(2);
+            if edges.len() != expected {
+                return Err(GlobalClimateForcingError::FieldLengthMismatch {
+                    field: "mechanical_ocean_edge_permeability",
+                    found: edges.len(),
+                    expected,
+                });
+            }
+            for (index, &value) in edges.iter().enumerate() {
+                poll_optional_cancelled(index, cancellation)?;
+                if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                    return Err(GlobalClimateForcingError::ValueOutOfRange {
+                        field: "mechanical_ocean_edge_permeability",
+                        index,
+                        found: value,
+                        minimum: 0.0,
+                        maximum: 1.0,
+                    });
+                }
+            }
+        }
         for (field, values, minimum, maximum) in [
             (
                 "ocean_depth_m",
@@ -294,6 +322,10 @@ impl GlobalClimateForcing {
             hash_f32_slice(&mut hasher, value);
         }
         hash_f32_slice_cancellable(&mut hasher, &self.ocean_edge_permeability, cancellation)?;
+        if let Some(edges) = &self.mechanical_ocean_edge_permeability {
+            hasher.update(b"same-authority-mechanical-edges.v1\0");
+            hash_f32_slice_cancellable(&mut hasher, edges, cancellation)?;
+        }
         hash_f32_slice_cancellable(
             &mut hasher,
             &self.land_evapotranspiration_fraction,
@@ -370,6 +402,10 @@ impl GlobalClimateForcing {
         &self.ocean_edge_permeability
     }
 
+    pub(crate) fn mechanical_ocean_edge_permeability(&self) -> Option<&[f32]> {
+        self.mechanical_ocean_edge_permeability.as_deref()
+    }
+
     pub fn monthly_insolation_fraction(&self) -> &[[f32; CLIMATE_MONTH_COUNT]] {
         &self.monthly_insolation_fraction
     }
@@ -385,6 +421,23 @@ struct ClimateTerrainInput<'a> {
     elevation_m: &'a [f32],
     surface_water_geometry: &'a SurfaceWaterGeometry,
     relative_permeability: &'a [f32],
+}
+
+/// Already integrated boundary fields. New terrain producers supply their true
+/// water geometry here; the common climate calculation never reconstructs it
+/// from coarse mean elevations.
+pub(crate) struct ClimateBoundaryFields {
+    pub source_ref: SurfaceRef,
+    pub source_fingerprint: [u8; 32],
+    pub source_land_fraction: Vec<f32>,
+    pub source_publishes_land: Vec<f32>,
+    pub elevation_m: Vec<f32>,
+    pub land_fraction: Vec<f32>,
+    pub ocean_depth_m: Vec<f32>,
+    pub land_evapotranspiration_fraction: Vec<f32>,
+    pub ocean_edge_permeability: Vec<f32>,
+    pub mechanical_ocean_edge_permeability: Option<Vec<f32>>,
+    pub sea_level_m: f32,
 }
 
 impl GlobalClimateForcingBuilder {
@@ -564,6 +617,76 @@ impl GlobalClimateForcingBuilder {
             cancellation.is_cancelled()
         })
         .map_err(map_remap_error)?;
+        let work_water_geometry = build_surface_water_geometry(
+            domain.climate_surface(),
+            &elevation_m,
+            sea_level_m,
+            cancellation,
+        )
+        .map_err(|error| GlobalClimateForcingError::InvalidInput {
+            role: "climate_surface_water_geometry",
+            reason: error.to_string(),
+        })?;
+        Self::build_from_boundary_fields(
+            ClimateBoundaryFields {
+                source_ref,
+                source_fingerprint: terrain.source_fingerprint,
+                source_land_fraction,
+                source_publishes_land,
+                elevation_m,
+                land_fraction,
+                ocean_depth_m,
+                land_evapotranspiration_fraction,
+                ocean_edge_permeability: work_water_geometry.wet_edge_fraction().to_vec(),
+                mechanical_ocean_edge_permeability: None,
+                sea_level_m,
+            },
+            climate_spec,
+            domain,
+            cancellation,
+        )
+    }
+
+    pub(crate) fn build_from_boundary_fields(
+        fields: ClimateBoundaryFields,
+        climate_spec: &ClimateSpec,
+        domain: &ClimateWorkDomainSnapshot,
+        cancellation: &BuildCancellation,
+    ) -> Result<GlobalClimateForcing, GlobalClimateForcingError> {
+        let ClimateBoundaryFields {
+            source_ref,
+            source_fingerprint,
+            source_land_fraction,
+            source_publishes_land,
+            elevation_m,
+            land_fraction,
+            ocean_depth_m,
+            land_evapotranspiration_fraction,
+            ocean_edge_permeability,
+            mechanical_ocean_edge_permeability,
+            sea_level_m,
+        } = fields;
+        if source_ref != domain.source_ref() {
+            return Err(GlobalClimateForcingError::SourceMismatch);
+        }
+        let expected = domain.climate_surface().cells().len();
+        for (field, found) in [
+            ("elevation_m", elevation_m.len()),
+            ("land_fraction", land_fraction.len()),
+            ("ocean_depth_m", ocean_depth_m.len()),
+            (
+                "land_evapotranspiration_fraction",
+                land_evapotranspiration_fraction.len(),
+            ),
+        ] {
+            if found != expected {
+                return Err(GlobalClimateForcingError::FieldLengthMismatch {
+                    field,
+                    found,
+                    expected,
+                });
+            }
+        }
         let mut relative_elevation_m = Vec::with_capacity(elevation_m.len());
         for (index, &elevation) in elevation_m.iter().enumerate() {
             if index % 256 == 0 {
@@ -584,18 +707,6 @@ impl GlobalClimateForcingBuilder {
         let terrain_gradient_m_per_m = CirculationOperators::new(&grid)
             .gradient_cancellable(&relative_elevation_m, cancellation)
             .map_err(map_operator_error)?;
-        let work_water_geometry = build_surface_water_geometry(
-            domain.climate_surface(),
-            &elevation_m,
-            sea_level_m,
-            cancellation,
-        )
-        .map_err(|error| GlobalClimateForcingError::InvalidInput {
-            role: "climate_surface_water_geometry",
-            reason: error.to_string(),
-        })?;
-        let ocean_edge_permeability = work_water_geometry.wet_edge_fraction().to_vec();
-
         let axial_tilt_rad = f64::from(climate_spec.axial_tilt_degrees()).to_radians();
         let temperature_offset_c = f64::from(climate_spec.temperature_offset_c());
         let moisture_scale = f64::from(climate_spec.moisture_scale());
@@ -745,7 +856,7 @@ impl GlobalClimateForcingBuilder {
         .map_err(map_planet_forcing_error)?;
         let mut forcing = GlobalClimateForcing {
             source_ref,
-            source_relief_fingerprint: terrain.source_fingerprint,
+            source_relief_fingerprint: source_fingerprint,
             climate_spec_fingerprint: climate_spec_fingerprint(climate_spec),
             fingerprint: [0; 32],
             sea_level_m,
@@ -755,6 +866,7 @@ impl GlobalClimateForcingBuilder {
             ocean_depth_m,
             terrain_gradient_m_per_m,
             ocean_edge_permeability,
+            mechanical_ocean_edge_permeability,
             monthly_insolation_fraction,
             land_evapotranspiration_fraction,
             source_publishes_land,

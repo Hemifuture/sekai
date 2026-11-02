@@ -27,6 +27,19 @@ pub enum BedrockKind {
 }
 
 impl BedrockKind {
+    /// Existing P3 normalized endmembers (erodibility, permeability), before
+    /// fracture and basin contributions. These are Sekai solver indices, not
+    /// measured SI rock properties; see the 2026-07-29 substrate design §7.4–7.5.
+    pub(crate) const fn base_transport_properties(self) -> (f32, f32) {
+        match self {
+            Self::OceanicMafic => (0.42, 0.34),
+            Self::ContinentalCrystalline => (0.20, 0.16),
+            Self::Sedimentary => (0.72, 0.56),
+            Self::Metamorphic => (0.14, 0.10),
+            Self::Volcanic => (0.34, 0.28),
+        }
+    }
+
     /// Decodes the stable V1 category value.
     pub fn try_from_raw(raw: u32) -> Result<Self, GeologicValidationError> {
         match raw {
