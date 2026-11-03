@@ -28,3 +28,7 @@ debug.log
 
 # Site-climatology exports written by the native app
 /site-climatology/
+
+# Standalone `cargo test --manifest-path crates/<pkg>/Cargo.toml` byproduct; the
+# root Cargo.lock is the only dependency resolution that ships.
+/crates/*/Cargo.lock
