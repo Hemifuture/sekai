@@ -1,5 +1,18 @@
 # Sekai 项目进度
 
+## 2026-11-03 world-truth-scope 分支：真值取上游 Civ Atlas 分类（R1）
+
+分支 `world-truth-scope`。水体拓扑直接取上游粗格元海／陆／湖分类，显示、点选与格元量共用
+一条细点判据，格元量用固定扇形求积，汇流改在来源站点图上；删除全球规范水体网格与自适应
+细化。Atlas 模型身份升为 3，旧配方走升级副本。规格见
+[world-truth-scope R1](superpowers/specs/2026-11-03-world-truth-scope-design.md)。
+
+同机 seed 42、Draft 冷生成 18.6 s（来源 1.9 s、格元求积 0.54 s、强迫 6.0 s、C2 10.0 s、
+汇流 0.13 s、封存校验 0.05 s），此前 244 s。全量审计、守恒与篡改检测通过；13 个上游湖中
+3 个小于求积分辨率，面积与水量记为 0。原有两项气候建议仍未满足。秒级目标与用户 UI 验收
+仍未完成。
+
+
 ## 2026-11-03 UTC 候选整合补记
 
 Civ Atlas迁移已整合到主目录 `integration/sekai-current`，源码／原生构建与已审阅

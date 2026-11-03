@@ -1,4 +1,5 @@
-//! Fixed author bed and explicitly resolved current water, without fictitious P2/P3 history.
+//! Fixed author bed, upstream Civ Atlas water classes and current Sekai climate/runoff,
+//! without fictitious P2/P3 history (`2026-11-03-world-truth-scope-design.md` R1).
 
 use std::sync::Arc;
 
@@ -10,20 +11,22 @@ use super::{
     GlobalCirculationSnapshot, LandOceanField, NaturalQualityReport, SurfaceWaterKind,
     CLIMATE_MONTH_COUNT, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
-use crate::world::spatial::{cross, dot, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
+use crate::world::spatial::{dot, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
 
-/// Identity version for fixed-bed initialization, material prior and current runoff.
-/// Version 2 corrects the upstream generator tag in the consumed identity stream;
-/// the terrain, water and climate numerical algorithms are unchanged.
-pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 2;
+/// Identity version for fixed-bed water classes, material prior and current runoff.
+/// Version 3 (world-truth-scope R1) takes water topology from the upstream coarse
+/// classes and integrates cell fields by fixed fan quadrature instead of the
+/// canonical adaptive support; version 2 corrected the upstream generator tag.
+pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 3;
 /// Fixed original zoom scale; camera LOD never changes the author bed.
 pub const ATLAS_FINE_SCALE: civ_atlas_terrain::FineScale = civ_atlas_terrain::FineScale::Four;
-/// Fixed quadrature subdivision count, audited with the production support probe.
+/// Fan quadrature level of the cell water fields: each source fan triangle is
+/// split `level - 1` times into equal children and sampled at leaf centres.
+/// Level 2 (about 24 points per cell) was chosen from the measured noise floor
+/// against the old canonical support, 2.4% mean absolute ocean-fraction error
+/// on mixed cells, against 6.9% at level 1 and 0.85% at level 3 at about 3.9x
+/// the evaluation cost (`measurements/2026-11-03-truth-layer-cell-quadrature.md` §2-§3).
 pub const ATLAS_SUPPORT_DEPTH: u8 = 2;
-/// Native validation ceiling approved on 2026-11-02 after measuring coastal
-/// support demand. This is a resource limit, not a physical tolerance or a
-/// cross-device availability promise; see the Task 5 measurement record.
-pub const ATLAS_SUPPORT_WORKSPACE_BYTES_MAX: u64 = 4 * 1024 * 1024 * 1024;
 
 /// Integrated fields on original source cells. Depth is volume / whole cell area,
 /// matching the existing C2 consumer; lake area and volume are never ocean area.
@@ -111,34 +114,54 @@ impl AtlasCellFields {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct AtlasSupportFace {
-    pub nodes: [u32; 3],
-    pub owner: u32,
-    pub area_m2: f64,
-    pub ocean_fraction: f64,
-    pub lake_fraction: f64,
-    pub water_level_m: Option<f64>,
-    pub lake: Option<usize>,
+/// Water body of one source site, taken from the upstream coarse classes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub(crate) enum AtlasSiteBody {
+    /// Upstream ocean site; sea level is the reference zero.
+    Ocean,
+    /// Upstream lake site of connected lake `lake` with its constant surface.
+    Lake { lake: usize, surface_m: f64 },
 }
-impl AtlasSupportFace {
-    pub(crate) fn node_indices(&self) -> [usize; 3] {
-        self.nodes.map(|id| id as usize)
-    }
-    pub(crate) fn owner_index(&self) -> usize {
-        self.owner as usize
+
+/// R1 truth layer: the only water topology is the upstream per-site class.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AtlasSiteWater {
+    /// One entry per source site; `None` is dry land.
+    pub sites: Vec<Option<AtlasSiteBody>>,
+}
+impl AtlasSiteWater {
+    /// The R1 point rule shared by display, picking and cell quadrature: a point
+    /// in the source triangle `corners` is ocean if a corner is ocean and the bed
+    /// is below sea level, else lake if a corner is lake and the bed is below the
+    /// highest such lake surface, else dry. Fine connectivity is not resolved.
+    ///
+    /// Returns the class, the constant water surface where wet, and the lake index.
+    pub(crate) fn classify(
+        &self,
+        corners: [usize; 3],
+        bed: f64,
+    ) -> (SurfaceWaterKind, Option<f64>, Option<usize>) {
+        let bodies = corners.map(|i| self.sites[i]);
+        if bed < 0.0 && bodies.contains(&Some(AtlasSiteBody::Ocean)) {
+            return (SurfaceWaterKind::Ocean, Some(0.0), None);
+        }
+        let lake = bodies
+            .iter()
+            .filter_map(|body| match body {
+                Some(AtlasSiteBody::Lake { lake, surface_m }) => Some((*lake, *surface_m)),
+                _ => None,
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
+        match lake {
+            Some((lake, surface)) if bed < surface => {
+                (SurfaceWaterKind::Lake, Some(surface), Some(lake))
+            }
+            _ => (SurfaceWaterKind::DryLand, None, None),
+        }
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct AtlasWaterSupport {
-    pub directions: Vec<UnitVector3>,
-    pub bed: Vec<f64>,
-    pub faces: Vec<AtlasSupportFace>,
-    pub cell_face_offsets: Vec<usize>,
-}
-
-/// A current lake initialized on the fixed bed; evaporation is not modeled by C2.
+/// An upstream lake on the fixed bed; evaporation is not modeled by C2.
 #[derive(Debug, Clone, Serialize)]
 pub struct AtlasLake {
     pub(crate) surface_elevation_m: f64,
@@ -154,11 +177,13 @@ impl AtlasLake {
     pub const fn surface_elevation_m(&self) -> f64 {
         self.surface_elevation_m
     }
-    /// Actual minimax escape height on the declared support graph.
+    /// Escape height. R1 keeps the upstream author surface, which already sits at
+    /// its own outlet, so this equals the surface; Sekai does not re-solve spills.
     pub const fn spill_elevation_m(&self) -> f64 {
         self.spill_elevation_m
     }
-    /// P1 clipped lake area, in square metres.
+    /// Lake area under the R1 point rule and fixed fan quadrature, in square metres;
+    /// zero (with zero volume) for a lake smaller than the quadrature resolution.
     pub const fn area_m2(&self) -> f64 {
         self.area_m2
     }
@@ -187,7 +212,7 @@ impl AtlasLake {
     }
 }
 
-/// Current resolved channel between two support nodes, driven by Sekai precipitation.
+/// Current resolved channel between two source sites, driven by Sekai precipitation.
 #[derive(Debug, Clone, Serialize)]
 pub struct AtlasRiverSegment {
     /// Unit directions of the segment ends.
@@ -213,7 +238,7 @@ pub struct AtlasRunoffBudget {
     pub monthly_routing_residual_m3_s: [f64; CLIMATE_MONTH_COUNT],
 }
 
-/// A point query from the immutable bed and the same initialized water support.
+/// A point query from the immutable bed and the R1 upstream water classes.
 #[derive(Debug, Clone, Copy)]
 pub struct AtlasSurfaceSample {
     /// Exact canonical fine bed, in metres.
@@ -243,7 +268,6 @@ pub struct AtlasTerrainSnapshot {
     pub(crate) surface_ref: SurfaceRef,
     pub(crate) support_depth: u8,
     pub(crate) initial_water_inventory_m3: f64,
-    pub(crate) lowered_lake_prior_count: usize,
     pub(crate) fields: AtlasCellFields,
     pub(crate) climate: GlobalCirculationSnapshot,
     pub(crate) climate_quality: NaturalQualityReport,
@@ -255,7 +279,7 @@ pub struct AtlasTerrainSnapshot {
     #[serde(skip)]
     pub(crate) fine: Arc<FineTerrain>,
     #[serde(skip)]
-    pub(crate) support: AtlasWaterSupport,
+    pub(crate) site_water: AtlasSiteWater,
 }
 impl AtlasTerrainSnapshot {
     /// Original source cells with validated spherical geometry.
@@ -302,11 +326,7 @@ impl AtlasTerrainSnapshot {
     pub const fn initial_water_inventory_m3(&self) -> f64 {
         self.initial_water_inventory_m3
     }
-    /// Count of source lake-level priors limited by the actual spill before stock initialization.
-    pub const fn lowered_lake_prior_count(&self) -> usize {
-        self.lowered_lake_prior_count
-    }
-    /// Base fan subdivisions; lake and spill cells further resolve the canonical fine interval.
+    /// Fixed fan quadrature level of the cell water fields.
     pub const fn support_depth(&self) -> u8 {
         self.support_depth
     }
@@ -342,7 +362,7 @@ impl AtlasTerrainSnapshot {
         direction: [f64; 3],
         bed: f64,
     ) -> Result<AtlasSurfaceSample, TerrainError> {
-        bind_surface_sample(&self.fine, &self.surface, &self.support, direction, bed)
+        bind_surface_sample(&self.fine, &self.surface, &self.site_water, direction, bed)
     }
 
     /// Check source binding, actual current stock and resolved flow conservation.
@@ -351,11 +371,7 @@ impl AtlasTerrainSnapshot {
         self.validate_binding()?;
         let n = self.surface.cells().len();
         self.fields.validate(n)?;
-        if self.fine.coarse_terrain().site_xyz().len() != 3 * n
-            || self.support.bed.len() != self.support.directions.len()
-            || self.support.cell_face_offsets.len() != n + 1
-            || self.support.cell_face_offsets.first() != Some(&0)
-            || self.support.cell_face_offsets.last() != Some(&self.support.faces.len())
+        if self.fine.coarse_terrain().site_xyz().len() != 3 * n || self.site_water.sites.len() != n
         {
             return Err(AtlasTerrainValidationError::SourceMismatch);
         }
@@ -373,38 +389,25 @@ impl AtlasTerrainSnapshot {
                 return Err(AtlasTerrainValidationError::SourceMismatch);
             }
         }
-        for (owner, offsets) in self.support.cell_face_offsets.windows(2).enumerate() {
-            let faces = self
-                .support
-                .faces
-                .get(offsets[0]..offsets[1])
-                .ok_or(AtlasTerrainValidationError::InvalidPayload)?;
-            if faces.is_empty()
-                || faces.iter().any(|face| {
-                    face.owner_index() != owner
-                        || !face.area_m2.is_finite()
-                        || face.area_m2 <= 0.0
-                        || !(0.0..=1.0).contains(&face.ocean_fraction)
-                        || !(0.0..=1.0).contains(&face.lake_fraction)
-                        || face
-                            .nodes
-                            .iter()
-                            .any(|&node| node as usize >= self.support.bed.len())
-                        || face.water_level_m.is_some_and(|level| !level.is_finite())
-                        || face.lake.is_some_and(|lake| lake >= self.lakes.len())
-                })
-            {
-                return Err(AtlasTerrainValidationError::InvalidPayload);
-            }
-        }
-        if self.support.bed.iter().any(|v| !v.is_finite()) {
+        if self
+            .site_water
+            .sites
+            .iter()
+            .flatten()
+            .any(|body| match *body {
+                AtlasSiteBody::Ocean => false,
+                AtlasSiteBody::Lake { lake, surface_m } => {
+                    lake >= self.lakes.len() || surface_m != self.lakes[lake].surface_elevation_m
+                }
+            })
+        {
             return Err(AtlasTerrainValidationError::InvalidPayload);
         }
         if self.terrain_fingerprint
             != terrain_identity(
                 &self.fine,
                 &self.surface,
-                &self.support,
+                &self.site_water,
                 &self.fields,
                 self.support_depth,
             )
@@ -418,11 +421,14 @@ impl AtlasTerrainSnapshot {
             .validate()
             .map_err(|e| AtlasTerrainValidationError::Climate(e.to_string()))?;
         let lake_stock = self.lakes.iter().map(|lake| lake.volume_m3).sum::<f64>();
+        // A lake smaller than the declared quadrature has zero area and volume
+        // together; it remains an upstream lake site and routing terminal.
         if self.lakes.iter().any(|lake| {
             !lake.volume_m3.is_finite()
-                || lake.volume_m3 <= 0.0
+                || lake.volume_m3 < 0.0
                 || !lake.area_m2.is_finite()
-                || lake.area_m2 <= 0.0
+                || lake.area_m2 < 0.0
+                || (lake.area_m2 == 0.0) != (lake.volume_m3 == 0.0)
                 || !lake.surface_elevation_m.is_finite()
                 || !lake.spill_elevation_m.is_finite()
                 || lake.surface_elevation_m > lake.spill_elevation_m
@@ -485,7 +491,6 @@ impl AtlasTerrainSnapshot {
         hasher.update(&self.forcing_fingerprint);
         hasher.update(self.climate.checkpoint().fingerprint());
         hasher.update(&self.initial_water_inventory_m3.to_bits().to_le_bytes());
-        hasher.update(&(self.lowered_lake_prior_count as u64).to_le_bytes());
         serde_json::to_writer(
             &mut hasher,
             &(
@@ -503,20 +508,13 @@ impl AtlasTerrainSnapshot {
 pub(crate) fn bind_surface_sample(
     fine: &FineTerrain,
     surface: &SphericalSurfaceSnapshot,
-    support: &AtlasWaterSupport,
+    water: &AtlasSiteWater,
     direction: [f64; 3],
     bed: f64,
 ) -> Result<AtlasSurfaceSample, TerrainError> {
-    let owner = source_owner(fine, surface, direction)?;
-    let face = support_face(support, owner, direction);
-    let level = face.water_level_m.filter(|&level| bed < level);
-    let water = if level.is_none() {
-        SurfaceWaterKind::DryLand
-    } else if face.lake.is_some() {
-        SurfaceWaterKind::Lake
-    } else {
-        SurfaceWaterKind::Ocean
-    };
+    let (corners, _) = fine.source_triangle(direction)?;
+    let owner = source_owner(fine, surface, corners, direction)?;
+    let (water, level, _) = water.classify(corners, bed);
     Ok(AtlasSurfaceSample {
         bed_elevation_m: bed,
         water,
@@ -528,12 +526,12 @@ pub(crate) fn bind_surface_sample(
 pub(crate) fn terrain_identity(
     fine: &FineTerrain,
     surface: &SphericalSurfaceSnapshot,
-    support: &AtlasWaterSupport,
+    water: &AtlasSiteWater,
     fields: &AtlasCellFields,
     depth: u8,
 ) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"sekai.atlas-terrain.v1\0");
+    hasher.update(b"sekai.atlas-terrain.v2\0");
     hasher.update(&ATLAS_TERRAIN_MODEL_VERSION.to_le_bytes());
     hasher.update(&civ_atlas_terrain::FINE_TERRAIN_VERSION.to_le_bytes());
     hasher.update(&[fine.scale().pixels_per_unit(), depth]);
@@ -541,48 +539,18 @@ pub(crate) fn terrain_identity(
     fine.coarse_terrain()
         .write_identity(&mut hasher)
         .expect("in-memory BLAKE3 writer is infallible");
-    hasher.update(&(support.directions.len() as u64).to_le_bytes());
-    for point in &support.directions {
-        for x in point.components() {
-            hasher.update(&x.to_bits().to_le_bytes());
-        }
-    }
-    hasher.update(&(support.bed.len() as u64).to_le_bytes());
-    for bed in &support.bed {
-        hasher.update(&bed.to_bits().to_le_bytes());
-    }
-    hasher.update(&(support.faces.len() as u64).to_le_bytes());
-    for face in &support.faces {
-        for n in face.nodes {
-            hasher.update(&(n as u64).to_le_bytes());
-        }
-        hasher.update(&(face.owner as u64).to_le_bytes());
-        for x in [face.area_m2, face.ocean_fraction, face.lake_fraction] {
-            hasher.update(&x.to_bits().to_le_bytes());
-        }
-        hasher.update(&[u8::from(face.water_level_m.is_some())]);
-        if let Some(level) = face.water_level_m {
-            hasher.update(&level.to_bits().to_le_bytes());
-        }
-        hasher.update(&[u8::from(face.lake.is_some())]);
-        if let Some(lake) = face.lake {
-            hasher.update(&(lake as u64).to_le_bytes());
-        }
-    }
-    hasher.update(&(support.cell_face_offsets.len() as u64).to_le_bytes());
-    for &offset in &support.cell_face_offsets {
-        hasher.update(&(offset as u64).to_le_bytes());
-    }
+    serde_json::to_writer(&mut hasher, water).expect("finite site classes hash in memory");
     serde_json::to_writer(&mut hasher, fields).expect("finite initialized fields hash in memory");
     *hasher.finalize().as_bytes()
 }
 
-pub(crate) fn source_owner(
+/// Nearest-site owner, starting from the already located source triangle.
+fn source_owner(
     fine: &FineTerrain,
     surface: &SphericalSurfaceSnapshot,
+    sites: [usize; 3],
     direction: [f64; 3],
 ) -> Result<usize, TerrainError> {
-    let (sites, _) = fine.source_triangle(direction)?;
     let direction = UnitVector3::new(direction[0], direction[1], direction[2])
         .map_err(|_| TerrainError::InvalidDirection)?
         .components();
@@ -615,38 +583,10 @@ pub(crate) fn source_owner(
     }
 }
 
-pub(crate) fn support_face(
-    support: &AtlasWaterSupport,
-    owner: usize,
-    direction: [f64; 3],
-) -> &AtlasSupportFace {
-    let direction = UnitVector3::new(direction[0], direction[1], direction[2])
-        .expect("support lookup follows validated source direction lookup")
-        .components();
-    let faces =
-        &support.faces[support.cell_face_offsets[owner]..support.cell_face_offsets[owner + 1]];
-    // Max of the minimum oriented halfspace is deterministic on shared boundaries,
-    // including roundoff-sized negative scores; no geographic tolerance is invented.
-    faces
-        .iter()
-        .max_by(|a, b| {
-            let score = |face: &AtlasSupportFace| {
-                let p = face
-                    .node_indices()
-                    .map(|i| support.directions[i].components());
-                (0..3)
-                    .map(|i| dot(cross(p[i], p[(i + 1) % 3]), direction))
-                    .fold(f64::INFINITY, f64::min)
-            };
-            score(a).total_cmp(&score(b))
-        })
-        .expect("validated source cells contain support fan triangles")
-}
-
 /// Invalid or mismatched Atlas current-state publication.
 #[derive(Debug, Error)]
 pub enum AtlasTerrainValidationError {
-    /// A dense array, support reference or finite numerical domain is invalid.
+    /// A dense array, site-class reference or finite numerical domain is invalid.
     #[error("Atlas current payload violates its numerical or allocation contract")]
     InvalidPayload,
     /// Surface and projected fields name different source content.
@@ -693,5 +633,33 @@ mod tests {
             fields.validate(1),
             Err(AtlasTerrainValidationError::InvalidPayload)
         ));
+    }
+
+    #[test]
+    fn point_rule_prefers_ocean_below_sea_level_then_the_highest_lake_surface() {
+        let lake = |lake, surface_m| Some(AtlasSiteBody::Lake { lake, surface_m });
+        let water = AtlasSiteWater {
+            sites: vec![Some(AtlasSiteBody::Ocean), lake(0, 5.0), lake(1, 9.0), None],
+        };
+        let kind = |corners, bed| water.classify(corners, bed);
+        assert_eq!(
+            kind([0, 1, 3], -1.0),
+            (SurfaceWaterKind::Ocean, Some(0.0), None)
+        );
+        // Above sea level an ocean corner yields to an adjacent lake surface.
+        assert_eq!(
+            kind([0, 1, 3], 2.0),
+            (SurfaceWaterKind::Lake, Some(5.0), Some(0))
+        );
+        assert_eq!(
+            kind([1, 2, 3], 6.0),
+            (SurfaceWaterKind::Lake, Some(9.0), Some(1))
+        );
+        assert_eq!(kind([1, 2, 3], 9.0).0, SurfaceWaterKind::DryLand);
+        // A negative bed with no ocean corner is dry land, not sea.
+        assert_eq!(
+            kind([3, 3, 3], -50.0),
+            (SurfaceWaterKind::DryLand, None, None)
+        );
     }
 }

@@ -29,9 +29,9 @@ pub(crate) const ATLAS_SHAPE_LABELS: [&str; 8] = [
 ];
 pub(crate) const ATLAS_SCOPE_HINT: &str =
     "地形采用固定规范尺度与地球参考半径；气候质量不改变来源格数。";
-pub(crate) const ATLAS_HYDROLOGY_HINT: &str = "河流使用当前年均流量与端点，线宽仅为显示样式；未解析湖蒸发、地下水与长期稳态。站点统计为来源格面积尺度。";
+pub(crate) const ATLAS_HYDROLOGY_HINT: &str = "海、陆、湖取 Civ Atlas 来源格分类；放大后的细海岸按同一规则绘制，不判细尺度连通，不代表独立水体。河流沿来源格汇流，使用当前年均流量，线宽仅为显示样式；未解析湖蒸发、地下水与长期稳态。站点统计为来源格面积尺度。";
 pub(crate) const ATLAS_PERFORMANCE_HINT: &str =
-    "当前原生默认场景为分钟级生成，尚未达到秒级目标；浏览器运行与内存未验收。";
+    "当前原生默认场景为十几秒级生成（主要耗时在 C2 气候），尚未达到秒级目标；浏览器运行与内存未验收。";
 
 pub(crate) fn atlas_source_version(package: &str, revision: &str) -> String {
     format!("上游 {package} · {revision}")
@@ -43,7 +43,7 @@ pub(crate) fn atlas_source_scales(scale: u8, climate: u16) -> String {
     format!("固定地形 S{scale}；C2 面分辨率 {climate}；显示 LOD 不增加气候解析度")
 }
 pub(crate) fn atlas_source_water(rivers: usize, lakes: usize, inventory: f64) -> String {
-    format!("当前河段 {rivers}；初始化湖泊 {lakes}；水库存 {inventory:.6e} m³")
+    format!("当前河段 {rivers}；来源湖泊 {lakes}；水库存 {inventory:.6e} m³")
 }
 pub(crate) fn atlas_current_flow_range(min: f64, max: f64) -> String {
     format!("已发布河段年均流量范围：{min:.3}–{max:.3} m³/s")

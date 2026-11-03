@@ -6,7 +6,7 @@ use super::{geometry::BuiltGeometry, AtlasGenerationError};
 use crate::engine::BuildCancellation;
 use crate::generators::natural::circulation::CubedSphereGrid;
 use crate::generators::spatial::remap_intensive_f32_cancellable;
-use crate::world::natural::atlas_terrain::{bind_surface_sample, AtlasWaterSupport};
+use crate::world::natural::atlas_terrain::{bind_surface_sample, AtlasSiteWater};
 use crate::world::natural::{
     formation_runoff_fraction, ClimateSpec, ClimateWorkDomainSnapshot,
     GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
@@ -63,7 +63,7 @@ pub(super) fn build_forcing(
     let ocean_edge_permeability = ocean_edges(
         fine,
         surface,
-        &geometry.support,
+        &geometry.water,
         domain.climate_surface(),
         cancellation,
     )?;
@@ -78,7 +78,7 @@ pub(super) fn build_forcing(
     let mechanical_ocean_edge_permeability = Some(ocean_edges(
         fine,
         surface,
-        &geometry.support,
+        &geometry.water,
         &coarse,
         cancellation,
     )?);
@@ -115,11 +115,11 @@ pub(super) fn source_ocean_depth(
 }
 
 /// Composite midpoint line quadrature at the fixed source angular pixel interval.
-/// Each canonical climate edge is integrated exactly once, independent of lake refinement.
+/// Each canonical climate edge is integrated exactly once under the R1 point rule.
 pub(super) fn ocean_edges(
     fine: &FineTerrain,
     source: &SphericalSurfaceSnapshot,
-    support: &AtlasWaterSupport,
+    water: &AtlasSiteWater,
     target: &SphericalSurfaceSnapshot,
     cancellation: &BuildCancellation,
 ) -> Result<Vec<f32>, AtlasGenerationError> {
@@ -153,8 +153,7 @@ pub(super) fn ocean_edges(
                 continue;
             }
             wet += usize::from(
-                bind_surface_sample(fine, source, support, direction, sample.bed_elevation_m)?
-                    .water
+                bind_surface_sample(fine, source, water, direction, sample.bed_elevation_m)?.water
                     == crate::world::natural::SurfaceWaterKind::Ocean,
             );
         }

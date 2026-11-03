@@ -1,5 +1,13 @@
 # Atlas 配方与来源兼容
 
+## Atlas 模型 3：上游水体分类（world-truth-scope R1）
+
+`ATLAS_TERRAIN_MODEL_VERSION` 升为 3：水体拓扑改取上游粗格元分类，格元量改为固定扇形
+求积，汇流改在源站点图上进行（规格 `specs/2026-11-03-world-truth-scope-design.md` R1）。
+同一种子与参数生成的海岸、湖泊、水量、气候与河网都会变化，模型 2 配方读取后显示
+身份差异并走升级副本流程，不判为“完全兼容”。配方字段 `support_depth` 保留原名，
+现表示 `ATLAS_SUPPORT_DEPTH` 定义的格元求积层。作者输入、种子与来源语义不变。
+
 ## 来源身份事实更正
 
 初版工程候选误把固定上游 `src/gen/edits.ts::GENERATOR_VERSION` 记为 7；实际声明为 57。

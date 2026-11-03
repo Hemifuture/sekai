@@ -332,8 +332,6 @@ fn coordinates(d: [f64; 3]) -> Result<[f64; 2], TerrainError> {
     ])
 }
 #[cfg(test)]
-mod upstream_class_probe;
-#[cfg(test)]
 mod tests {
     use super::*;
     #[allow(dead_code)]
