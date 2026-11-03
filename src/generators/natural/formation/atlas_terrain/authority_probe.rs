@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
 const LEVELS: [u8; 3] = [1, 2, 3];
-const NONE: u32 = u32::MAX;
+pub(super) const NONE: u32 = u32::MAX;
 /// Sample classes: ocean, lake, dry with bed < 0, dry with bed >= 0.
 const CLASS: [&str; 4] = ["ocean", "lake", "dry<0", "dry>=0"];
 
@@ -75,25 +75,25 @@ fn face_water(
     }
 }
 
-struct Solved {
+pub(super) struct Solved {
     directions: Vec<UnitVector3>,
     triangles: Vec<SupportTriangle>,
-    bed: Vec<f64>,
+    pub(super) bed: Vec<f64>,
     graph: SupportGraph,
-    water: InitialWater,
+    pub(super) water: InitialWater,
     faces: Vec<FaceWater>,
 }
 
 #[derive(Default, Clone)]
-struct Feature {
-    area: f64,
-    volume: f64,
+pub(super) struct Feature {
+    pub(super) area: f64,
+    pub(super) volume: f64,
     extra: f64,
-    level: f64,
+    pub(super) level: f64,
     centroid: [f64; 3],
 }
 impl Feature {
-    fn add_centroid(&mut self, v: [f64; 3], w: f64) {
+    pub(super) fn add_centroid(&mut self, v: [f64; 3], w: f64) {
         for i in 0..3 {
             self.centroid[i] += v[i] * w;
         }
@@ -107,7 +107,7 @@ impl Feature {
     }
 }
 
-struct Summary {
+pub(super) struct Summary {
     /// Per node: non-ocean B < 0 component id, or `NONE`.
     dep_of: Vec<u32>,
     ocean_area: f64,
@@ -116,16 +116,20 @@ struct Summary {
     lake_volume: f64,
     dry_neg_area: f64,
     lake_neg_area: f64,
-    basin_of: Vec<u32>,
-    basins: Vec<Feature>,
-    lakes: Vec<Feature>,
+    pub(super) basin_of: Vec<u32>,
+    pub(super) basins: Vec<Feature>,
+    pub(super) lakes: Vec<Feature>,
     /// `area` = dry part below sea level, `extra` = lake-covered part below sea level.
     depressions: Vec<Feature>,
     /// Per owner: ocean, lake, dry area, total area, ocean volume, lake volume.
     cells: Vec<[f64; 6]>,
 }
 
-fn components(graph: &SupportGraph, n: usize, member: impl Fn(usize) -> bool) -> (Vec<u32>, usize) {
+pub(super) fn components(
+    graph: &SupportGraph,
+    n: usize,
+    member: impl Fn(usize) -> bool,
+) -> (Vec<u32>, usize) {
     let mut id = vec![NONE; n];
     let mut count = 0_u32;
     let mut queue = VecDeque::new();
@@ -222,8 +226,8 @@ fn summarize(s: &Solved, owners: usize) -> Summary {
     out
 }
 
-const KM2: f64 = 1.0e6;
-const KM3: f64 = 1.0e9;
+pub(super) const KM2: f64 = 1.0e6;
+pub(super) const KM3: f64 = 1.0e9;
 
 fn print_summary(name: &str, s: &Summary) {
     let dry_deps = s.depressions.iter().filter(|d| d.extra == 0.0).count();
@@ -330,7 +334,7 @@ fn groups(
     by_root.into_values().collect()
 }
 
-fn report_groups(
+pub(super) fn report_groups(
     kind: &str,
     k: u8,
     base: &[Feature],
@@ -673,7 +677,7 @@ fn sample_cell(
     out
 }
 
-fn dist(label: &str, values: &[f64]) {
+pub(super) fn dist(label: &str, values: &[f64]) {
     let mut abs: Vec<f64> = values.iter().map(|v| v.abs()).collect();
     abs.sort_by(f64::total_cmp);
     let n = abs.len().max(1) as f64;
@@ -692,17 +696,19 @@ fn dist(label: &str, values: &[f64]) {
     );
 }
 
-struct Baseline {
-    solved: Solved,
-    summary: Summary,
+pub(super) struct Baseline {
+    pub(super) solved: Solved,
+    pub(super) summary: Summary,
     /// Atlas sites the upstream generator classifies as ocean.
-    marine: Vec<usize>,
-    priors: Vec<(usize, f64)>,
+    pub(super) marine: Vec<usize>,
+    pub(super) priors: Vec<(usize, f64)>,
 }
 
 /// Generate the production product and rerun its flood once on the published
 /// support so node-level ocean/lake identities exist; checks the face rule copy.
-fn publish_baseline(cancellation: &BuildCancellation) -> (AtlasTerrainArtifact, Baseline) {
+pub(super) fn publish_baseline(
+    cancellation: &BuildCancellation,
+) -> (AtlasTerrainArtifact, Baseline) {
     let request = AtlasTerrainRequest {
         author: TerrainParams {
             seed: 42,
@@ -1232,7 +1238,7 @@ fn authority_layer_probe() {
     }
 }
 
-fn env_usize(name: &str, default: usize) -> usize {
+pub(super) fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
         .and_then(|v| v.parse().ok())

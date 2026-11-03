@@ -8,6 +8,8 @@ mod climate;
 mod geometry;
 mod red_refinement;
 mod runoff;
+#[cfg(test)]
+mod truth_probe;
 
 use crate::engine::{
     Artifact, ArtifactError, ArtifactKey, ArtifactValidationError, BuildArtifacts,
