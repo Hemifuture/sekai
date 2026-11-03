@@ -1,6 +1,7 @@
 //! Offline truth-layer probe (`2026-11-03-world-truth-scope-design.md` §5 item 1):
 //! Atlas water topology solved once on the source cell graph T, sub-cell
-//! fractions from canonical fine-bed quadrature under the §3.1 rule, versus the
+//! fractions from canonical fine-bed quadrature under the revised §3.1 rule
+//! (T identity and level, local fine connectivity in mixed cells), versus the
 //! published canonical support product.
 //!
 //! Reuses the production flood (`SupportGraph`, `initialize_water`), the
@@ -11,7 +12,9 @@ use super::authority_probe::{
     components, dist, env_usize, publish_baseline, report_groups, Baseline, Feature, KM2, KM3, NONE,
 };
 use super::carrier_probe::{center, sph_area};
-use super::geometry::{initialize_water, InitialWater, SupportGraph};
+use super::geometry::{
+    initialize_water, refine_triangles, source_fans, InitialWater, SupportGraph,
+};
 use super::*;
 use crate::generators::natural::subdivision_children;
 use crate::world::natural::SurfaceWaterKind;
@@ -24,10 +27,12 @@ const CLASS: [&str; 4] = ["ocean", "lake", "dry<0", "dry>=0"];
 
 /// Topology of T: the production flood on the Atlas site graph.
 struct Truth {
+    graph: SupportGraph,
     water: InitialWater,
     basin_of: Vec<u32>,
     basin_count: usize,
     lake_count: usize,
+    lake_level: Vec<f64>,
 }
 
 /// One quadrature point: fan leaf centre, leaf area and the Voronoi vertex whose
@@ -110,6 +115,221 @@ fn classify(bed: f64, corners: &[u32], truth: &Truth) -> (usize, Option<(usize, 
     }
 }
 
+/// Water body of one T site: (0 basin | 1 lake, id, level); `None` is dry land.
+type Body = Option<(usize, usize, f64)>;
+
+fn body_of(truth: &Truth, s: usize) -> Body {
+    if truth.water.ocean[s] {
+        return Some((0, truth.basin_of[s] as usize, 0.0));
+    }
+    truth.water.lake[s].map(|l| (1, l, truth.lake_level[l]))
+}
+
+fn key(body: Body) -> Option<(usize, usize)> {
+    body.map(|(kind, id, _)| (kind, id))
+}
+
+/// Revised §3.1 inside mixed cells (a cell whose T neighbourhood holds more than
+/// one body): T still fixes each body's identity and level, but a fine point is
+/// wet in W only if it is connected below W's level, through the refined fan
+/// mesh of the mixed cells and within W's corner-eligible region, to a T site of
+/// W or to a cell lying wholly inside W. Uniform cells keep the point rule.
+struct LocalWater {
+    active: Vec<bool>,
+    leaf_offset: Vec<usize>,
+    leaf_body: Vec<Body>,
+}
+
+fn local_water(
+    snapshot: &AtlasTerrainSnapshot,
+    truth: &Truth,
+    corners: &[Vec<u32>],
+    level: u8,
+    pool: &rayon::ThreadPool,
+    cancellation: &BuildCancellation,
+) -> LocalWater {
+    let surface = snapshot.surface();
+    let n = surface.cells().len();
+    let t = Instant::now();
+    let site_body: Vec<Body> = (0..n).map(|s| body_of(truth, s)).collect();
+    let active: Vec<bool> = (0..n)
+        .map(|c| {
+            truth
+                .graph
+                .neighbors(c)
+                .iter()
+                .any(|&j| key(site_body[j as usize]) != key(site_body[c]))
+        })
+        .collect();
+    let (mut directions, fans) = source_fans(surface);
+    let mut leaves: Vec<_> = fans
+        .into_iter()
+        .filter(|(_, owner)| active[*owner])
+        .collect();
+    for _ in 1..level {
+        leaves = refine_triangles(&mut directions, leaves, cancellation).unwrap();
+    }
+    let mut leaf_offset = vec![0; n + 1];
+    for (_, owner) in &leaves {
+        leaf_offset[owner + 1] += 1;
+    }
+    for c in 0..n {
+        leaf_offset[c + 1] += leaf_offset[c];
+    }
+    let mesh_ms = t.elapsed().as_secs_f64() * 1e3;
+
+    let t = Instant::now();
+    let mut used: Vec<usize> = leaves.iter().flat_map(|(nodes, _)| *nodes).collect();
+    used.sort_unstable();
+    used.dedup();
+    let fine = snapshot.fine_terrain();
+    let beds: Vec<Vec<f64>> = pool.install(|| {
+        used.par_chunks(4096)
+            .map(|chunk| {
+                let query: Vec<[f64; 3]> =
+                    chunk.iter().map(|&i| directions[i].components()).collect();
+                fine.sample_surface_batch(&query, &|| false)
+                    .unwrap()
+                    .into_iter()
+                    .map(|s| s.bed_elevation_m)
+                    .collect()
+            })
+            .collect()
+    });
+    let mut bed = vec![f64::NAN; directions.len()];
+    for (&i, b) in used.iter().zip(beds.into_iter().flatten()) {
+        bed[i] = b;
+    }
+    let bed_ms = t.elapsed().as_secs_f64() * 1e3;
+
+    let t = Instant::now();
+    let graph = SupportGraph::from_edges(
+        directions.len(),
+        leaves
+            .iter()
+            .flat_map(|(nodes, _)| (0..3).map(move |i| [nodes[i], nodes[(i + 1) % 3]])),
+        cancellation,
+    )
+    .unwrap();
+    let graph_ms = t.elapsed().as_secs_f64() * 1e3;
+
+    let t = Instant::now();
+    // Corner-eligible bodies of each leaf (same Delaunay split as `cell_points`)
+    // and, through incidence, of each mesh node.
+    let leaf_vertex: Vec<usize> = (0..n)
+        .flat_map(|c| {
+            let range = leaf_offset[c]..leaf_offset[c + 1];
+            let points = if range.is_empty() {
+                Vec::new()
+            } else {
+                cell_points(surface, c, level, 1.0)
+            };
+            assert_eq!(points.len(), range.len(), "leaf order matches cell_points");
+            points.into_iter().map(|p| p.vertex)
+        })
+        .collect();
+    let eligible_of = |v: usize| -> Vec<(usize, usize)> {
+        let mut out: Vec<(usize, usize)> = corners[v]
+            .iter()
+            .filter_map(|&s| key(site_body[s as usize]))
+            .collect();
+        out.sort_unstable();
+        out.dedup();
+        out
+    };
+    let leaf_eligible: Vec<Vec<(usize, usize)>> =
+        leaf_vertex.iter().map(|&v| eligible_of(v)).collect();
+    let mut node_eligible: Vec<Vec<(usize, usize)>> = vec![Vec::new(); directions.len()];
+    for ((nodes, _), el) in leaves.iter().zip(&leaf_eligible) {
+        for &i in nodes {
+            for &b in el {
+                if !node_eligible[i].contains(&b) {
+                    node_eligible[i].push(b);
+                }
+            }
+        }
+    }
+    // Seeds: T sites of W inside mixed cells, and Voronoi-vertex nodes touching a
+    // uniform cell of W (that cell is wet wherever B < level by the point rule).
+    let mut seeds: Vec<(usize, (usize, usize, f64))> = Vec::new();
+    for &i in &used {
+        if i < n {
+            if let Some(b) = site_body[i] {
+                seeds.push((i, b));
+            }
+        } else if let Some(b) = corners
+            .get(i - n)
+            .into_iter()
+            .flatten()
+            .filter(|&&s| !active[s as usize])
+            .find_map(|&s| site_body[s as usize])
+        {
+            seeds.push((i, b));
+        }
+    }
+    // Oceans first (one shared level), then lakes from the highest level down.
+    seeds.sort_by(|a, b| {
+        a.1 .0
+            .cmp(&b.1 .0)
+            .then(b.1 .2.total_cmp(&a.1 .2))
+            .then(a.1 .1.cmp(&b.1 .1))
+    });
+    let mut flooded: Vec<Body> = vec![None; directions.len()];
+    let mut queue = std::collections::VecDeque::new();
+    let mut start = 0;
+    while start < seeds.len() {
+        let group = seeds[start].1;
+        let end = start
+            + seeds[start..]
+                .iter()
+                .take_while(|(_, b)| b.0 == group.0 && (group.0 == 0 || b.1 == group.1))
+                .count();
+        for &(i, b) in &seeds[start..end] {
+            if flooded[i].is_none() && bed[i] < b.2 {
+                flooded[i] = Some(b);
+                queue.push_back(i);
+            }
+        }
+        while let Some(i) = queue.pop_front() {
+            let b = flooded[i].expect("queued nodes are flooded");
+            for &j in graph.neighbors(i) {
+                let j = j as usize;
+                if flooded[j].is_none() && bed[j] < b.2 && node_eligible[j].contains(&(b.0, b.1)) {
+                    flooded[j] = Some(b);
+                    queue.push_back(j);
+                }
+            }
+        }
+        start = end;
+    }
+    let leaf_body: Vec<Body> = leaves
+        .iter()
+        .zip(&leaf_eligible)
+        .map(|((nodes, _), el)| {
+            nodes
+                .iter()
+                .filter_map(|&i| flooded[i])
+                .filter(|b| el.contains(&(b.0, b.1)))
+                .min_by(|a, b| a.0.cmp(&b.0).then(b.2.total_cmp(&a.2)))
+        })
+        .collect();
+    let flood_ms = t.elapsed().as_secs_f64() * 1e3;
+    eprintln!(
+        "LOCAL m={level} active_cells={} mesh_nodes={} leaves={} seeds={} mesh_ms={mesh_ms:.0} \
+         bed_ms={bed_ms:.0} graph_ms={graph_ms:.0} flood_ms={flood_ms:.0} total_ms={:.0}",
+        active.iter().filter(|&&a| a).count(),
+        used.len(),
+        leaves.len(),
+        seeds.len(),
+        mesh_ms + bed_ms + graph_ms + flood_ms
+    );
+    LocalWater {
+        active,
+        leaf_offset,
+        leaf_body,
+    }
+}
+
 #[derive(Default)]
 struct CellResult {
     area: f64,
@@ -118,8 +338,8 @@ struct CellResult {
     base: [f64; 4],
     base_volume: [f64; 2],
     confusion: [[f64; 4]; 4],
-    /// Area where both an ocean and a lake corner were eligible.
-    mixed_corner_area: f64,
+    /// Area of cells classified by local fine connectivity.
+    active_area: f64,
     /// (kind, id) -> (area, volume, weighted centre).
     features: Vec<((usize, usize), f64, f64, [f64; 3], f64)>,
     points: usize,
@@ -137,6 +357,7 @@ fn evaluate_cell(
     snapshot: &AtlasTerrainSnapshot,
     truth: &Truth,
     corners: &[Vec<u32>],
+    local: &LocalWater,
     cell: usize,
     level: u8,
     radius2: f64,
@@ -148,11 +369,18 @@ fn evaluate_cell(
         points: points.len(),
         ..Default::default()
     };
-    for (p, s) in points.iter().zip(&samples) {
+    let active = local.active[cell];
+    for (index, (p, s)) in points.iter().zip(&samples).enumerate() {
         let bed = s.bed_elevation_m;
         let w = p.weight;
-        let set = &corners[p.vertex];
-        let (cc, feature) = classify(bed, set, truth);
+        let (cc, feature) = if active {
+            match local.leaf_body[local.leaf_offset[cell] + index] {
+                Some((kind, id, lv)) if bed < lv => (kind, Some((kind, id, lv))),
+                _ => (2 + usize::from(bed >= 0.0), None),
+            }
+        } else {
+            classify(bed, &corners[p.vertex], truth)
+        };
         let bc = base_class(s.water, bed);
         out.area += w;
         out.cand[cc] += w;
@@ -161,10 +389,8 @@ fn evaluate_cell(
         if let Some(depth) = s.water_depth_m() {
             out.base_volume[bc] += w * depth;
         }
-        let has_ocean = set.iter().any(|&c| truth.water.ocean[c as usize]);
-        let has_lake = set.iter().any(|&c| truth.water.lake[c as usize].is_some());
-        if has_ocean && has_lake && bed < 0.0 {
-            out.mixed_corner_area += w;
+        if active {
+            out.active_area += w;
         }
         if let Some((kind, id, level_m)) = feature {
             let depth = level_m - bed;
@@ -244,11 +470,19 @@ fn solve_truth(
         water.lake.iter().flatten().count(),
         water.lowered_priors,
     );
+    let mut lake_level = vec![f64::NAN; lake_count];
+    for (l, level) in water.lake.iter().zip(&water.level) {
+        if let (Some(l), Some(level)) = (l, level) {
+            lake_level[*l] = *level;
+        }
+    }
     Truth {
+        graph,
         water,
         basin_of,
         basin_count,
         lake_count,
+        lake_level,
     }
 }
 
@@ -336,8 +570,8 @@ fn report_level(snapshot: &AtlasTerrainSnapshot, level: u8, results: &[CellResul
         );
     }
     eprintln!(
-        "MIXED_CORNER m={level} ocean_and_lake_eligible_below_sea_km2={:.1}",
-        sum(&|r| r.mixed_corner_area) / KM2
+        "ACTIVE_AREA m={level} locally_connected_cells_km2={:.1}",
+        sum(&|r| r.active_area) / KM2
     );
     for (b, row) in CLASS.iter().enumerate() {
         let line = (0..4)
@@ -462,11 +696,12 @@ fn truth_layer_probe() {
             "BED_ONLY m={level} points={bed_points} ms={:.0}",
             t.elapsed().as_secs_f64() * 1e3
         );
+        let local = local_water(snapshot, &truth, &corners, level, &pool, &cancellation);
         let t = Instant::now();
         let results: Vec<CellResult> = pool.install(|| {
             (0..n)
                 .into_par_iter()
-                .map(|c| evaluate_cell(snapshot, &truth, &corners, c, level, radius2))
+                .map(|c| evaluate_cell(snapshot, &truth, &corners, &local, c, level, radius2))
                 .collect()
         });
         report_level(snapshot, level, &results, t.elapsed().as_secs_f64() * 1e3);
