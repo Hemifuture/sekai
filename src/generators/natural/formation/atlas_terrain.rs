@@ -1,5 +1,9 @@
 //! Fixed-bed Civ Atlas source, physically initialized before C2 publication.
 
+#[cfg(test)]
+mod authority_probe;
+#[cfg(test)]
+mod carrier_probe;
 mod climate;
 mod geometry;
 mod red_refinement;
