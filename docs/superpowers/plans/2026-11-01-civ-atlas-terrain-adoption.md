@@ -96,12 +96,23 @@ fmt／严格 Clippy／WASM 检查与二进制重建通过。真实海岸见证�
 文件：`src/app.rs`、`src/app/{pipeline,field_document,authoring,project_file,spherical_formation_display,site_climatology}.rs` 及 view/gpu 的真实来源绑定处；本地化/注册表与身份事实源。
 
 - [ ] 来源切换、取消、重开旧配方与晚到结果的窄测试先失败。
-- [ ] 新来源接入原子发布、二维/三维/气候/河网/点选/站点，显示来源及支持域；不伪装 P2/P3 字段。
-- [ ] 新配方保存上游版本/参数及地形来源；旧配方显式兼容；版本事实源只定义一次。
-- [ ] Civ Atlas 种子明确为 u32；现有 u64 种子在新来源超出范围时拒绝并显示原因，不静默截断；其他来源不改变种子语义。
-- [ ] fmt、严格 workspace/all-targets/all-features Clippy、WASM lib check、针对性 Release 与必要全量通过；重建 native/Trunk。
+  回归已随 `8746234`/`553deb6` 补入并通过（如
+  `atlas_seed_shape_and_source_changes_revoke_publication_authority`、
+  `atlas_v1_identity_correction_requires_an_upgrade_without_changing_inputs`）；
+  执行期未保留“先失败”记录，取消只有一次实际界面测量，故不追认勾选。
+- [x] 新来源接入原子发布、二维/三维/气候/河网/点选/站点，显示来源及支持域；不伪装 P2/P3 字段。
+  `8746234` 实现；降水/风/河网的实际界面操作仍待补（见下文对照项）。
+- [x] 新配方保存上游版本/参数及地形来源；旧配方显式兼容；版本事实源只定义一次。
+  `8746234` 实现，`553deb6` 更正上游生成器为 57、模型身份升 2，旧配方须显式升级副本。
+- [x] Civ Atlas 种子明确为 u32；现有 u64 种子在新来源超出范围时拒绝并显示原因，不静默截断；其他来源不改变种子语义。
+  `8746234`：checked u32 转换，越界返回 `AuthorInputError::AtlasSeed`。
+- [x] fmt、严格 workspace/all-targets/all-features Clippy、WASM lib check、针对性 Release 与必要全量通过；重建 native/Trunk。
+  范围见[整合验证记录](../measurements/2026-11-03-civ-atlas-integration.md)。
 - [ ] 用实际应用与固定上游算法输出做全图和近景对照，记录端到端耗时/内存及限制；用户 UI 验收单独待确认。
-- [ ] 独立整分支审阅，修复重要问题，更新 README/PROGRESS 和来源许可后提交；不自动推送或部署。
+  已记录冷发布 232.047 秒/峰值约 2.78 GiB 与限制；实际应用内与上游的全图/近景对照、
+  降水/风/河网操作和用户本人验收尚未完成。
+- [x] 独立整分支审阅，修复重要问题，更新 README/PROGRESS 和来源许可后提交；不自动推送或部署。
+  整分支及两项来源纠错均经独立审阅；README/NOTICE 已更新，PROGRESS 与整合记录随本次文档提交。
 
 ## 每项承重技术的出处
 

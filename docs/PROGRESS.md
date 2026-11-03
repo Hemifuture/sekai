@@ -1,5 +1,13 @@
 # Sekai 项目进度
 
+## 2026-11-03 UTC 候选整合补记
+
+Civ Atlas迁移已整合到主目录 `integration/sekai-current`，源码／原生构建与已审阅
+候选一致；源生成器版本纠正为57，Atlas模型身份为2。真实保存、取消、旧候选升级
+副本已完成操作验证，原文件保留。见[整合验证记录](superpowers/measurements/2026-11-03-civ-atlas-integration.md)。
+当前冷发布仍约232–264秒，两项气候建议与用户最终UI验收未完成，不能称整体交付。
+
+
 ## 2026-11-02 Civ Atlas 独立候选
 
 在独立工作区接入固定版本 Civ Atlas 算法来源，新建世界默认采用 Atlas；旧来源与旧配方
