@@ -647,6 +647,82 @@ impl<'de> Deserialize<'de> for UniqueJson {
 
 #[cfg(test)]
 mod tests {
+    fn assert_atlas_v1_requires_explicit_identity_upgrade(file: &ProjectFile) {
+        use crate::engine::Stage;
+        use crate::generators::natural::{AtlasTerrainRequestArtifact, AtlasTerrainStage};
+        let saved = file.generator.atlas_source.as_ref().unwrap();
+        // These are the historical candidate's erroneous tags, not current model facts.
+        assert_eq!(saved.upstream_generator_version, 7);
+        assert_eq!(saved.terrain_model_version, 1);
+        let request =
+            AtlasTerrainRequestArtifact::new(file.inputs.atlas_request().unwrap()).unwrap();
+        assert_eq!(
+            u64::from(request.request().author.seed),
+            file.inputs.world_seed
+        );
+        let current = current_generator_identity(&file.inputs).unwrap();
+        let source = current.atlas_source.as_ref().unwrap();
+        assert_eq!(
+            source.upstream_generator_version,
+            civ_atlas_terrain::UPSTREAM_GENERATOR_VERSION
+        );
+        assert_ne!(
+            source.upstream_generator_version,
+            saved.upstream_generator_version
+        );
+        assert_eq!(
+            source.terrain_model_version,
+            crate::world::natural::ATLAS_TERRAIN_MODEL_VERSION
+        );
+        assert!(source.terrain_model_version > saved.terrain_model_version);
+        let stage = AtlasTerrainStage;
+        let registered = current
+            .stages
+            .iter()
+            .find(|entry| entry.id == stage.id().as_str())
+            .unwrap();
+        assert_eq!(registered.version, source.terrain_model_version);
+        assert!(matches!(
+            compare_generator(&file.generator, &current),
+            Compatibility::UpgradeRequired(_)
+        ));
+        let upgraded = upgrade_copy(file, current.clone());
+        assert_eq!(upgraded.inputs, file.inputs);
+        assert_eq!(upgraded.upgraded_from.as_ref(), Some(&file.generator));
+        assert_eq!(
+            compare_generator(&upgraded.generator, &current),
+            Compatibility::Exact
+        );
+    }
+
+    #[test]
+    fn atlas_v1_identity_correction_requires_an_upgrade_without_changing_inputs() {
+        use crate::engine::Stage;
+        let mut old = project(WorldPipeline::CivAtlas);
+        let source = old.generator.atlas_source.as_mut().unwrap();
+        source.upstream_generator_version = 7;
+        source.terrain_model_version = 1;
+        let stage = crate::generators::natural::AtlasTerrainStage;
+        old.generator
+            .stages
+            .iter_mut()
+            .find(|entry| entry.id == stage.id().as_str())
+            .unwrap()
+            .version = 1;
+        let decoded = decode_project(&encode_project(&old).unwrap()).unwrap();
+        assert_atlas_v1_requires_explicit_identity_upgrade(&decoded);
+    }
+
+    #[test]
+    #[ignore = "read-only verification of the actual UI-saved candidate recipe via SEKAI_ATLAS_V1_RECIPE"]
+    fn actual_saved_atlas_v1_recipe_requires_an_upgrade() {
+        let path = std::env::var_os("SEKAI_ATLAS_V1_RECIPE").expect("set the saved recipe path");
+        let bytes = std::fs::read(&path).unwrap();
+        let file = decode_project(&bytes).unwrap();
+        assert_atlas_v1_requires_explicit_identity_upgrade(&file);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    }
+
     #[test]
     fn atlas_recipe_records_source_versions_and_legacy_v1_keeps_its_source() {
         let atlas = project(WorldPipeline::CivAtlas);

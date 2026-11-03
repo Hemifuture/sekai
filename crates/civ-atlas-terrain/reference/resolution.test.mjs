@@ -2,17 +2,28 @@
 // Supply the existing offline checkout/prefix through ATLAS_ORACLE_ROOT / ATLAS_ORACLE_PREFIX.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { SOURCE_PINS, DEPENDENCY_PINS, verifyOriginalModuleProvenance, verifyDependencyProvenance } from './source-pins.mjs';
+import { SOURCE_PINS, SOURCE_METADATA_PINS, DEPENDENCY_PINS, verifyPin, verifyOriginalModuleProvenance, verifyDependencyProvenance } from './source-pins.mjs';
 
 const root = resolve(process.env.ATLAS_ORACLE_ROOT);
 const prefix = resolve(process.env.ATLAS_ORACLE_PREFIX);
 const reference = dirname(fileURLToPath(import.meta.url));
 const check = `import {verifyOriginalModuleProvenance} from ${JSON.stringify(pathToFileURL(join(reference, 'source-pins.mjs')).href)}; verifyOriginalModuleProvenance(process.argv[1], process.argv[2]);`;
+
+test('Rust generator identity equals the actual pinned upstream declaration', () => {
+  const upstream = readFileSync(join(root, 'src/gen/edits.ts'), 'utf8');
+  verifyPin(SOURCE_METADATA_PINS, 'edits.ts', upstream);
+  const declaration = [...upstream.matchAll(/^export const GENERATOR_VERSION = (\d+);$/gm)];
+  assert.equal(declaration.length, 1);
+  const rust = readFileSync(join(reference, '../src/lib.rs'), 'utf8');
+  const constant = [...rust.matchAll(/^pub const UPSTREAM_GENERATOR_VERSION: u32 = (\d+);$/gm)];
+  assert.equal(constant.length, 1);
+  assert.equal(Number(constant[0][1]), Number(declaration[0][1]));
+});
 
 test('a resolver that ignores the importer argument is rejected', () => {
   const result = spawnSync(process.execPath,
@@ -37,7 +48,7 @@ test('alternate direct and transitive dependency locations fail before world exe
     const modules = join(oracle, 'node_modules');
     mkdirSync(upstream, { recursive: true });
     cpSync(join(root, 'package.json'), join(upstream, 'package.json'));
-    for (const file of Object.keys(SOURCE_PINS)) {
+    for (const file of [...Object.keys(SOURCE_PINS), ...Object.keys(SOURCE_METADATA_PINS)]) {
       const target = join(upstream, 'src/gen', file);
       mkdirSync(dirname(target), { recursive: true });
       cpSync(join(root, 'src/gen', file), target);

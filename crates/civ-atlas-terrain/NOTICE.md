@@ -107,6 +107,11 @@ cargo test --manifest-path crates/civ-atlas-terrain/Cargo.toml -j 2
 `UPSTREAM_REVISION`、`UPSTREAM_PACKAGE_VERSION` 与 `UPSTREAM_GENERATOR_VERSION`
 为根项目来源身份的唯一代码定义；后续集成应引用这些定义。
 
+初版移植的生成器身份常量曾误记为7；固定 `src/gen/edits.ts` 的实际声明是57。
+本次只更正该元数据事实，并由消费者提升 Atlas 模型身份；不更改原数值算法或重钉数值。
+共享来源 pin 另记录 `edits.ts` 身份元数据哈希，离线回归读取该实际声明与 Rust 常量比较，
+不再仅验证常量自身的序列化往返。历史 oracle 数值和已有来源注释保持原样。
+
 ### 粗地形离线参考
 
 `reference/terrain.mjs` 使用离线安装的 tsx 加载器运行原固定 TypeScript 世界生成，

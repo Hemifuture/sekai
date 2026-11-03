@@ -1,5 +1,19 @@
 # Atlas 配方与来源兼容
 
+## 来源身份事实更正
+
+初版工程候选误把固定上游 `src/gen/edits.ts::GENERATOR_VERSION` 记为 7；实际声明为 57。
+现已更正唯一事实源 `UPSTREAM_GENERATOR_VERSION`，并提升 `ATLAS_TERRAIN_MODEL_VERSION`，
+因为该值进入上游内容身份流，进而改变 Atlas artifact / forcing / 构建身份。
+细、粗地形数值算法与既有数值 fixture 没有修改，`FINE_TERRAIN_VERSION` 未变。
+
+旧候选保存的上游7/Atlas模型1配方保持原文件和 checksum，读取后必须显示生成器身份
+差异并显式升级副本，不能判为“完全兼容”。旧配方记录的是历史错误标签，不把它改写成
+已经由当前模型生成的世界。此前 UI 和性能证据仍归属各自实际运行的候选身份。
+本更正不改变旧 Formation/Foundation 来源的生成语义，也不等于时延或科学质量已达标。
+
+## 传输与作者输入
+
 新配方格式为 V2，作者 canonical encoding 为 V2，本地自动恢复写入 schema V2。
 V1 配方仍使用原 canonical encoding 校验原 checksum；读入时只补齐未生效的 Atlas
 形状默认值，保留原来源、u64 种子和旧参数。旧本地恢复缺少来源时按旧 Formation 解释，

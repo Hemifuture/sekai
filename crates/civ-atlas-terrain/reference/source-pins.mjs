@@ -31,6 +31,11 @@ export const SOURCE_PINS = Object.freeze({
   '../ui/ParamField.tsx': '3746799e3f24c4be4e2fbc56fe78d703aeb371f7c2cf2cf3a081f0c6f1028bad',
 });
 
+// Upstream identity metadata is verified separately from historical numeric fixture headers.
+export const SOURCE_METADATA_PINS = Object.freeze({
+  'edits.ts': '77cd1b9dc7567d260c8f181e000d752a0d5ffcbc458f33edacef330065385c67',
+});
+
 export const DEPENDENCY_PINS = Object.freeze({
   'simplex-noise/dist/esm/simplex-noise.js':
     '64e571e6d28da06fdd230110b8ce242285e76137e7258938f3b68a0fd6ff8146',
@@ -64,6 +69,9 @@ export function verifyPin(pins, name, content) {
 export function verifyOriginalModuleProvenance(root, prefix) {
   const sources = Object.keys(SOURCE_PINS).map(file =>
     verifyPin(SOURCE_PINS, file, readFileSync(join(root, 'src/gen', file))));
+  for (const file of Object.keys(SOURCE_METADATA_PINS)) {
+    verifyPin(SOURCE_METADATA_PINS, file, readFileSync(join(root, 'src/gen', file)));
+  }
   return [
     ...verifyDependencyProvenance(prefix, join(root, 'src/gen/noise.ts'),
       join(root, 'src/gen/geometry.ts')),

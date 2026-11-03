@@ -4,7 +4,7 @@ pub const UPSTREAM_REVISION: &str = "176cc9168a69be30d1e09bfd85db84a5f3fb99da";
 /// Package version declared in the pinned Civ Atlas package.json.
 pub const UPSTREAM_PACKAGE_VERSION: &str = "1.5.0";
 /// Source GENERATOR_VERSION from the pinned src/gen/edits.ts.
-pub const UPSTREAM_GENERATOR_VERSION: u32 = 7;
+pub const UPSTREAM_GENERATOR_VERSION: u32 = 57;
 
 mod creeks;
 mod erosion;

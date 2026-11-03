@@ -13,7 +13,9 @@ use super::{
 use crate::world::spatial::{cross, dot, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
 
 /// Identity version for fixed-bed initialization, material prior and current runoff.
-pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 1;
+/// Version 2 corrects the upstream generator tag in the consumed identity stream;
+/// the terrain, water and climate numerical algorithms are unchanged.
+pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 2;
 /// Fixed original zoom scale; camera LOD never changes the author bed.
 pub const ATLAS_FINE_SCALE: civ_atlas_terrain::FineScale = civ_atlas_terrain::FineScale::Four;
 /// Fixed quadrature subdivision count, audited with the production support probe.
