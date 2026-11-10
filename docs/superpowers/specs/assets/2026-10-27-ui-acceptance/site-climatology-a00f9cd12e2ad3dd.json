@@ -1,0 +1,429 @@
+{
+  "schema_version": 1,
+  "source": {
+    "world_seed": 1950802277578115247,
+    "surface_fingerprint": "4247616b841cc415e4647576d4c445b501f053afc9da4bf33255fda1e9c09e84",
+    "build_result_hash": "5039b0bcbe8a40d980015569240697dd7a5e04dc02a9829e444f18b66a5a3bea",
+    "graph_contract_version": 3,
+    "global_circulation_fingerprint": "d1d35db68c355ade8141bb35112ffdf480b8149a36bd03fe4a0ea0334cf1ed80",
+    "global_circulation_schema": 2,
+    "climate_profile": "c2_layered_v1",
+    "quality_profile": "standard",
+    "sekai_package_version": "0.1.0"
+  },
+  "region": {
+    "anchor_cell": 6584,
+    "anchor_lat_deg": 11.074237342918801,
+    "anchor_lon_deg": 63.244180352347215,
+    "heading_deg": 0.0,
+    "scale": 1.0,
+    "half_extent_m": 8192.0,
+    "requested_footprint_side_m": 16384.0,
+    "climate_grid_spacing_m": 288128.9745494202,
+    "effective_footprint_side_m": 288128.9745494202,
+    "footprint_expanded": true,
+    "cell_count": 15,
+    "land_fraction": 1.0,
+    "lake_fraction": 0.0,
+    "elevation_m": {
+      "mean": 1199.242886295408,
+      "min": 523.1918334960938,
+      "max": 2975.641357421875
+    }
+  },
+  "anchor_assessment": {
+    "coast_distance_m": 598179.5631435013,
+    "inland_threshold_m": 576257.9490988404,
+    "anchor_is_land": true,
+    "inland": true,
+    "footprint_dry_land_only": true,
+    "footprint_lake_cells": 0,
+    "footprint_relief_m": 2452.4495239257812,
+    "meets_criteria": true
+  },
+  "wet_day_threshold_mm": 0.1,
+  "capabilities": [
+    {
+      "id": "steering_wind",
+      "availability": "available",
+      "reason": null,
+      "substitute": null
+    },
+    {
+      "id": "vertical_wind_shear",
+      "availability": "available",
+      "reason": null,
+      "substitute": null
+    },
+    {
+      "id": "eady_growth_rate",
+      "availability": "available",
+      "reason": null,
+      "substitute": null
+    },
+    {
+      "id": "relative_humidity",
+      "availability": "available",
+      "reason": null,
+      "substitute": null
+    },
+    {
+      "id": "wet_day_statistics",
+      "availability": "unavailable",
+      "reason": "no_verified_wet_day_relationship",
+      "substitute": null
+    },
+    {
+      "id": "convective_precipitation_share",
+      "availability": "unavailable",
+      "reason": "no_precipitation_type_diagnostic",
+      "substitute": null
+    },
+    {
+      "id": "diurnal_temperature_range",
+      "availability": "unavailable",
+      "reason": "no_diurnal_cycle",
+      "substitute": null
+    },
+    {
+      "id": "wind_variability",
+      "availability": "unavailable",
+      "reason": "no_transient_statistics",
+      "substitute": null
+    },
+    {
+      "id": "cloud_cover",
+      "availability": "unavailable",
+      "reason": "clouds_not_implemented",
+      "substitute": null
+    },
+    {
+      "id": "tropical_cyclone_climatology",
+      "availability": "unavailable",
+      "reason": "p4_capability_unavailable",
+      "substitute": null
+    }
+  ],
+  "months": [
+    {
+      "month": 1,
+      "air_temperature_c": 10.897789082903868,
+      "precipitation_mm_day": 2.5894321349347047,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006169889035911189,
+      "relative_humidity": 0.7668952033037216,
+      "near_surface_wind_en_m_s": [
+        -5.2174484153427905,
+        3.7428017097971717
+      ],
+      "steering_wind_en_m_s": [
+        -2.4562991086807413,
+        -3.1599824060633592
+      ],
+      "wind_shear_en_m_s": [
+        2.761149308334851,
+        -6.902784163861421
+      ],
+      "steering_flow_toward_bearing_deg": 217.85842936861278,
+      "eady_growth_rate_per_day": 0.10503864060303879,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 2,
+      "air_temperature_c": 10.728804628045847,
+      "precipitation_mm_day": 5.619911583790571,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006069886752552967,
+      "relative_humidity": 0.7631365682052879,
+      "near_surface_wind_en_m_s": [
+        0.17481486504720817,
+        5.091112350376762
+      ],
+      "steering_wind_en_m_s": [
+        0.9246446339904023,
+        -2.8003685410300134
+      ],
+      "wind_shear_en_m_s": [
+        0.7498297672694304,
+        -7.891480890499644
+      ],
+      "steering_flow_toward_bearing_deg": 161.7274605439134,
+      "eady_growth_rate_per_day": 0.11196338009876014,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 3,
+      "air_temperature_c": 11.668626155871015,
+      "precipitation_mm_day": 5.259747712932098,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006174827936603324,
+      "relative_humidity": 0.7292159467109343,
+      "near_surface_wind_en_m_s": [
+        0.6484887459449508,
+        2.3909633007132074
+      ],
+      "steering_wind_en_m_s": [
+        -0.7111260439876037,
+        -3.5640249366634444
+      ],
+      "wind_shear_en_m_s": [
+        -1.359614804874626,
+        -5.954988175967919
+      ],
+      "steering_flow_toward_bearing_deg": 191.28397730171417,
+      "eady_growth_rate_per_day": 0.08641690001900826,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 4,
+      "air_temperature_c": 13.03235174374901,
+      "precipitation_mm_day": 2.3719804227908403,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006345248323212858,
+      "relative_humidity": 0.6847476595346184,
+      "near_surface_wind_en_m_s": [
+        -2.339254833915934,
+        -2.4567465043030827
+      ],
+      "steering_wind_en_m_s": [
+        -5.96470481957076,
+        -5.291790181545863
+      ],
+      "wind_shear_en_m_s": [
+        -3.625449982101319,
+        -2.835043672773364
+      ],
+      "steering_flow_toward_bearing_deg": 228.42107727400298,
+      "eady_growth_rate_per_day": 0.06526760415297096,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 5,
+      "air_temperature_c": 14.356889454738964,
+      "precipitation_mm_day": 0.02712202303307906,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006507923517434912,
+      "relative_humidity": 0.6439554586316754,
+      "near_surface_wind_en_m_s": [
+        1.8212147949236552,
+        1.2814391543093508
+      ],
+      "steering_wind_en_m_s": [
+        -3.6046892197746208,
+        0.6126315953803273
+      ],
+      "wind_shear_en_m_s": [
+        -5.425904027178603,
+        -0.668807546386676
+      ],
+      "steering_flow_toward_bearing_deg": 279.6454874854959,
+      "eady_growth_rate_per_day": 0.07770875947299975,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 6,
+      "air_temperature_c": 15.312968041802169,
+      "precipitation_mm_day": 0.03196069893040313,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006466025390013124,
+      "relative_humidity": 0.6013519923878838,
+      "near_surface_wind_en_m_s": [
+        3.3463528403472416,
+        0.6423469834929685
+      ],
+      "steering_wind_en_m_s": [
+        -1.4413766502468277,
+        2.773805742620496
+      ],
+      "wind_shear_en_m_s": [
+        -4.787729488684636,
+        2.1314587451955793
+      ],
+      "steering_flow_toward_bearing_deg": 332.5418682244291,
+      "eady_growth_rate_per_day": 0.07461701574034742,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 7,
+      "air_temperature_c": 15.820823348264629,
+      "precipitation_mm_day": 0.08470026060135687,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006454847423991224,
+      "relative_humidity": 0.5809281286204375,
+      "near_surface_wind_en_m_s": [
+        -2.44051170954771,
+        -2.336788174464538
+      ],
+      "steering_wind_en_m_s": [
+        -4.512917268553914,
+        1.38455930622871
+      ],
+      "wind_shear_en_m_s": [
+        -2.0724055589617842,
+        3.7213474967280034
+      ],
+      "steering_flow_toward_bearing_deg": 287.05597038933684,
+      "eady_growth_rate_per_day": 0.06069939558689913,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 8,
+      "air_temperature_c": 16.19555919742487,
+      "precipitation_mm_day": 0.11722469789354012,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006491410033250059,
+      "relative_humidity": 0.5702706362469024,
+      "near_surface_wind_en_m_s": [
+        -3.8105496349889467,
+        -5.6982137528342305
+      ],
+      "steering_wind_en_m_s": [
+        -3.6382778015461716,
+        -2.458545921012769
+      ],
+      "wind_shear_en_m_s": [
+        0.1722718334427754,
+        3.239667839675095
+      ],
+      "steering_flow_toward_bearing_deg": 235.95135855544652,
+      "eady_growth_rate_per_day": 0.046261676983709206,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 9,
+      "air_temperature_c": 16.156105200003786,
+      "precipitation_mm_day": 0.11000049043612903,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006497594862951152,
+      "relative_humidity": 0.5722190722918531,
+      "near_surface_wind_en_m_s": [
+        -2.7451738192459216,
+        -3.155252523933458
+      ],
+      "steering_wind_en_m_s": [
+        -0.6968829069749406,
+        -2.0020313108947496
+      ],
+      "wind_shear_en_m_s": [
+        2.048290910869859,
+        1.1532212117250995
+      ],
+      "steering_flow_toward_bearing_deg": 199.19238957224738,
+      "eady_growth_rate_per_day": 0.03351664714726228,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 10,
+      "air_temperature_c": 15.371342144757078,
+      "precipitation_mm_day": 0.08684133933742884,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006294459910682726,
+      "relative_humidity": 0.5829861138224081,
+      "near_surface_wind_en_m_s": [
+        -2.6171846016698277,
+        -0.5959239861368805
+      ],
+      "steering_wind_en_m_s": [
+        1.2723728037978574,
+        -1.144324363620482
+      ],
+      "wind_shear_en_m_s": [
+        3.8895574139944955,
+        -0.5484003786186948
+      ],
+      "steering_flow_toward_bearing_deg": 131.9670254033583,
+      "eady_growth_rate_per_day": 0.05593231730778608,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 11,
+      "air_temperature_c": 13.802545252138223,
+      "precipitation_mm_day": 0.06236227879891383,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.0062198152330448725,
+      "relative_humidity": 0.6378636030378108,
+      "near_surface_wind_en_m_s": [
+        -6.3413395072272145,
+        -0.3644073029670719
+      ],
+      "steering_wind_en_m_s": [
+        -1.2783923546188922,
+        -2.507985505055913
+      ],
+      "wind_shear_en_m_s": [
+        5.062947121132862,
+        -2.143578180369182
+      ],
+      "steering_flow_toward_bearing_deg": 207.0092473990223,
+      "eady_growth_rate_per_day": 0.07807494093963659,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    },
+    {
+      "month": 12,
+      "air_temperature_c": 11.984777301718745,
+      "precipitation_mm_day": 0.017891929203800706,
+      "orographic_precipitation_mm_day": 0.0,
+      "specific_humidity_kg_kg": 0.006174413544450172,
+      "relative_humidity": 0.7135563326787021,
+      "near_surface_wind_en_m_s": [
+        -5.312330084255383,
+        4.072015057693267
+      ],
+      "steering_wind_en_m_s": [
+        -0.6630981797791394,
+        -1.190432478166052
+      ],
+      "wind_shear_en_m_s": [
+        4.649231906705722,
+        -5.262447551014131
+      ],
+      "steering_flow_toward_bearing_deg": 209.1188093158186,
+      "eady_growth_rate_per_day": 0.09939996842074203,
+      "wet_day_fraction": null,
+      "p_wet_given_dry": null,
+      "p_wet_given_wet": null,
+      "mean_wet_day_amount_mm": null
+    }
+  ],
+  "methods": {
+    "aggregation": "area_weighted_centroids_in_rotated_gnomonic_square_v1",
+    "wind_projection": "tangent_vector_onto_anchor_east_north_v1",
+    "relative_humidity": "cell_q_over_p4_bolton_saturation_area_mean_v1",
+    "steering_flow_bearing": "toward_bearing_atan2_east_north_v1",
+    "eady_growth_rate": "lindzen_farrell_1980_dry_standard_lapse_v1",
+    "wet_day_threshold": "new_et_al_2002_cru_cl_2_0_gt_0_1_mm"
+  }
+}

@@ -352,7 +352,7 @@ JSON，`schema_version = 1`。顶层：
 | "导出" | 通过。先删除旧文件再导出，面板显示"已写入 D:\…\site-climatology\site-climatology-a00f9cd12e2ad3dd.json" | `15`（修复前的路径显示见 `06`） |
 | BLAKE3 复核 | 通过。独立实现（Python `blake3` 包）对文件字节计算，结果为 `a00f9cd12e2ad3dd8583d07178ec18e949d942fb582b24f01eec564a01e7ca96`，与面板显示一致。两轮各在一个进程内重新生成世界，指纹相同 | — |
 
-**导出文件**：`site-climatology/site-climatology-a00f9cd12e2ad3dd.json`（13173 字节，不入库）。
+**导出文件**：`site-climatology/site-climatology-a00f9cd12e2ad3dd.json`（13173 字节；冻结副本现已入库：`assets/2026-10-27-ui-acceptance/site-climatology-a00f9cd12e2ad3dd.json`）。
 锚点 cell 6584，纬度 11.074237342918801°，经度 63.244180352347215°，朝向 0°，尺度 1，半边长 8192 m；
 `build_result_hash` `5039b0bcbe8a40d980015569240697dd7a5e04dc02a9829e444f18b66a5a3bea`，climate_profile `c2_layered_v1`，quality_profile `standard`。
 
