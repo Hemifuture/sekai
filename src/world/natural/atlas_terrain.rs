@@ -8,16 +8,15 @@ use serde::Serialize;
 use thiserror::Error;
 
 use super::{
-    GlobalCirculationSnapshot, LandOceanField, NaturalQualityReport, SurfaceWaterKind,
-    CLIMATE_MONTH_COUNT, WATER_VOLUME_RELATIVE_TOLERANCE,
+    GlobalCirculationSnapshot, LandOceanField, NaturalQualityReport, SurfaceWaterField,
+    SurfaceWaterKind, CLIMATE_MONTH_COUNT, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::spatial::{dot, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
 
 /// Identity version for fixed-bed water classes, material prior and current runoff.
-/// Version 3 (world-truth-scope R1) takes water topology from the upstream coarse
-/// classes and integrates cell fields by fixed fan quadrature instead of the
-/// canonical adaptive support; version 2 corrected the upstream generator tag.
-pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 3;
+/// Version 4 integrates dry area directly, binds source-scale consumers to the
+/// upstream classes and removes the duplicate lake level previously labelled a spill.
+pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 4;
 /// Fixed original zoom scale; camera LOD never changes the author bed.
 pub const ATLAS_FINE_SCALE: civ_atlas_terrain::FineScale = civ_atlas_terrain::FineScale::Four;
 /// Fan quadrature level of the cell water fields: each source fan triangle is
@@ -130,6 +129,19 @@ pub(crate) struct AtlasSiteWater {
     pub sites: Vec<Option<AtlasSiteBody>>,
 }
 impl AtlasSiteWater {
+    fn source_field(&self) -> SurfaceWaterField {
+        SurfaceWaterField::from_kinds(
+            self.sites
+                .iter()
+                .map(|body| match body {
+                    Some(AtlasSiteBody::Ocean) => SurfaceWaterKind::Ocean,
+                    Some(AtlasSiteBody::Lake { .. }) => SurfaceWaterKind::Lake,
+                    None => SurfaceWaterKind::DryLand,
+                })
+                .collect(),
+        )
+    }
+
     /// The R1 point rule shared by display, picking and cell quadrature: a point
     /// in the source triangle `corners` is ocean if a corner is ocean and the bed
     /// is below sea level, else lake if a corner is lake and the bed is below the
@@ -165,7 +177,6 @@ impl AtlasSiteWater {
 #[derive(Debug, Clone, Serialize)]
 pub struct AtlasLake {
     pub(crate) surface_elevation_m: f64,
-    pub(crate) spill_elevation_m: f64,
     pub(crate) area_m2: f64,
     pub(crate) volume_m3: f64,
     pub(crate) resolved_monthly_inflow_m3_s: [f64; CLIMATE_MONTH_COUNT],
@@ -176,11 +187,6 @@ impl AtlasLake {
     /// Constant initialized lake surface, in metres.
     pub const fn surface_elevation_m(&self) -> f64 {
         self.surface_elevation_m
-    }
-    /// Escape height. R1 keeps the upstream author surface, which already sits at
-    /// its own outlet, so this equals the surface; Sekai does not re-solve spills.
-    pub const fn spill_elevation_m(&self) -> f64 {
-        self.spill_elevation_m
     }
     /// Lake area under the R1 point rule and fixed fan quadrature, in square metres;
     /// zero (with zero volume) for a lake smaller than the quadrature resolution.
@@ -195,7 +201,7 @@ impl AtlasLake {
     pub fn monthly_inflow_m3_s(&self) -> &[f64; CLIMATE_MONTH_COUNT] {
         &self.resolved_monthly_inflow_m3_s
     }
-    /// Current resolved outflow, zero for a lake below its actual spill.
+    /// Resolved outflow to a source-grid outlet, zero while the lake retains inflow.
     pub fn monthly_outflow_m3_s(&self) -> &[f64; CLIMATE_MONTH_COUNT] {
         &self.resolved_monthly_outflow_m3_s
     }
@@ -236,6 +242,69 @@ pub struct AtlasRunoffBudget {
     pub monthly_dry_depression_retention_m3_s: [f64; CLIMATE_MONTH_COUNT],
     /// Numerical residual in the declared routing balance, without missing processes.
     pub monthly_routing_residual_m3_s: [f64; CLIMATE_MONTH_COUNT],
+}
+
+impl AtlasRunoffBudget {
+    /// The two source and three terminal rates (m³/s) shown in the monthly water budget.
+    pub(crate) fn monthly_terms_m3_s(&self, month: usize) -> [f64; 5] {
+        [
+            self.monthly_runoff_m3_s[month],
+            self.monthly_direct_lake_precipitation_m3_s[month],
+            self.monthly_ocean_delivery_m3_s[month],
+            self.monthly_lake_retention_m3_s[month],
+            self.monthly_dry_depression_retention_m3_s[month],
+        ]
+    }
+
+    /// Recompute sources minus terminals in m³/s for a zero-based model month.
+    pub(crate) fn routing_residual_m3_s(&self, month: usize) -> f64 {
+        let [runoff, rain, ocean, lake, dry] = self.monthly_terms_m3_s(month);
+        runoff + rain - ocean - lake - dry
+    }
+
+    fn validate(&self, lakes: &[AtlasLake]) -> Result<(), AtlasTerrainValidationError> {
+        let valid_rate = |rate: f64| rate.is_finite() && rate >= 0.0;
+        let mut lake_rain = [0.0; CLIMATE_MONTH_COUNT];
+        let mut lake_retention = [0.0; CLIMATE_MONTH_COUNT];
+        for lake in lakes {
+            for (m, net) in lake
+                .monthly_resolved_net_input_m3_s()
+                .into_iter()
+                .enumerate()
+            {
+                let rain = lake.direct_monthly_precipitation_m3_s[m];
+                let inflow = lake.resolved_monthly_inflow_m3_s[m];
+                let outflow = lake.resolved_monthly_outflow_m3_s[m];
+                if ![inflow, rain, outflow].into_iter().all(valid_rate)
+                    || !net.is_finite()
+                    || net < -(inflow + rain) * WATER_VOLUME_RELATIVE_TOLERANCE
+                {
+                    return Err(AtlasTerrainValidationError::RunoffMismatch);
+                }
+                lake_rain[m] += rain;
+                lake_retention[m] += net;
+            }
+        }
+        for m in 0..CLIMATE_MONTH_COUNT {
+            let terms = self.monthly_terms_m3_s(m);
+            let [runoff, rain, _, retained, _] = terms;
+            let input = runoff + rain;
+            let tolerance = input * WATER_VOLUME_RELATIVE_TOLERANCE;
+            let residual = self.routing_residual_m3_s(m);
+            if !terms.into_iter().all(valid_rate)
+                || !input.is_finite()
+                || !residual.is_finite()
+                || self.monthly_routing_residual_m3_s[m] != residual
+                || residual.abs() > tolerance
+                || !lake_retention[m].is_finite()
+                || (lake_rain[m] - rain).abs() > tolerance
+                || (lake_retention[m] - retained).abs() > tolerance
+            {
+                return Err(AtlasTerrainValidationError::RunoffMismatch);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A point query from the immutable bed and the R1 upstream water classes.
@@ -302,6 +371,10 @@ impl AtlasTerrainSnapshot {
     pub const fn fields(&self) -> &AtlasCellFields {
         &self.fields
     }
+    /// Build the source-site water classes for source-scale fields and regional sampling.
+    pub(crate) fn source_water_field(&self) -> SurfaceWaterField {
+        self.site_water.source_field()
+    }
     /// Actual current Sekai C2 output.
     pub const fn climate(&self) -> &GlobalCirculationSnapshot {
         &self.climate
@@ -362,7 +435,15 @@ impl AtlasTerrainSnapshot {
         direction: [f64; 3],
         bed: f64,
     ) -> Result<AtlasSurfaceSample, TerrainError> {
-        bind_surface_sample(&self.fine, &self.surface, &self.site_water, direction, bed)
+        let (corners, _) = self.fine.source_triangle(direction)?;
+        let owner = source_owner(&self.fine, &self.surface, corners, direction)?;
+        let (water, level, _) = self.site_water.classify(corners, bed);
+        Ok(AtlasSurfaceSample {
+            bed_elevation_m: bed,
+            water,
+            water_surface_elevation_m: level,
+            source_cell: owner,
+        })
     }
 
     /// Check source binding, actual current stock and resolved flow conservation.
@@ -430,8 +511,6 @@ impl AtlasTerrainSnapshot {
                 || lake.area_m2 < 0.0
                 || (lake.area_m2 == 0.0) != (lake.volume_m3 == 0.0)
                 || !lake.surface_elevation_m.is_finite()
-                || !lake.spill_elevation_m.is_finite()
-                || lake.surface_elevation_m > lake.spill_elevation_m
         }) || super::water_volume_relative_error(
             lake_stock,
             self.fields.lake_volume_m3.iter().sum(),
@@ -452,17 +531,7 @@ impl AtlasTerrainSnapshot {
         {
             return Err(AtlasTerrainValidationError::WaterInventoryMismatch);
         }
-        for m in 0..CLIMATE_MONTH_COUNT {
-            let initial = self.runoff_budget.monthly_runoff_m3_s[m]
-                + self.runoff_budget.monthly_direct_lake_precipitation_m3_s[m];
-            let residual = self.runoff_budget.monthly_routing_residual_m3_s[m];
-            if !initial.is_finite()
-                || !residual.is_finite()
-                || residual.abs() > initial.abs() * WATER_VOLUME_RELATIVE_TOLERANCE
-            {
-                return Err(AtlasTerrainValidationError::RunoffMismatch);
-            }
-        }
+        self.runoff_budget.validate(&self.lakes)?;
         if self.fingerprint != self.calculate_fingerprint() {
             return Err(AtlasTerrainValidationError::SourceMismatch);
         }
@@ -503,24 +572,6 @@ impl AtlasTerrainSnapshot {
         .expect("finite current fields and in-memory hashing cannot fail");
         *hasher.finalize().as_bytes()
     }
-}
-
-pub(crate) fn bind_surface_sample(
-    fine: &FineTerrain,
-    surface: &SphericalSurfaceSnapshot,
-    water: &AtlasSiteWater,
-    direction: [f64; 3],
-    bed: f64,
-) -> Result<AtlasSurfaceSample, TerrainError> {
-    let (corners, _) = fine.source_triangle(direction)?;
-    let owner = source_owner(fine, surface, corners, direction)?;
-    let (water, level, _) = water.classify(corners, bed);
-    Ok(AtlasSurfaceSample {
-        bed_elevation_m: bed,
-        water,
-        water_surface_elevation_m: level,
-        source_cell: owner,
-    })
 }
 
 pub(crate) fn terrain_identity(
@@ -608,6 +659,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn monthly_routing_checks_each_terminal_and_the_lake_ledger() {
+        let mut budget = AtlasRunoffBudget {
+            monthly_runoff_m3_s: [9.0; CLIMATE_MONTH_COUNT],
+            monthly_direct_lake_precipitation_m3_s: [1.0; CLIMATE_MONTH_COUNT],
+            monthly_ocean_delivery_m3_s: [5.0; CLIMATE_MONTH_COUNT],
+            monthly_lake_retention_m3_s: [3.0; CLIMATE_MONTH_COUNT],
+            monthly_dry_depression_retention_m3_s: [2.0; CLIMATE_MONTH_COUNT],
+            monthly_routing_residual_m3_s: [0.0; CLIMATE_MONTH_COUNT],
+        };
+        let mut lakes = [AtlasLake {
+            surface_elevation_m: 10.0,
+            area_m2: 100.0,
+            volume_m3: 50.0,
+            resolved_monthly_inflow_m3_s: [2.0; CLIMATE_MONTH_COUNT],
+            resolved_monthly_outflow_m3_s: [0.0; CLIMATE_MONTH_COUNT],
+            direct_monthly_precipitation_m3_s: [1.0; CLIMATE_MONTH_COUNT],
+        }];
+        assert!(budget.validate(&lakes).is_ok());
+        budget.monthly_ocean_delivery_m3_s[4] += 1.0;
+        assert!(budget.validate(&lakes).is_err());
+        budget.monthly_ocean_delivery_m3_s[4] -= 1.0;
+        lakes[0].resolved_monthly_outflow_m3_s[11] = 1.0;
+        assert!(budget.validate(&lakes).is_err());
+    }
+
+    #[test]
     fn current_fields_reject_nonfinite_material_and_wrong_dense_allocation() {
         let mut fields = AtlasCellFields {
             land_ocean: LandOceanField::from_kinds(vec![
@@ -641,6 +718,15 @@ mod tests {
         let water = AtlasSiteWater {
             sites: vec![Some(AtlasSiteBody::Ocean), lake(0, 5.0), lake(1, 9.0), None],
         };
+        assert_eq!(
+            water.source_field(),
+            SurfaceWaterField::from_kinds(vec![
+                SurfaceWaterKind::Ocean,
+                SurfaceWaterKind::Lake,
+                SurfaceWaterKind::Lake,
+                SurfaceWaterKind::DryLand,
+            ])
+        );
         let kind = |corners, bed| water.classify(corners, bed);
         assert_eq!(
             kind([0, 1, 3], -1.0),

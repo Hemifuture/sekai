@@ -79,6 +79,7 @@ struct CellQuadrature {
     area: f64,
     bed: f64,
     exposed: f64,
+    dry_area: f64,
     ocean_area: f64,
     lake_area: f64,
     ocean_volume: f64,
@@ -151,7 +152,7 @@ fn integrate_cell(
                     None => out.lakes.push((lake, area, volume)),
                 }
             }
-            SurfaceWaterKind::DryLand => {}
+            SurfaceWaterKind::DryLand => out.dry_area += area,
         }
     }
     Ok(out)
@@ -185,7 +186,6 @@ pub(super) fn build_geometry(
         .iter()
         .map(|&surface_m| AtlasLake {
             surface_elevation_m: surface_m,
-            spill_elevation_m: surface_m,
             area_m2: 0.0,
             volume_m3: 0.0,
             resolved_monthly_inflow_m3_s: [0.0; CLIMATE_MONTH_COUNT],
@@ -238,7 +238,7 @@ pub(super) fn build_geometry(
         exposed_elevation_m: mean(|q| q.exposed),
         ocean_fraction: mean(|q| q.ocean_area),
         lake_fraction: mean(|q| q.lake_area),
-        dry_fraction: mean(|q| q.area - q.ocean_area - q.lake_area),
+        dry_fraction: mean(|q| q.dry_area),
         ocean_volume_m3: cells.iter().map(|q| q.ocean_volume).collect(),
         lake_volume_m3: cells.iter().map(|q| q.lake_volume).collect(),
         relative_permeability,

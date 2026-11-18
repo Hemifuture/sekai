@@ -176,11 +176,7 @@ pub(super) fn build_current_runoff(
                 record.resolved_monthly_outflow_m3_s[m] = discharge[root][0];
             }
         }
-        budget.monthly_routing_residual_m3_s[m] = budget.monthly_runoff_m3_s[m]
-            + budget.monthly_direct_lake_precipitation_m3_s[m]
-            - budget.monthly_ocean_delivery_m3_s[m]
-            - budget.monthly_lake_retention_m3_s[m]
-            - budget.monthly_dry_depression_retention_m3_s[m];
+        budget.monthly_routing_residual_m3_s[m] = budget.routing_residual_m3_s(m);
     }
     let is_lake = |i: usize| matches!(geometry.water.sites[i], Some(AtlasSiteBody::Lake { .. }));
     let mut rivers = Vec::new();

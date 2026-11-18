@@ -58,20 +58,7 @@ impl AtlasFieldDocument {
         let registry = atlas_field_registry().map_err(|e| e.to_string())?;
         let cache = FormationDisplayCache::build(snapshot.surface(), snapshot.climate().fields())
             .map_err(|e| e.to_string())?;
-        let directions: Vec<_> = snapshot
-            .surface()
-            .cells()
-            .iter()
-            .map(|cell| cell.site.components())
-            .collect();
-        let water = SurfaceWaterField::from_kinds(
-            snapshot
-                .sample_surface_batch(&directions, &|| false)
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .map(|sample| sample.water)
-                .collect(),
-        );
+        let water = snapshot.source_water_field();
         let display_radius_m = super::natural_field_payloads::elevation_display_radius_m(
             0.0,
             snapshot.fields().bed_elevation_m(),
@@ -187,6 +174,28 @@ pub(super) fn show_summary(ui: &mut egui::Ui, document: &AtlasFieldDocument) {
         }
         ui.weak(text::ATLAS_HYDROLOGY_HINT);
         ui.weak(text::ATLAS_PERFORMANCE_HINT);
+    });
+    ui.collapsing(text::ATLAS_MONTHLY_RUNOFF_LABEL, |ui| {
+        let id = ui.make_persistent_id("atlas_budget_month");
+        let mut month = ui.data(|data| data.get_temp::<usize>(id)).unwrap_or(1);
+        if ui
+            .add(
+                egui::Slider::new(&mut month, 1..=crate::world::natural::CLIMATE_MONTH_COUNT)
+                    .text(text::ATLAS_BUDGET_MONTH_LABEL),
+            )
+            .changed()
+        {
+            ui.data_mut(|data| data.insert_temp(id, month));
+        }
+        let rates = snapshot.runoff_budget().monthly_terms_m3_s(month - 1);
+        egui::Grid::new("atlas_monthly_runoff").show(ui, |ui| {
+            for (label, rate) in text::ATLAS_RUNOFF_TERMS.into_iter().zip(rates) {
+                ui.label(label);
+                ui.monospace(format!("{rate:.2}"));
+                ui.end_row();
+            }
+        });
+        ui.weak(text::ATLAS_MONTHLY_RUNOFF_HINT);
     });
     for metric in snapshot.climate_quality().metrics() {
         if metric.status() == crate::world::natural::QualityMetricStatus::Fail {

@@ -16,6 +16,17 @@ pub(crate) const ATLAS_AUTHOR_HINT: &str =
 pub(crate) const ATLAS_QUALITY_LABEL: &str = "C2 气候工作质量";
 pub(crate) const ATLAS_AUTHOR_DETAILS_LABEL: &str = "地形形状（作者初态）";
 pub(crate) const ATLAS_SOURCE_DETAILS_LABEL: &str = "来源、尺度与已解析范围";
+pub(crate) const ATLAS_MONTHLY_RUNOFF_LABEL: &str = "全球逐月汇流（m³/s）";
+pub(crate) const ATLAS_BUDGET_MONTH_LABEL: &str = "月份";
+pub(crate) const ATLAS_RUNOFF_TERMS: [&str; 5] = [
+    "陆地产生的径流",
+    "湖面直接降水",
+    "入海流量",
+    "湖泊滞留",
+    "干洼地滞留",
+];
+pub(crate) const ATLAS_MONTHLY_RUNOFF_HINT: &str =
+    "各项均为所选月份的平均流率。库存和湖面取初始地形，本阶段仅计算来水去向。";
 pub(crate) const ATLAS_INTEGER_LABELS: [&str; 3] = ["来源请求格数", "板块数", "大陆数（0 为自动）"];
 pub(crate) const ATLAS_SHAPE_LABELS: [&str; 8] = [
     "初态陆地比例",
