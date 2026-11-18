@@ -457,6 +457,10 @@ mod tests {
         let audit_ms = audit_start.elapsed().as_millis();
 
         let snapshot = &artifact.snapshot;
+        eprintln!(
+            "ATLAS current fingerprint={}",
+            blake3::Hash::from(*snapshot.fingerprint())
+        );
         let unit = [1.0, 0.5, 0.25];
         let large = unit.map(|v| v * f64::MAX);
         let samples = snapshot
