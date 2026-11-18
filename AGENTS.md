@@ -529,12 +529,13 @@ budgets, valid domains, artifact identity, and final-state consistency. Model
 reduction, diagnostic balances, parameterization, fewer layers, fixed work grids,
 and cheaper coupling or solvers may replace the existing equations. Additional
 precision requires demonstrated final-map or downstream benefit; arbitrary-grid
-agreement and unresolved detail are not requirements. The supported domain
-includes the LOD hierarchy from L0 cells to display leaves (2026-10-25): global
-physics stays on coarse work domains, while finer levels derive physically
-consistent detail through sourced, cheap downscaling, with conservative
-aggregation and picking that matches the display. Any commit that changes a
-published artifact must bump the owning stage identity version, never only
+agreement and unresolved detail are not requirements. Under the 2026-11-03
+revision, global physical state has one declared truth layer. Display leaves
+derive from that layer and the declared fine bed. Picking matches the display,
+aggregation returns the parent quantities within the stated tolerance, and
+subgrid shapes are identified as unresolved. A consumer needing finer physical
+state can refine its own region using the global state as its boundary. Any commit
+that changes a published artifact must bump the owning stage identity version, never only
 re-pin fingerprints. Compare changes offline with suitable analytic,
 controlled, observational, or higher-cost evidence; the old model is a baseline,
 not automatically truth. Explicitly revise model-specific gates and measure new
