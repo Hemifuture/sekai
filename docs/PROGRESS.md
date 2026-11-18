@@ -10,6 +10,10 @@
 原生窗口前后对照、生成成本和有限采样的适用范围见
 [海岸连通修复实测](superpowers/measurements/2026-11-18-connected-atlas-coast.md)。
 
+后续为河口建立了空间索引。默认种子的每个细床采样点最多检查 11 个候选河口，原生 Draft
+相邻冷启动的首帧从 25.675 s 降至 18.892 s，完整世界指纹一致。分阶段和重复测量见
+[海岸修复后的冷生成优化](superpowers/measurements/2026-11-18-connected-atlas-coast.md#海岸修复后的冷生成优化)。
+
 ## 2026-11-18 Atlas 水体效率
 
 模型 4 采用 [世界真值 R2](superpowers/specs/2026-11-03-world-truth-scope-design.md)。

@@ -10,7 +10,16 @@ use crate::{
 use std::f64::consts::{PI, TAU};
 pub(crate) const WIDTH: usize = crate::terrain::MAP_W as usize;
 pub(crate) const HEIGHT: usize = crate::terrain::MAP_H as usize;
-const BIN: usize = 16;
+pub(crate) const BIN: usize = 16;
+
+/// Shared source-raster bin for a periodic longitude and a latitude including the poles.
+pub(crate) fn bin_index([x, y]: [f64; 2]) -> usize {
+    let col = (x.rem_euclid(WIDTH as f64) / BIN as f64) as usize % (WIDTH / BIN);
+    let row = (y / BIN as f64)
+        .floor()
+        .clamp(0., (HEIGHT / BIN - 1) as f64) as usize;
+    row * (WIDTH / BIN) + col
+}
 #[derive(Debug)]
 pub(crate) struct Triangle {
     pub nodes: [usize; 3],
@@ -155,31 +164,24 @@ impl Coverage {
         Ok(out)
     }
     pub(crate) fn locate(&self, xy: [f64; 2], q: [f64; 3]) -> Option<(usize, [f64; 3])> {
-        let x = (xy[0].rem_euclid(WIDTH as f64) / BIN as f64) as usize;
-        let y = (xy[1] / BIN as f64)
-            .floor()
-            .clamp(0., (HEIGHT / BIN - 1) as f64) as usize;
         // Source scan overwrites shared-edge pixels in triangle order.
-        self.bins[y * (WIDTH / BIN) + x]
-            .iter()
-            .rev()
-            .find_map(|&t| {
-                let n = &self.triangles[t].normals;
-                let dc = dot(n[0], q);
-                if dc < 0. {
-                    return None;
-                }
-                let da = dot(n[1], q);
-                if da < 0. {
-                    return None;
-                }
-                let db = dot(n[2], q);
-                if db < 0. {
-                    return None;
-                }
-                let sum = da + db + dc;
-                (sum > 0.).then(|| (t, [da / sum, db / sum, dc / sum]))
-            })
+        self.bins[bin_index(xy)].iter().rev().find_map(|&t| {
+            let n = &self.triangles[t].normals;
+            let dc = dot(n[0], q);
+            if dc < 0. {
+                return None;
+            }
+            let da = dot(n[1], q);
+            if da < 0. {
+                return None;
+            }
+            let db = dot(n[2], q);
+            if db < 0. {
+                return None;
+            }
+            let sum = da + db + dc;
+            (sum > 0.).then(|| (t, [da / sum, db / sum, dc / sum]))
+        })
     }
 
     /// Arbitrary directions can lie at source vertices where rounded dot/cross
@@ -193,10 +195,6 @@ impl Coverage {
         xyz: &[f32],
     ) -> Option<(usize, [f64; 3])> {
         self.locate(xy, q).or_else(|| {
-            let x = (xy[0].rem_euclid(WIDTH as f64) / BIN as f64) as usize;
-            let y = (xy[1] / BIN as f64)
-                .floor()
-                .clamp(0., (HEIGHT / BIN - 1) as f64) as usize;
             let determinant = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
                 let coord = |p: [f64; 3]| robust::Coord3D {
                     x: p[0],
@@ -205,24 +203,21 @@ impl Coverage {
                 };
                 robust::orient3d(coord(a), coord(b), coord(c), coord([0.0; 3]))
             };
-            self.bins[y * (WIDTH / BIN) + x]
-                .iter()
-                .rev()
-                .find_map(|&t| {
-                    let p = self.triangles[t]
-                        .nodes
-                        .map(|i| std::array::from_fn(|j| f64::from(xyz[3 * i + j])));
-                    let orientation = determinant(p[0], p[1], p[2]).signum();
-                    let weights = [
-                        determinant(p[1], p[2], q),
-                        determinant(p[2], p[0], q),
-                        determinant(p[0], p[1], q),
-                    ]
-                    .map(|v| v * orientation);
-                    let sum = weights.iter().sum::<f64>();
-                    (weights.iter().all(|&v| v >= 0.0) && sum > 0.0)
-                        .then(|| (t, weights.map(|v| v / sum)))
-                })
+            self.bins[bin_index(xy)].iter().rev().find_map(|&t| {
+                let p = self.triangles[t]
+                    .nodes
+                    .map(|i| std::array::from_fn(|j| f64::from(xyz[3 * i + j])));
+                let orientation = determinant(p[0], p[1], p[2]).signum();
+                let weights = [
+                    determinant(p[1], p[2], q),
+                    determinant(p[2], p[0], q),
+                    determinant(p[0], p[1], q),
+                ]
+                .map(|v| v * orientation);
+                let sum = weights.iter().sum::<f64>();
+                (weights.iter().all(|&v| v >= 0.0) && sum > 0.0)
+                    .then(|| (t, weights.map(|v| v / sum)))
+            })
         })
     }
 }

@@ -3,7 +3,7 @@
 use crate::{
     noise::value_noise,
     random::sub_seed,
-    raster::{spline, HEIGHT, WIDTH},
+    raster::{bin_index, spline, BIN, HEIGHT, WIDTH},
     river_geometry::DenseRiver,
     shoreline::Raw,
     terrain::Terrain,
@@ -12,6 +12,58 @@ use crate::{
 };
 use std::f64::consts::PI;
 type Bounds = [f64; 4];
+
+/// Each bin lists only mouths that can reach it, in their original application order.
+#[derive(Debug)]
+pub(crate) struct MouthIndex {
+    bins: Vec<Vec<usize>>,
+}
+
+impl MouthIndex {
+    pub(crate) fn new(mouths: &[Mouth], scale: f64) -> Self {
+        let mut index = Self {
+            bins: vec![Vec::new(); WIDTH / BIN * (HEIGHT / BIN)],
+        };
+        for (id, mouth) in mouths.iter().enumerate() {
+            let bounds = mouth
+                .delta
+                .as_ref()
+                .map_or(mouth.fbox, |d| union(mouth.fbox, d.bounds));
+            index.insert(id, bounds, scale);
+        }
+        index
+    }
+
+    fn insert(&mut self, id: usize, bounds: Bounds, scale: f64) {
+        let [xmin, ymin, xmax, ymax] = pixel_bounds(bounds, scale);
+        // The exact source test compares x*scale-0.5 and y*scale-0.5 to these integer
+        // pixel limits. Cover each whole boundary pixel as well, including wraparound.
+        let tile = |pixel: f64| (pixel / (scale * BIN as f64)).floor() as isize;
+        let cols = (WIDTH / BIN) as isize;
+        let last_row = (HEIGHT / BIN - 1) as isize;
+        let first = tile(xmin);
+        let last = tile(xmax + 1.).min(first + cols - 1);
+        for row in tile(ymin).clamp(0, last_row)..=tile(ymax + 1.).clamp(0, last_row) {
+            for col in first..=last {
+                self.bins[(row * cols + col.rem_euclid(cols)) as usize].push(id);
+            }
+        }
+    }
+
+    pub(crate) fn at(&self, xy: [f64; 2]) -> &[usize] {
+        &self.bins[bin_index(xy)]
+    }
+}
+
+fn pixel_bounds([x0, y0, x1, y1]: Bounds, scale: f64) -> Bounds {
+    [
+        (x0 * scale).floor(),
+        (y0 * scale).floor(),
+        (x1 * scale).ceil(),
+        (y1 * scale).ceil(),
+    ]
+}
+
 #[derive(Debug, Default)]
 struct Line {
     x: Vec<f64>,
@@ -554,10 +606,8 @@ impl Mouth {
         let pixel_inside = |b: Bounds| {
             let px = q[0] * scale - 0.5;
             let py = q[1] * scale - 0.5;
-            px >= (b[0] * scale).floor()
-                && px <= (b[2] * scale).ceil()
-                && py >= (b[1] * scale).floor()
-                && py <= (b[3] * scale).ceil()
+            let [x0, y0, x1, y1] = pixel_bounds(b, scale);
+            px >= x0 && px <= x1 && py >= y0 && py <= y1
         };
         if let Some(d) = &self.delta {
             if pixel_inside(d.bounds) {
@@ -697,5 +747,35 @@ impl Mouth {
             }
         }
         raw.height = e as f32;
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    #[test]
+    fn mouth_candidates_include_rounded_edges_and_keep_source_order_at_the_seam() {
+        let scale = 4.;
+        let mut index = MouthIndex::new(&[], scale);
+        // These influence rectangles touch the same tile across opposite map copies.
+        index.insert(2, [-2., 15.1, 1., 15.99], scale);
+        index.insert(5, [WIDTH as f64 - 1., 15.8, WIDTH as f64 + 2., 17.], scale);
+        assert_eq!(index.at([0., 16.125]), &[2, 5]);
+        assert_eq!(index.at([-f64::EPSILON, 16.125]), &[2, 5]);
+        assert_eq!(index.at([WIDTH as f64 - 0.5, 16.125]), &[2, 5]);
+        assert!(index.at([64., 16.125]).is_empty());
+        // A rectangle covering the entire longitude range contributes each mouth once.
+        index.insert(
+            8,
+            [
+                -(WIDTH as f64),
+                HEIGHT as f64 - 1.,
+                WIDTH as f64,
+                HEIGHT as f64,
+            ],
+            scale,
+        );
+        assert_eq!(index.at([0., HEIGHT as f64]), &[8]);
     }
 }

@@ -133,6 +133,7 @@ pub struct FineTerrain {
     source: Arc<FineSource>,
     scale: FineScale,
     valleys: Valleys,
+    mouth_index: estuary::MouthIndex,
     residual: Vec<f64>,
     priors: Vec<LakePrior>,
 }
@@ -192,11 +193,14 @@ impl FineTerrain {
             scale.pixels_per_unit() as f64,
             [WIDTH as f64, HEIGHT as f64],
         );
+        let mouth_index =
+            estuary::MouthIndex::new(&source.mouths, f64::from(scale.pixels_per_unit()));
         let mut out = Self {
             residual: vec![0.; source.terrain.mesh.n],
             source,
             scale,
             valleys,
+            mouth_index,
             priors: Vec::new(),
         };
         let mut scratch = out.source.detail.workspace();
@@ -341,8 +345,8 @@ impl FineTerrain {
             xy,
             scratch,
         )?;
-        for mouth in &self.source.mouths {
-            mouth.sample(xy, scale, self.source.terrain.river_threshold, &mut raw);
+        for &id in self.mouth_index.at(xy) {
+            self.source.mouths[id].sample(xy, scale, self.source.terrain.river_threshold, &mut raw);
         }
         Ok(raw)
     }
@@ -595,6 +599,23 @@ mod tests {
                 assert_eq!((different, water_diff), (0, 0));
             }
             if scale == FineScale::Four {
+                let mut memberships = 0;
+                let mut peak = 0;
+                for y in (0..HEIGHT).step_by(crate::raster::BIN) {
+                    for x in (0..WIDTH).step_by(crate::raster::BIN) {
+                        let count = fine.mouth_index.at([x as f64, y as f64]).len();
+                        memberships += count;
+                        peak = peak.max(count);
+                    }
+                }
+                eprintln!(
+                    "mouths {}: {memberships} bin memberships, maximum {peak} candidates",
+                    source.mouths.len()
+                );
+                let controlled_index = estuary::MouthIndex::new(
+                    &controlled_mouths,
+                    f64::from(scale.pixels_per_unit()),
+                );
                 let mut branch_diffs = 0;
                 let mut branch_max = 0_f64;
                 for &(controlled, x, y, e, w) in reference::ESTUARY_BRANCH {
@@ -613,9 +634,27 @@ mod tests {
                                 &mut scratch,
                             )
                             .expect("pre mouth");
+                        let mut unindexed = r;
                         for m in &controlled_mouths {
-                            m.sample([x, y], 4., source.terrain.river_threshold, &mut r);
+                            m.sample([x, y], 4., source.terrain.river_threshold, &mut unindexed);
                         }
+                        for &id in controlled_index.at([x, y]) {
+                            controlled_mouths[id].sample(
+                                [x, y],
+                                4.,
+                                source.terrain.river_threshold,
+                                &mut r,
+                            );
+                        }
+                        assert_eq!(
+                            (r.height.to_bits(), r.water, r.ice.to_bits()),
+                            (
+                                unindexed.height.to_bits(),
+                                unindexed.water,
+                                unindexed.ice.to_bits()
+                            ),
+                            "indexed mouth at ({x}, {y})"
+                        );
                         r
                     } else {
                         fine.raw([x, y], &mut scratch).expect("bridge")
@@ -782,8 +821,8 @@ mod tests {
             let mut max_delta = 0_f64;
             for [x0, y0] in source.cover.support_tiles(&fine.residual) {
                 let s = usize::from(scale.pixels_per_unit());
-                for y in y0 * s..(y0 + 16) * s {
-                    for x in x0 * s..(x0 + 16) * s {
+                for y in y0 * s..(y0 + crate::raster::BIN) * s {
+                    for x in x0 * s..(x0 + crate::raster::BIN) * s {
                         let direction = exact_direction([
                             (x as f64 + 0.5) / s as f64,
                             (y as f64 + 0.5) / s as f64,
