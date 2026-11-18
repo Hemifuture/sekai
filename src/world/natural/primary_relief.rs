@@ -472,11 +472,10 @@ impl GeologicSubstrateSnapshot {
         {
             return Err(GeologicSubstrateValidationError::CopiedTectonicFieldMismatch);
         }
-        for index in 0..self.cell_count() as usize {
+        for (index, &found) in self.crust_density_kg_m3.iter().enumerate() {
             let continental = evolved.material().continental_volume_m3()[index];
             let oceanic = evolved.material().oceanic_volume_m3()[index];
             let expected = effective_crust_density_kg_m3(continental, oceanic)?;
-            let found = self.crust_density_kg_m3[index];
             if (found - expected).abs() > DENSITY_IDENTITY_TOLERANCE_KG_M3 {
                 return Err(GeologicSubstrateValidationError::DensityIdentityMismatch {
                     cell: CellId::from_raw(index as u32),
