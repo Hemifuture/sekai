@@ -1,9 +1,11 @@
 //! Fixed author bed, upstream Civ Atlas water classes and current Sekai climate/runoff,
-//! without fictitious P2/P3 history (`2026-11-03-world-truth-scope-design.md` R1).
+//! with marine inundation resolved on the author bed (`2026-11-03-world-truth-scope-design.md` R3).
+
+pub(crate) mod coast;
 
 use std::sync::Arc;
 
-use civ_atlas_terrain::{FineTerrain, TerrainError};
+use civ_atlas_terrain::{FineTerrain, LocatedSurfaceSample, TerrainError};
 use serde::Serialize;
 use thiserror::Error;
 
@@ -14,9 +16,8 @@ use super::{
 use crate::world::spatial::{dot, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
 
 /// Identity version for fixed-bed water classes, material prior and current runoff.
-/// Version 4 integrates dry area directly, binds source-scale consumers to the
-/// upstream classes and removes the duplicate lake level previously labelled a spill.
-pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 4;
+/// Version 5 resolves marine inundation from submerged pathways to source ocean sites.
+pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 5;
 /// Fixed original zoom scale; camera LOD never changes the author bed.
 pub const ATLAS_FINE_SCALE: civ_atlas_terrain::FineScale = civ_atlas_terrain::FineScale::Four;
 /// Fan quadrature level of the cell water fields: each source fan triangle is
@@ -26,6 +27,14 @@ pub const ATLAS_FINE_SCALE: civ_atlas_terrain::FineScale = civ_atlas_terrain::Fi
 /// on mixed cells, against 6.9% at level 1 and 0.85% at level 3 at about 3.9x
 /// the evaluation cost (`measurements/2026-11-03-truth-layer-cell-quadrature.md` §2-§3).
 pub const ATLAS_SUPPORT_DEPTH: u8 = 2;
+/// One dyadic parent of the original atlas raster is the initial coastal search scale.
+/// The R3 comparison measured the one-pixel and two-pixel starts, then subdivided
+/// only where actual submerged paths did not resolve the local topology.
+pub(crate) const ATLAS_COAST_PARENT_RASTER_INTERVALS: u8 = 2;
+/// Subdivisions of the source angular pixel used only to verify possible coastal basin divides.
+/// The recorded 55.5 km regression uses this spacing. A native-pixel-only flood left
+/// 790 further wet cut edges at this verification scale on the same world (R3 measurements).
+pub(crate) const ATLAS_COAST_CLEARANCE_SUBDIVISIONS: u16 = 16;
 
 /// Integrated fields on original source cells. Depth is volume / whole cell area,
 /// matching the existing C2 consumer; lake area and volume are never ocean area.
@@ -122,13 +131,23 @@ pub(crate) enum AtlasSiteBody {
     Lake { lake: usize, surface_m: f64 },
 }
 
-/// R1 truth layer: the only water topology is the upstream per-site class.
+/// Source-site bodies and the marine footprint shared by all subcell consumers.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct AtlasSiteWater {
     /// One entry per source site; `None` is dry land.
     pub sites: Vec<Option<AtlasSiteBody>>,
+    coast: coast::CoastMap,
 }
 impl AtlasSiteWater {
+    pub(crate) fn new(sites: Vec<Option<AtlasSiteBody>>, coast: coast::CoastMap) -> Self {
+        Self { sites, coast }
+    }
+
+    /// A negative bed is marine only in a component reached by a submerged ocean source.
+    pub(crate) fn is_ocean(&self, sample: &LocatedSurfaceSample) -> bool {
+        sample.bed_elevation_m < 0.0 && self.coast.is_marine(sample.source_face, sample.weights)
+    }
+
     fn source_field(&self) -> SurfaceWaterField {
         SurfaceWaterField::from_kinds(
             self.sites
@@ -142,21 +161,17 @@ impl AtlasSiteWater {
         )
     }
 
-    /// The R1 point rule shared by display, picking and cell quadrature: a point
-    /// in the source triangle `corners` is ocean if a corner is ocean and the bed
-    /// is below sea level, else lake if a corner is lake and the bed is below the
-    /// highest such lake surface, else dry. Fine connectivity is not resolved.
-    ///
-    /// Returns the class, the constant water surface where wet, and the lake index.
+    /// Shared point classification for inventory, picking and display. Lake levels are
+    /// the original source priors and remain separate from marine inundation.
     pub(crate) fn classify(
         &self,
         corners: [usize; 3],
-        bed: f64,
+        sample: &LocatedSurfaceSample,
     ) -> (SurfaceWaterKind, Option<f64>, Option<usize>) {
-        let bodies = corners.map(|i| self.sites[i]);
-        if bed < 0.0 && bodies.contains(&Some(AtlasSiteBody::Ocean)) {
+        if self.is_ocean(sample) {
             return (SurfaceWaterKind::Ocean, Some(0.0), None);
         }
+        let bodies = corners.map(|i| self.sites[i]);
         let lake = bodies
             .iter()
             .filter_map(|body| match body {
@@ -165,7 +180,7 @@ impl AtlasSiteWater {
             })
             .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)));
         match lake {
-            Some((lake, surface)) if bed < surface => {
+            Some((lake, surface)) if sample.bed_elevation_m < surface => {
                 (SurfaceWaterKind::Lake, Some(surface), Some(lake))
             }
             _ => (SurfaceWaterKind::DryLand, None, None),
@@ -307,7 +322,7 @@ impl AtlasRunoffBudget {
     }
 }
 
-/// A point query from the immutable bed and the R1 upstream water classes.
+/// A point query from the immutable bed, connected ocean and source lake levels.
 #[derive(Debug, Clone, Copy)]
 pub struct AtlasSurfaceSample {
     /// Exact canonical fine bed, in metres.
@@ -406,8 +421,7 @@ impl AtlasTerrainSnapshot {
 
     /// Sample the fixed bed and initialized connected water; rejects invalid directions.
     pub fn sample_surface(&self, direction: [f64; 3]) -> Result<AtlasSurfaceSample, TerrainError> {
-        let bed = self.fine.sample_surface(direction)?.bed_elevation_m;
-        self.bind_surface_sample(direction, bed)
+        self.bind_surface_sample(direction, &self.fine.sample_located_surface(direction)?)
     }
 
     /// Sample a caller batch with shared source scratch. Preserves order and
@@ -417,15 +431,17 @@ impl AtlasTerrainSnapshot {
         directions: &[[f64; 3]],
         cancelled: &dyn Fn() -> bool,
     ) -> Result<Vec<AtlasSurfaceSample>, TerrainError> {
-        let beds = self.fine.sample_surface_batch(directions, cancelled)?;
+        let beds = self
+            .fine
+            .sample_located_surface_batch(directions, cancelled)?;
         directions
             .iter()
             .zip(beds)
-            .map(|(&direction, bed)| {
+            .map(|(&direction, sample)| {
                 if cancelled() {
                     return Err(TerrainError::Cancelled);
                 }
-                self.bind_surface_sample(direction, bed.bed_elevation_m)
+                self.bind_surface_sample(direction, &sample)
             })
             .collect()
     }
@@ -433,13 +449,13 @@ impl AtlasTerrainSnapshot {
     fn bind_surface_sample(
         &self,
         direction: [f64; 3],
-        bed: f64,
+        sample: &LocatedSurfaceSample,
     ) -> Result<AtlasSurfaceSample, TerrainError> {
-        let (corners, _) = self.fine.source_triangle(direction)?;
+        let corners = source_corners(&self.fine, sample.source_face);
         let owner = source_owner(&self.fine, &self.surface, corners, direction)?;
-        let (water, level, _) = self.site_water.classify(corners, bed);
+        let (water, level, _) = self.site_water.classify(corners, sample);
         Ok(AtlasSurfaceSample {
-            bed_elevation_m: bed,
+            bed_elevation_m: sample.bed_elevation_m,
             water,
             water_surface_elevation_m: level,
             source_cell: owner,
@@ -452,7 +468,10 @@ impl AtlasTerrainSnapshot {
         self.validate_binding()?;
         let n = self.surface.cells().len();
         self.fields.validate(n)?;
-        if self.fine.coarse_terrain().site_xyz().len() != 3 * n || self.site_water.sites.len() != n
+        if self.fine.coarse_terrain().site_xyz().len() != 3 * n
+            || self.site_water.sites.len() != n
+            || self.site_water.coast.face_count()
+                != self.fine.coarse_terrain().site_triangles().len() / 3
         {
             return Err(AtlasTerrainValidationError::SourceMismatch);
         }
@@ -572,6 +591,11 @@ impl AtlasTerrainSnapshot {
         .expect("finite current fields and in-memory hashing cannot fail");
         *hasher.finalize().as_bytes()
     }
+}
+
+pub(crate) fn source_corners(fine: &FineTerrain, face: usize) -> [usize; 3] {
+    let indices = fine.coarse_terrain().site_triangles();
+    std::array::from_fn(|i| indices[3 * face + i])
 }
 
 pub(crate) fn terrain_identity(
@@ -713,10 +737,13 @@ mod tests {
     }
 
     #[test]
-    fn point_rule_prefers_ocean_below_sea_level_then_the_highest_lake_surface() {
+    fn point_rule_requires_marine_connection_then_considers_the_highest_lake() {
         let lake = |lake, surface_m| Some(AtlasSiteBody::Lake { lake, surface_m });
+        let mut coast = coast::CoastMap::unrefined(2);
+        coast.set_marine(0);
         let water = AtlasSiteWater {
             sites: vec![Some(AtlasSiteBody::Ocean), lake(0, 5.0), lake(1, 9.0), None],
+            coast,
         };
         assert_eq!(
             water.source_field(),
@@ -727,24 +754,33 @@ mod tests {
                 SurfaceWaterKind::DryLand,
             ])
         );
-        let kind = |corners, bed| water.classify(corners, bed);
+        let kind = |corners, bed, face| {
+            water.classify(
+                corners,
+                &LocatedSurfaceSample {
+                    bed_elevation_m: bed,
+                    source_face: face,
+                    weights: [0.25, 0.25, 0.5],
+                },
+            )
+        };
         assert_eq!(
-            kind([0, 1, 3], -1.0),
+            kind([3, 3, 3], -1.0, 0),
             (SurfaceWaterKind::Ocean, Some(0.0), None)
         );
         // Above sea level an ocean corner yields to an adjacent lake surface.
         assert_eq!(
-            kind([0, 1, 3], 2.0),
+            kind([0, 1, 3], 2.0, 0),
             (SurfaceWaterKind::Lake, Some(5.0), Some(0))
         );
         assert_eq!(
-            kind([1, 2, 3], 6.0),
+            kind([1, 2, 3], 6.0, 1),
             (SurfaceWaterKind::Lake, Some(9.0), Some(1))
         );
-        assert_eq!(kind([1, 2, 3], 9.0).0, SurfaceWaterKind::DryLand);
-        // A negative bed with no ocean corner is dry land, not sea.
+        assert_eq!(kind([1, 2, 3], 9.0, 1).0, SurfaceWaterKind::DryLand);
+        // Even an upstream ocean corner cannot flood a disconnected depression.
         assert_eq!(
-            kind([3, 3, 3], -50.0),
+            kind([0, 3, 3], -50.0, 1),
             (SurfaceWaterKind::DryLand, None, None)
         );
     }

@@ -16,7 +16,9 @@ mod raster;
 mod river_geometry;
 mod shoreline;
 mod valleys;
-pub use fine::{FineScale, FineTerrain, LakePrior, SurfaceSample, FINE_TERRAIN_VERSION};
+pub use fine::{
+    FineScale, FineTerrain, LakePrior, LocatedSurfaceSample, SurfaceSample, FINE_TERRAIN_VERSION,
+};
 #[cfg(test)]
 #[allow(dead_code)]
 mod fine_reference {

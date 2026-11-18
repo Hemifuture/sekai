@@ -58,6 +58,17 @@ pub struct SurfaceSample {
     /// Bed height in metres, including the A3 nodal residual.
     pub bed_elevation_m: f64,
 }
+
+/// Fixed bed together with the source chart used to evaluate it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LocatedSurfaceSample {
+    /// Canonical bed in metres, identical to the bed-only point query.
+    pub bed_elevation_m: f64,
+    /// Index of the source Delaunay triangle already located for the lake-bed interpolation.
+    pub source_face: usize,
+    /// Projective barycentric coordinates in that triangle, in source vertex order.
+    pub weights: [f64; 3],
+}
 #[derive(Debug)]
 struct FineSource {
     terrain: Arc<Terrain>,
@@ -135,24 +146,25 @@ impl FineTerrain {
         direction: [f64; 3],
     ) -> Result<([usize; 3], [f64; 3]), TerrainError> {
         let xy = coordinates(direction)?;
-        let max = direction.iter().map(|x| x.abs()).fold(0.0, f64::max);
-        let (triangle, weights) = self
-            .source
-            .cover
-            .locate_direction(
-                xy,
-                direction.map(|x| x / max),
-                &self.source.terrain.mesh.xyz,
-            )
-            .ok_or(TerrainError::InvalidOutput {
-                field: "source triangle coverage",
-            })?;
+        let (triangle, weights) =
+            self.locate_source(xy, direction)
+                .ok_or(TerrainError::InvalidOutput {
+                    field: "source triangle coverage",
+                })?;
         Ok((self.source.cover.triangles[triangle].nodes, weights))
     }
 
     /// Borrow the original immutable coarse author data for substrate and spatial adaptation.
     pub fn coarse_terrain(&self) -> &Terrain {
         &self.source.terrain
+    }
+    fn locate_source(&self, xy: [f64; 2], direction: [f64; 3]) -> Option<(usize, [f64; 3])> {
+        let max = direction.iter().map(|v| v.abs()).fold(0.0, f64::max);
+        self.source.cover.locate_direction(
+            xy,
+            direction.map(|v| v / max),
+            &self.source.terrain.mesh.xyz,
+        )
     }
     /// Build the original fine terrain at one fixed source scale.
     ///
@@ -228,6 +240,17 @@ impl FineTerrain {
     /// Returns `InvalidDirection` for zero/nonfinite
     /// inputs, or `InvalidOutput` if the source cannot locate a valid triangle.
     pub fn sample_surface(&self, direction: [f64; 3]) -> Result<SurfaceSample, TerrainError> {
+        Ok(SurfaceSample {
+            bed_elevation_m: self.sample_located_surface(direction)?.bed_elevation_m,
+        })
+    }
+
+    /// Evaluate a finite nonzero direction and return its bed and barycentric location.
+    /// Reports the same direction and coverage errors as the bed-only query.
+    pub fn sample_located_surface(
+        &self,
+        direction: [f64; 3],
+    ) -> Result<LocatedSurfaceSample, TerrainError> {
         self.sample(direction, &mut self.source.detail.workspace())
     }
     /// Evaluate a bounded caller batch, reusing mutable noise scratch locally.
@@ -239,12 +262,33 @@ impl FineTerrain {
         directions: &[[f64; 3]],
         cancel: &dyn Fn() -> bool,
     ) -> Result<Vec<SurfaceSample>, TerrainError> {
+        self.sample_batch(directions, cancel, |s| SurfaceSample {
+            bed_elevation_m: s.bed_elevation_m,
+        })
+    }
+
+    /// Evaluate directions in order together with their source charts. Returns the same
+    /// errors as the scalar query, or `Cancelled` without returning a partial batch.
+    pub fn sample_located_surface_batch(
+        &self,
+        directions: &[[f64; 3]],
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<Vec<LocatedSurfaceSample>, TerrainError> {
+        self.sample_batch(directions, cancel, std::convert::identity)
+    }
+
+    fn sample_batch<T>(
+        &self,
+        directions: &[[f64; 3]],
+        cancel: &dyn Fn() -> bool,
+        select: impl Fn(LocatedSurfaceSample) -> T,
+    ) -> Result<Vec<T>, TerrainError> {
         check_cancel(cancel)?;
         let mut scratch = self.source.detail.workspace();
         let mut out = Vec::with_capacity(directions.len());
         for &d in directions {
             check_cancel(cancel)?;
-            out.push(self.sample(d, &mut scratch)?);
+            out.push(select(self.sample(d, &mut scratch)?));
         }
         Ok(out)
     }
@@ -252,29 +296,20 @@ impl FineTerrain {
         &self,
         direction: [f64; 3],
         scratch: &mut Gullies,
-    ) -> Result<SurfaceSample, TerrainError> {
+    ) -> Result<LocatedSurfaceSample, TerrainError> {
         let xy = coordinates(direction)?;
         let raw = self.raw(xy, scratch)?;
-        Ok(SurfaceSample {
-            bed_elevation_m: self.restore_bed(xy, direction, raw.height)?,
-        })
+        self.restored_sample(xy, direction, raw.height)
     }
-    fn restore_bed(
+    fn restored_sample(
         &self,
         xy: [f64; 2],
         direction: [f64; 3],
         raw: f32,
-    ) -> Result<f64, TerrainError> {
+    ) -> Result<LocatedSurfaceSample, TerrainError> {
         let mut bed = raw as f64;
-        let max = direction.iter().map(|v| v.abs()).fold(0_f64, f64::max);
         let (t, w) = self
-            .source
-            .cover
-            .locate_direction(
-                xy,
-                direction.map(|v| v / max),
-                &self.source.terrain.mesh.xyz,
-            )
+            .locate_source(xy, direction)
             .ok_or(TerrainError::InvalidOutput {
                 field: "lake P1 coverage",
             })?;
@@ -287,7 +322,11 @@ impl FineTerrain {
         if !bed.is_finite() {
             return Err(TerrainError::InvalidOutput { field: "fine bed" });
         }
-        Ok(bed)
+        Ok(LocatedSurfaceSample {
+            bed_elevation_m: bed,
+            source_face: t,
+            weights: w,
+        })
     }
     fn raw(&self, xy: [f64; 2], scratch: &mut Gullies) -> Result<Raw, TerrainError> {
         let scale = self.scale.pixels_per_unit() as f64;
@@ -603,6 +642,18 @@ mod tests {
                 let expected = fine
                     .sample_surface_batch(&dirs, &|| false)
                     .expect("forward");
+                let located = fine
+                    .sample_located_surface_batch(&dirs, &|| false)
+                    .expect("located batch");
+                for ((&dir, bed), sample) in dirs.iter().zip(&expected).zip(located) {
+                    assert_eq!(
+                        sample.bed_elevation_m.to_bits(),
+                        bed.bed_elevation_m.to_bits()
+                    );
+                    let (nodes, weights) = fine.source_triangle(dir).expect("source chart");
+                    assert_eq!(fine.source.cover.triangles[sample.source_face].nodes, nodes);
+                    assert_eq!(sample.weights, weights);
+                }
                 let reverse = fine
                     .sample_surface_batch(&dirs.iter().copied().rev().collect::<Vec<_>>(), &|| {
                         false
@@ -759,8 +810,9 @@ mod tests {
                             whole_intersections += 1;
                         }
                         let bed = fine
-                            .restore_bed(xy, direction, raw.height)
-                            .expect("canonical bed");
+                            .restored_sample(xy, direction, raw.height)
+                            .expect("canonical bed")
+                            .bed_elevation_m;
                         max_delta = max_delta.max((bed - raw.height as f64).abs());
                         if (bed < 0.) != (raw.height < 0.) {
                             sign_changes[usize::from(raw.height < 0.)] += 1;

@@ -8,10 +8,10 @@ use crate::generators::natural::circulation::CubedSphereGrid;
 use crate::generators::spatial::remap_intensive_f32_cancellable;
 use crate::world::natural::atlas_terrain::AtlasSiteWater;
 use crate::world::natural::{
-    formation_runoff_fraction, ClimateSpec, ClimateWorkDomainSnapshot, SurfaceWaterKind,
+    formation_runoff_fraction, ClimateSpec, ClimateWorkDomainSnapshot,
     GLOBAL_CIRCULATION_MECHANICAL_COARSE_RESOLUTION_DIVISOR,
 };
-use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
+use crate::world::spatial::{central_angle, SphericalSurfaceSnapshot, SurfaceRef};
 use civ_atlas_terrain::FineTerrain;
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
@@ -111,7 +111,7 @@ pub(super) fn source_ocean_depth(
 }
 
 /// Composite midpoint line quadrature at the fixed source angular pixel interval.
-/// Each canonical climate edge is integrated exactly once under the R1 point rule.
+/// Each canonical climate edge is integrated once under the published marine point rule.
 fn ocean_edges(
     fine: &FineTerrain,
     water: &AtlasSiteWater,
@@ -133,29 +133,14 @@ fn ocean_edges(
             let angle = central_angle(a, b);
             let steps = (angle / spacing).ceil().max(1.0) as usize;
             let queries = (0..steps)
-                .map(|i| {
-                    let t = (i as f64 + 0.5) / steps as f64;
-                    let left = ((1.0 - t) * angle).sin() / angle.sin();
-                    let right = (t * angle).sin() / angle.sin();
-                    let p: [f64; 3] = std::array::from_fn(|j| {
-                        left * a.components()[j] + right * b.components()[j]
-                    });
-                    UnitVector3::new(p[0], p[1], p[2])
-                        .expect("minor edge slerp is finite")
-                        .components()
-                })
+                .map(|i| super::minor_arc_direction(a, b, angle, (i as f64 + 0.5) / steps as f64))
                 .collect::<Vec<_>>();
-            let samples = fine.sample_surface_batch(&queries, &|| cancellation.is_cancelled())?;
-            let mut wet = 0;
-            for (direction, sample) in queries.into_iter().zip(samples) {
-                if sample.bed_elevation_m >= 0.0 {
-                    continue;
-                }
-                let (corners, _) = fine.source_triangle(direction)?;
-                wet += usize::from(
-                    water.classify(corners, sample.bed_elevation_m).0 == SurfaceWaterKind::Ocean,
-                );
-            }
+            let samples =
+                fine.sample_located_surface_batch(&queries, &|| cancellation.is_cancelled())?;
+            let wet = samples
+                .iter()
+                .filter(|sample| water.is_ocean(sample))
+                .count();
             Ok(wet as f32 / steps as f32)
         })
         .collect()

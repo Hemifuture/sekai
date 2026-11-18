@@ -1,9 +1,12 @@
 //! Fixed-bed Civ Atlas source with upstream water classes, coupled to C2
-//! (`2026-11-03-world-truth-scope-design.md` R1).
+//! (`2026-11-03-world-truth-scope-design.md` R3).
 
 #[cfg(test)]
 mod carrier_probe;
 mod climate;
+mod coast;
+#[cfg(test)]
+mod coast_regression;
 mod geometry;
 mod runoff;
 
@@ -338,6 +341,16 @@ fn prepare_source(
     Ok((Arc::new(fine), Arc::new(surface)))
 }
 
+/// A point a fraction of the way along a non-degenerate minor great-circle arc.
+fn minor_arc_direction(a: UnitVector3, b: UnitVector3, angle: f64, fraction: f64) -> [f64; 3] {
+    let left = ((1.0 - fraction) * angle).sin() / angle.sin();
+    let right = (fraction * angle).sin() / angle.sin();
+    let p: [f64; 3] = std::array::from_fn(|j| left * a.components()[j] + right * b.components()[j]);
+    UnitVector3::new(p[0], p[1], p[2])
+        .expect("valid minor arc is finite")
+        .components()
+}
+
 /// A source, geometry, climate or current-flow error prevents atomic publication.
 #[derive(Debug, Error)]
 pub enum AtlasGenerationError {
@@ -429,7 +442,7 @@ mod tests {
     }
 
     /// One actual default-world publication: phase timings (debug log), full
-    /// audit, tamper detection, point-query invariance and the R1 consistency
+    /// audit, tamper detection, point-query invariance and the consistency
     /// of picked samples with the published cell fields.
     #[test]
     #[ignore = "one actual Atlas to C2/current-water publication; Release only"]
@@ -500,7 +513,7 @@ mod tests {
                 .sum()
         };
         eprintln!(
-            "ATLAS R1 total_ms={} lakes={} rivers={} ocean_km2={:.0} lake_km2={:.1} \
+            "ATLAS current total_ms={} lakes={} rivers={} ocean_km2={:.0} lake_km2={:.1} \
              initial_water_m3={:e} ocean_m3={:e} lake_m3={:e} budget={:?} climate={:?}",
             start.elapsed().as_millis(),
             snapshot.lakes().len(),

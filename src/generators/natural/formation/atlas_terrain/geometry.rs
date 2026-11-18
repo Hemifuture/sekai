@@ -1,11 +1,11 @@
 //! Upstream Civ Atlas site classes as the water truth, and fixed fan quadrature
-//! of the canonical bed under the shared R1 point rule
-//! (`2026-11-03-world-truth-scope-design.md` R1.2).
+//! of the canonical bed under the shared marine-connectivity and lake rules
+//! (`2026-11-03-world-truth-scope-design.md` R3).
 
 use super::AtlasGenerationError;
 use crate::engine::BuildCancellation;
 use crate::generators::natural::subdivision_children;
-use crate::world::natural::atlas_terrain::{AtlasSiteBody, AtlasSiteWater};
+use crate::world::natural::atlas_terrain::{source_corners, AtlasSiteBody, AtlasSiteWater};
 use crate::world::natural::{
     AtlasCellFields, AtlasLake, BedrockKind, LandOceanField, LandOceanKind, SurfaceWaterKind,
     CLIMATE_MONTH_COUNT,
@@ -36,7 +36,7 @@ pub(super) fn site_neighbors(terrain: &Terrain, i: usize) -> &[usize] {
 
 /// Per-site bodies from the upstream classes. Each connected group of lake sites
 /// is one lake whose constant surface is the highest upstream surface in it.
-fn site_water(terrain: &Terrain) -> (AtlasSiteWater, Vec<f64>) {
+pub(super) fn site_water(terrain: &Terrain) -> (Vec<Option<AtlasSiteBody>>, Vec<f64>) {
     let class = terrain.water_classification();
     let surface = terrain.water_surface_elevation_m();
     let n = class.len();
@@ -71,7 +71,7 @@ fn site_water(terrain: &Terrain) -> (AtlasSiteWater, Vec<f64>) {
             _ => None,
         })
         .collect();
-    (AtlasSiteWater { sites }, lake_surface)
+    (sites, lake_surface)
 }
 
 #[derive(Default)]
@@ -124,13 +124,12 @@ fn integrate_cell(
             sum.map(|x| x / norm)
         })
         .collect::<Vec<_>>();
-    let beds = fine.sample_surface_batch(&centres, &|| cancellation.is_cancelled())?;
+    let beds = fine.sample_located_surface_batch(&centres, &|| cancellation.is_cancelled())?;
     let mut out = CellQuadrature::default();
-    for ((leaf, centre), sample) in leaves.iter().zip(&centres).zip(beds) {
+    for (leaf, sample) in leaves.iter().zip(beds) {
         let area = spherical_triangle_area_unit(leaf[0], leaf[1], leaf[2]) * radius2;
         let bed = sample.bed_elevation_m;
-        let (corners, _) = fine.source_triangle(*centre)?;
-        let (kind, level, lake) = water.classify(corners, bed);
+        let (kind, level, lake) = water.classify(source_corners(fine, sample.source_face), &sample);
         out.area += area;
         out.bed += area * bed;
         out.exposed += area * level.map_or(bed, |level| level.max(bed));
@@ -158,7 +157,7 @@ fn integrate_cell(
     Ok(out)
 }
 
-/// Build the R1 water truth and its cell fields. Cells are integrated in
+/// Build source classifications, marine connectivity and cell fields. Cells are integrated in
 /// parallel; each cell's sum is sequential, so results do not depend on threads.
 pub(super) fn build_geometry(
     fine: &FineTerrain,
@@ -173,7 +172,9 @@ pub(super) fn build_geometry(
             "upstream classes do not match the source cells".into(),
         ));
     }
-    let (water, lake_surface) = site_water(terrain);
+    let (sites, lake_surface) = site_water(terrain);
+    let coast = super::coast::build(fine, &sites, cancellation)?;
+    let water = AtlasSiteWater::new(sites, coast);
     // Rayon is native-only; the browser build integrates cells sequentially.
     #[cfg(not(target_arch = "wasm32"))]
     let cell_indices = (0..n).into_par_iter();
@@ -244,7 +245,7 @@ pub(super) fn build_geometry(
         relative_permeability,
     };
     log::debug!(
-        "Atlas R1 water sites={n} lakes={} depth={depth}",
+        "Atlas water sites={n} lakes={} quadrature_depth={depth}",
         lakes.len()
     );
     Ok(BuiltGeometry {

@@ -40,9 +40,9 @@ pub(crate) const ATLAS_SHAPE_LABELS: [&str; 8] = [
 ];
 pub(crate) const ATLAS_SCOPE_HINT: &str =
     "地形采用固定规范尺度与地球参考半径；气候质量不改变来源格数。";
-pub(crate) const ATLAS_HYDROLOGY_HINT: &str = "海、陆、湖取 Civ Atlas 来源格分类；放大后的细海岸按同一规则绘制，不判细尺度连通，不代表独立水体。河流沿来源格汇流，使用当前年均流量，线宽仅为显示样式；未解析湖蒸发、地下水与长期稳态。站点统计为来源格面积尺度。";
+pub(crate) const ATLAS_HYDROLOGY_HINT: &str = "海岸按细地形床面与海洋来源的连通性判定。海峡或分水岭窄于连通支持尺度时仍可能未解析。河流沿来源格按当前降水汇流，线宽为显示样式。湖面取初态，湖蒸发和地下水未解析。站点统计为来源格尺度。";
 pub(crate) const ATLAS_PERFORMANCE_HINT: &str =
-    "当前原生默认场景为十几秒级生成（主要耗时在 C2 气候），尚未达到秒级目标；浏览器运行与内存未验收。";
+    "海岸连通性与 C2 气候均在生成阶段计算。完成当前视图的地形细节和 GPU 安装后发布地图。";
 
 pub(crate) fn atlas_source_version(package: &str, revision: &str) -> String {
     format!("上游 {package} · {revision}")
