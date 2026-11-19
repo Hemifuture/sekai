@@ -43,6 +43,8 @@ pub(crate) const ATLAS_SCOPE_HINT: &str =
 pub(crate) const ATLAS_HYDROLOGY_HINT: &str = "海岸按细地形床面与海洋来源的连通性判定。海峡或分水岭窄于连通支持尺度时仍可能未解析。河流沿来源格按当前降水汇流，线宽为显示样式。湖面取初态，湖蒸发和地下水未解析。站点统计为来源格尺度。";
 pub(crate) const ATLAS_PERFORMANCE_HINT: &str =
     "海岸连通性与 C2 气候均在生成阶段计算。完成当前视图的地形细节和 GPU 安装后发布地图。";
+pub(crate) const ATLAS_DISPLAY_LOD_HINT: &str =
+    "放大时高程与海湖岸线继续细分。风沿用来源格平均风值，植被带沿用来源格的干陆类别。格内阵风和植被变化未解析。";
 
 pub(crate) fn atlas_source_version(package: &str, revision: &str) -> String {
     format!("上游 {package} · {revision}")
@@ -50,8 +52,15 @@ pub(crate) fn atlas_source_version(package: &str, revision: &str) -> String {
 pub(crate) fn atlas_source_cells(seed: u32, actual: usize, requested: usize) -> String {
     format!("已发布种子 {seed}；来源格数 {actual}（请求 {requested}）")
 }
-pub(crate) fn atlas_source_scales(scale: u8, climate: u16) -> String {
-    format!("固定地形 S{scale}；C2 面分辨率 {climate}；显示 LOD 不增加气候解析度")
+pub(crate) fn atlas_source_scales(
+    scale: u8,
+    source_m: f64,
+    climate: u16,
+    climate_m: f64,
+) -> String {
+    let source_km = source_m / 1_000.0;
+    let climate_km = climate_m / 1_000.0;
+    format!("固定地形 S{scale} · 来源平均格距约 {source_km:.0} km · C2 每面 {climate} × {climate}，平均格距约 {climate_km:.0} km")
 }
 pub(crate) fn atlas_source_water(rivers: usize, lakes: usize, inventory: f64) -> String {
     format!("当前河段 {rivers}；来源湖泊 {lakes}；水库存 {inventory:.6e} m³")

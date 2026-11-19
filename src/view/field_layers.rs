@@ -12,9 +12,9 @@ use super::{
     built_in_palette, DiagnosticScope, DisplayPrepareError, DisplayRangeMode, DisplayRevision,
     DisplayRevisionClock, FieldCatalog, FieldView, GlobeCamera, LinearRgba, MapCamera,
     OwnedViewDiagnostic, PaletteId, PreparedCellField, PreparedDiagnosticMask, PreparedFieldKind,
-    PreparedGlobeMesh, PreparedProjectedMap, ProjectionPoint, ResolvedDisplayRange,
-    SphericalPresentationSource, SphericalProjection, SphericalProjectionError,
-    SphericalProjectionKind, SphericalViewMode, ViewDiagnosticSeverity,
+    PreparedGlobeMesh, PreparedProjectedMap, ProjectionBounds, ProjectionPoint,
+    ResolvedDisplayRange, SphericalPresentationSource, SphericalProjection,
+    SphericalProjectionError, SphericalProjectionKind, SphericalViewMode, ViewDiagnosticSeverity,
 };
 use crate::world::fields::{FieldDomain, FieldId, FieldPaletteHint, FieldValueType};
 use crate::world::spatial::{canonical_east_north_basis, UnitVector3};
@@ -132,11 +132,10 @@ impl GlyphLodKey {
         2.0_f64.powi(i32::from(Self::spacing_level(lod)))
     }
 
-    /// Resolves the density setting plus zoom into a stable band key.
+    /// Resolves the density setting plus zoom into a requested band key.
     ///
-    /// Zoom can only add glyphs: each band halves the lattice spacing, and a
-    /// power-of-two lattice keeps every coarser anchor set a subset of the
-    /// finer one.
+    /// Each band halves the requested spacing. Prepared field layers stop
+    /// advancing the key once all presenters reach the source spacing.
     pub fn for_zoom(base: VectorGlyphLod, zoom: f64) -> Self {
         let zoom = if zoom.is_finite() && zoom > 0.0 {
             zoom
@@ -154,12 +153,28 @@ impl GlyphLodKey {
         }
     }
 
+    fn for_surface(base: VectorGlyphLod, zoom: f64, cell_count: usize) -> Self {
+        let requested = Self::for_zoom(base, zoom);
+        let reference_floor = GlyphLattice::minimum_reference_pixels(cell_count);
+        let saturated_band = (Self::target_spacing_pixels(base) / reference_floor)
+            .log2()
+            .ceil()
+            .clamp(
+                f64::from(Self::MIN_ZOOM_BAND),
+                f64::from(Self::MAX_ZOOM_BAND),
+            ) as i8;
+        Self {
+            zoom_band: requested.zoom_band.min(saturated_band),
+            ..requested
+        }
+    }
+
     /// Returns the author's minimum density.
     pub const fn lod(self) -> VectorGlyphLod {
         self.lod
     }
 
-    /// Returns the power-of-two zoom band (`floor(log2(zoom))`).
+    /// Returns the power-of-two zoom band encoded by this key.
     pub const fn zoom_band(self) -> i8 {
         self.zoom_band
     }
@@ -789,28 +804,49 @@ struct GlyphLattice {
 }
 
 impl GlyphLattice {
+    fn map_cell_spacing(bounds: ProjectionBounds, cell_count: usize) -> f64 {
+        let width = bounds.max_x() - bounds.min_x();
+        let height = bounds.max_y() - bounds.min_y();
+        (width * height / cell_count.max(1) as f64).sqrt()
+    }
+
+    fn globe_cell_spacing(cell_count: usize) -> f64 {
+        (2.0 * std::f64::consts::TAU / cell_count.max(1) as f64).sqrt()
+    }
+
+    fn minimum_reference_pixels(cell_count: usize) -> f64 {
+        // Equal Earth has a smaller height-to-width ratio than the square
+        // equirectangular bounds. Once it saturates, both map projections do.
+        let bounds = SphericalProjection::new(SphericalProjectionKind::EqualEarth, 0.0)
+            .expect("zero is a finite central meridian")
+            .bounds();
+        let width = bounds.max_x() - bounds.min_x();
+        let map = Self::map_cell_spacing(bounds, cell_count) / width
+            * GlyphLodKey::REFERENCE_CANVAS_WIDTH_PIXELS;
+        let globe = Self::globe_cell_spacing(cell_count)
+            * 0.5
+            * GlyphLodKey::REFERENCE_CANVAS_HEIGHT_PIXELS;
+        map.min(globe)
+    }
+
     fn new(map: &PreparedProjectedMap, globe: &PreparedGlobeMesh, lod_key: GlyphLodKey) -> Self {
-        let cell_count = globe.cell_count().max(1) as f64;
+        let bounds = map.bounds();
         let reference_pixels = lod_key.lattice_reference_pixels();
-        let width = map.bounds().max_x() - map.bounds().min_x();
-        let height = map.bounds().max_y() - map.bounds().min_y();
-        let cell_map_spacing = (width * height / cell_count).sqrt();
+        let width = bounds.max_x() - bounds.min_x();
         let map_spacing = (reference_pixels * width / GlyphLodKey::REFERENCE_CANVAS_WIDTH_PIXELS)
-            .max(cell_map_spacing);
+            .max(Self::map_cell_spacing(bounds, globe.cell_count()));
         Self {
             map_spacing: map_spacing as f32,
-            map_min: [map.bounds().min_x(), map.bounds().min_y()],
-            map_max: [map.bounds().max_x(), map.bounds().max_y()],
+            map_min: [bounds.min_x(), bounds.min_y()],
+            map_max: [bounds.max_x(), bounds.max_y()],
             globe_spacing: Self::globe_spacing(globe, lod_key),
         }
     }
 
     /// Arc spacing (radians) between globe anchors for this density band.
     fn globe_spacing(globe: &PreparedGlobeMesh, lod_key: GlyphLodKey) -> f32 {
-        let cell_count = globe.cell_count().max(1) as f64;
-        let cell_globe_spacing = (2.0 * std::f64::consts::TAU / cell_count).sqrt();
         (lod_key.lattice_reference_pixels() * 2.0 / GlyphLodKey::REFERENCE_CANVAS_HEIGHT_PIXELS)
-            .max(cell_globe_spacing) as f32
+            .max(Self::globe_cell_spacing(globe.cell_count())) as f32
     }
 
     /// Lattice points inside the projection outline, anchored at the
@@ -1100,8 +1136,8 @@ struct PreparedLayerState {
     glyph_lod_key: GlyphLodKey,
 }
 
-impl From<&SphericalFieldDisplayState> for PreparedLayerState {
-    fn from(state: &SphericalFieldDisplayState) -> Self {
+impl PreparedLayerState {
+    fn new(state: &SphericalFieldDisplayState, cell_count: usize) -> Self {
         Self {
             fill_field: state.fill_field.clone(),
             overlay_field: state.overlay_field.clone(),
@@ -1112,7 +1148,11 @@ impl From<&SphericalFieldDisplayState> for PreparedLayerState {
                 Some(SelectedSurfaceEntity::Cell(cell)) => Some(cell),
                 Some(SelectedSurfaceEntity::Edge(_)) | None => None,
             },
-            glyph_lod_key: GlyphLodKey::for_zoom(state.vector_lod, state.vector_view_zoom),
+            glyph_lod_key: GlyphLodKey::for_surface(
+                state.vector_lod,
+                state.vector_view_zoom,
+                cell_count,
+            ),
         }
     }
 }
@@ -1188,7 +1228,7 @@ impl PreparedFieldLayers {
         self.prepared_state.selected_cell
     }
 
-    /// Returns the discrete key controlling cached vector-glyph identities.
+    /// Returns the effective display key, capped at the source lattice spacing.
     pub const fn glyph_lod_key(&self) -> GlyphLodKey {
         self.prepared_state.glyph_lod_key
     }
@@ -1265,7 +1305,11 @@ impl PreparedFieldLayers {
                     Some(SelectedSurfaceEntity::Edge(_)) | None => None,
                 }
             && self.prepared_state.glyph_lod_key
-                == GlyphLodKey::for_zoom(state.vector_lod, state.vector_view_zoom)
+                == GlyphLodKey::for_surface(
+                    state.vector_lod,
+                    state.vector_view_zoom,
+                    self.fill.len(),
+                )
             && self.diagnostics_enabled == state.diagnostics_enabled
     }
 }
@@ -1635,7 +1679,7 @@ where
         overlay_palette: parts.overlay_palette,
         revisions: issue_all_revisions(&mut candidate_clock)?,
         diagnostics_enabled: candidate_state.diagnostics_enabled(),
-        prepared_state: PreparedLayerState::from(&candidate_state),
+        prepared_state: PreparedLayerState::new(&candidate_state, cell_count),
         diagnostics_fingerprint: diagnostics_fingerprint(diagnostics),
     };
     *state = candidate_state;
@@ -1690,7 +1734,7 @@ where
     }
     validate_diagnostics(diagnostics, cell_count)?;
     let next_diagnostics_fingerprint = diagnostics_fingerprint(diagnostics);
-    let next_state = PreparedLayerState::from(&candidate_state);
+    let next_state = PreparedLayerState::new(&candidate_state, cell_count);
     let mut revisions = current.revisions;
     let fill = if fill_needs_preparation(&current.prepared_state, &next_state) {
         reuse_or_replace(
@@ -2283,7 +2327,7 @@ mod vector_glyph_tests {
                 amplified: false,
             }
         );
-        let prepared_before = super::PreparedLayerState::from(&state);
+        let prepared_before = super::PreparedLayerState::new(&state, 42);
 
         state.set_fill_visible(false);
         state.set_overlay_visible(false);
@@ -2299,7 +2343,7 @@ mod vector_glyph_tests {
             }
         );
         assert_eq!(
-            super::PreparedLayerState::from(&state),
+            super::PreparedLayerState::new(&state, 42),
             prepared_before,
             "visibility is fixed-frame presentation state, not a layer preparation key"
         );
@@ -2712,7 +2756,8 @@ mod vector_glyph_tests {
         assert_eq!(selected.revisions(), paused.revisions());
 
         state.set_vector_lod(super::VectorGlyphLod::Low);
-        state.set_vector_view_zoom(1.0).unwrap();
+        // This small surface reaches source spacing while zoomed out.
+        state.set_vector_view_zoom(0.125).unwrap();
         let low = super::update_spherical_field_layers(
             &paused,
             source.clone(),
@@ -2733,7 +2778,7 @@ mod vector_glyph_tests {
         assert_eq!(low.glyph_lod_key().lod(), VectorGlyphLod::Low);
         assert_eq!(paused.revisions().overlay, low.revisions().overlay);
 
-        state.set_vector_view_zoom(1.99).unwrap();
+        state.set_vector_view_zoom(0.249).unwrap();
         let low_in_band = super::update_spherical_field_layers(
             &low,
             source.clone(),
@@ -2750,10 +2795,10 @@ mod vector_glyph_tests {
         assert_eq!(low.revisions(), low_in_band.revisions());
         assert_eq!(
             low_in_band.glyph_lod_key(),
-            GlyphLodKey::from(VectorGlyphLod::Low)
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 0.125)
         );
 
-        state.set_vector_view_zoom(2.0).unwrap();
+        state.set_vector_view_zoom(0.25).unwrap();
         let medium = super::update_spherical_field_layers(
             &low_in_band,
             source.clone(),
@@ -2773,11 +2818,11 @@ mod vector_glyph_tests {
         );
         assert_eq!(
             medium.glyph_lod_key(),
-            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0)
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 0.25)
         );
         assert_eq!(low_in_band.revisions().overlay, medium.revisions().overlay);
 
-        state.set_vector_view_zoom(2.5).unwrap();
+        state.set_vector_view_zoom(0.375).unwrap();
         let medium_in_band = super::update_spherical_field_layers(
             &medium,
             source.clone(),
@@ -2793,7 +2838,7 @@ mod vector_glyph_tests {
         .unwrap();
         assert_eq!(medium.revisions(), medium_in_band.revisions());
 
-        state.set_vector_view_zoom(4.0).unwrap();
+        state.set_vector_view_zoom(0.5).unwrap();
         let high = super::update_spherical_field_layers(
             &medium_in_band,
             source.clone(),
@@ -2813,10 +2858,11 @@ mod vector_glyph_tests {
         );
         assert_eq!(
             high.glyph_lod_key(),
-            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0)
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 0.5)
         );
         assert_eq!(medium_in_band.revisions().overlay, high.revisions().overlay);
 
+        state.set_vector_view_zoom(4.0).unwrap();
         let repeated_high = super::update_spherical_field_layers(
             &high,
             source.clone(),
@@ -2831,6 +2877,7 @@ mod vector_glyph_tests {
         )
         .unwrap();
         assert_eq!(high.revisions(), repeated_high.revisions());
+        assert_eq!(high.glyph_lod_key(), repeated_high.glyph_lod_key());
 
         let mut changed_fields = ExtensionFieldSet::new();
         changed_fields

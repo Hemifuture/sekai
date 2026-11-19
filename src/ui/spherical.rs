@@ -1112,7 +1112,20 @@ pub fn apply_spherical_canvas_action(
             candidate_state.apply(SphericalCanvasAction::SelectEntity(None))?;
         }
     }
-    let invalidation = candidate_state.apply(action)?;
+    let mut invalidation = candidate_state.apply(action)?;
+    if invalidation.field_layers()
+        && state.field_state().vector_view_zoom()
+            != candidate_state.field_state().vector_view_zoom()
+        && presentation
+            .layers()
+            .matches_camera_only_state(candidate_state.field_state())
+    {
+        invalidation = if invalidation.map_geometry() {
+            SphericalCanvasInvalidation::MAP_GEOMETRY
+        } else {
+            SphericalCanvasInvalidation::ACTIVE_PRESENTER_UNIFORM
+        };
+    }
     if invalidation.map_geometry() {
         let candidate = presentation.prepare_projection_candidate_for_view(
             candidate_state.presentation_view_state(),

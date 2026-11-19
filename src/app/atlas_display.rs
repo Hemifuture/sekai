@@ -28,6 +28,7 @@ pub struct AtlasFieldDocument {
     diagnostics: Vec<OwnedViewDiagnostic>,
     pub(super) water: SurfaceWaterField,
     pub(super) display_radius_m: f32,
+    source_cell_spacing_m: f64,
     river_flow_range: Option<(f64, f64)>,
 }
 
@@ -39,16 +40,16 @@ impl AtlasFieldDocument {
             .get::<AtlasTerrainArtifact>()
             .map_err(|e| e.to_string())?;
         let snapshot = artifact.snapshot();
+        let surface = snapshot.surface();
         let params = snapshot.fine_terrain().coarse_terrain().params();
         if u64::from(params.seed) != provenance.root_seed().raw() {
             return Err("Atlas source seed differs from the engine root seed".into());
         }
         // u8 sectors are the existing display representation, not a topology assumption.
-        for cell in snapshot.surface().cells() {
+        for cell in surface.cells() {
             super::atlas_detail::checked_sector_count(cell.boundary_vertices.len())?;
         }
-        let surface_ref =
-            SurfaceRef::try_for_spherical(snapshot.surface()).map_err(|e| e.to_string())?;
+        let surface_ref = SurfaceRef::try_for_spherical(surface).map_err(|e| e.to_string())?;
         let source = SphericalPresentationSource::new(
             provenance.root_seed(),
             surface_ref,
@@ -56,8 +57,10 @@ impl AtlasFieldDocument {
             1,
         );
         let registry = atlas_field_registry().map_err(|e| e.to_string())?;
-        let cache = FormationDisplayCache::build(snapshot.surface(), snapshot.climate().fields())
+        let cache = FormationDisplayCache::build(surface, snapshot.climate().fields())
             .map_err(|e| e.to_string())?;
+        let source_cell_spacing_m =
+            (surface.total_cell_area().get() / surface.cells().len() as f64).sqrt();
         let water = snapshot.source_water_field();
         let display_radius_m = super::natural_field_payloads::elevation_display_radius_m(
             0.0,
@@ -82,6 +85,7 @@ impl AtlasFieldDocument {
             cache,
             water,
             display_radius_m,
+            source_cell_spacing_m,
             river_flow_range,
             diagnostics: owned_view_diagnostics(&outcome.report),
         };
@@ -100,6 +104,10 @@ impl AtlasFieldDocument {
     /// Returns the original source topology.
     pub fn surface(&self) -> &SphericalSurfaceSnapshot {
         self.snapshot().surface()
+    }
+    /// Representative source-cell length in metres, from the mean area of the published cells.
+    pub(super) const fn source_cell_spacing_m(&self) -> f64 {
+        self.source_cell_spacing_m
     }
     /// Returns the actual C2 quality, independent of source cell count and display LOD.
     pub fn quality_profile(&self) -> NaturalQualityProfile {
@@ -164,10 +172,17 @@ pub(super) fn show_summary(ui: &mut egui::Ui, document: &AtlasFieldDocument) {
             civ_atlas_terrain::UPSTREAM_PACKAGE_VERSION,
             civ_atlas_terrain::UPSTREAM_REVISION,
         ));
+        let climate_resolution = document.quality_profile().climate_face_resolution();
         ui.label(text::atlas_source_scales(
             crate::world::natural::ATLAS_FINE_SCALE.pixels_per_unit(),
-            document.quality_profile().climate_face_resolution(),
+            document.source_cell_spacing_m(),
+            climate_resolution,
+            crate::generators::natural::climate_grid_spacing_m(
+                document.surface().radius().get(),
+                climate_resolution,
+            ),
         ));
+        ui.weak(text::ATLAS_DISPLAY_LOD_HINT);
         ui.label(text::atlas_source_water(
             snapshot.rivers().len(),
             snapshot.lakes().len(),

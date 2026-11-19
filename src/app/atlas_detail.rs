@@ -47,7 +47,11 @@ pub(super) struct DetailReading {
 }
 
 impl DetailReading {
-    fn from_atlas(cell: CellId, sample: crate::world::natural::AtlasSurfaceSample) -> Self {
+    /// Bind a fine-bed `sample` in `cell` to its dry-land source, when applicable.
+    pub(super) fn from_atlas(
+        cell: CellId,
+        sample: crate::world::natural::AtlasSurfaceSample,
+    ) -> Self {
         Self {
             cell,
             dry_source: (sample.water == SurfaceWaterKind::DryLand)
@@ -129,9 +133,7 @@ impl DetailEvaluator {
     pub(super) fn cell_spacing_m(&self) -> f64 {
         match self {
             Self::Formation(e) => e.cell_spacing_m(),
-            Self::Atlas { document, .. } => {
-                (document.surface().total_cell_area().get() / self.cell_count() as f64).sqrt()
-            }
+            Self::Atlas { document, .. } => document.source_cell_spacing_m(),
         }
     }
     pub(super) fn cell_cap(&self, cell: CellId) -> f64 {
@@ -214,49 +216,20 @@ impl DetailEvaluator {
                     ),
                     LocatedPrimitive::Triangle { cell, sector, path } => (
                         cell,
-                        leaf_center(super::amplified_mesh::descend_prefix(
-                            self.sector_corners(cell, sector),
-                            path.steps(),
-                        )),
+                        leaf_center(
+                            super::amplified_mesh::descend_prefix(
+                                self.sector_corners(cell, sector),
+                                path.steps(),
+                            )
+                            .map(UnitVector3::components),
+                        ),
                     ),
                 };
                 let sample = document
                     .snapshot()
-                    .sample_surface(direction.components())
+                    .sample_surface_in_cell(cell, direction)
                     .expect("valid installed leaf queries the sealed Atlas snapshot");
                 DetailReading::from_atlas(cell, sample)
-            }
-        }
-    }
-    pub(super) fn for_each_leaf_reading(
-        &self,
-        cell: CellId,
-        sector: u8,
-        prefix: &[u8],
-        extra: u8,
-        sink: &mut dyn FnMut(DetailReading),
-    ) {
-        match self {
-            Self::Formation(e) => {
-                e.for_each_leaf_reading(cell, sector, prefix, extra, &mut |r| sink(r.into()))
-            }
-            Self::Atlas { document, .. } => {
-                let mut directions = Vec::with_capacity(4_usize.pow(u32::from(extra)));
-                leaf_directions(
-                    super::amplified_mesh::descend_prefix(
-                        self.sector_corners(cell, sector),
-                        prefix,
-                    ),
-                    extra,
-                    &mut directions,
-                );
-                let readings = document
-                    .snapshot()
-                    .sample_surface_batch(&directions, &|| false)
-                    .expect("valid display leaves query sealed Atlas snapshot");
-                for sample in readings {
-                    sink(DetailReading::from_atlas(cell, sample));
-                }
             }
         }
     }
@@ -289,10 +262,13 @@ impl DetailEvaluator {
                 elevation_m: document
                     .snapshot()
                     .sample_surface(
-                        leaf_center(super::amplified_mesh::descend_prefix(
-                            self.sector_corners(cell, sector),
-                            path,
-                        ))
+                        leaf_center(
+                            super::amplified_mesh::descend_prefix(
+                                self.sector_corners(cell, sector),
+                                path,
+                            )
+                            .map(UnitVector3::components),
+                        )
                         .components(),
                     )
                     .expect("valid leaf")
@@ -302,23 +278,10 @@ impl DetailEvaluator {
     }
 }
 
-fn leaf_directions(corners: [UnitVector3; 3], extra: u8, out: &mut Vec<[f64; 3]>) {
-    if extra == 0 {
-        out.push(leaf_center(corners).components());
-        return;
-    }
-    for child in subdivision_children(corners) {
-        leaf_directions(child, extra - 1, out);
-    }
-}
-fn leaf_center(corners: [UnitVector3; 3]) -> UnitVector3 {
-    let c = corners.map(UnitVector3::components);
-    UnitVector3::new(
-        c[0][0] + c[1][0] + c[2][0],
-        c[0][1] + c[1][1] + c[2][1],
-        c[0][2] + c[1][2] + c[2][2],
-    )
-    .expect("valid fan leaf has nonzero center")
+/// Returns the unit centroid of the same three `corners` used by the installed leaf.
+pub(super) fn leaf_center([a, b, c]: [[f64; 3]; 3]) -> UnitVector3 {
+    UnitVector3::new(a[0] + b[0] + c[0], a[1] + b[1] + c[1], a[2] + b[2] + c[2])
+        .expect("valid fan leaf has nonzero center")
 }
 
 #[cfg(test)]

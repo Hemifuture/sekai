@@ -2781,6 +2781,7 @@ fn real_publication_actions_preserve_exact_arcs_and_skip_camera_and_phase_upload
     for action in [
         SphericalCanvasAction::SetViewMode(SphericalViewMode::Globe),
         SphericalCanvasAction::ZoomGlobe { factor: 1.1 },
+        SphericalCanvasAction::ZoomGlobe { factor: 4.0 },
         SphericalCanvasAction::AdvanceVectorPhase {
             frame_delta_seconds: 0.25,
         },
@@ -2799,6 +2800,7 @@ fn real_publication_actions_preserve_exact_arcs_and_skip_camera_and_phase_upload
     assert!(Arc::ptr_eq(&globe_before, published.globe_arc()));
     assert!(Arc::ptr_eq(&layers_before, published.layers_arc()));
     assert!(Arc::ptr_eq(&packet_before, published.gpu_packet_arc()));
+    assert_eq!(published.state().vector_view_zoom(), 4.4);
     assert_eq!(renderer.upload_counters(), counters_before);
 
     apply_spherical_canvas_action(

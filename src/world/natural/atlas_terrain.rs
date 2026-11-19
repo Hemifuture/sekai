@@ -14,6 +14,7 @@ use super::{
     SurfaceWaterKind, CLIMATE_MONTH_COUNT, WATER_VOLUME_RELATIVE_TOLERANCE,
 };
 use crate::world::spatial::{dot, SphericalSurfaceSnapshot, SurfaceRef, UnitVector3};
+use crate::world::CellId;
 
 /// Identity version for fixed-bed water classes, material prior and current runoff.
 /// Version 5 resolves marine inundation from submerged pathways to source ocean sites.
@@ -457,6 +458,35 @@ impl AtlasTerrainSnapshot {
             .collect()
     }
 
+    /// Sample the center of a display leaf in its known source-cell fan.
+    /// `cell` supplies the published field identity. The bed and water use the point
+    /// sample in `direction`, with the same coverage errors as [`Self::sample_surface`].
+    pub(crate) fn sample_surface_in_cell(
+        &self,
+        cell: CellId,
+        direction: UnitVector3,
+    ) -> Result<AtlasSurfaceSample, TerrainError> {
+        let sample = self.fine.sample_located_surface(direction.components())?;
+        let corners = source_corners(&self.fine, sample.source_face);
+        Ok(self.classify_surface_sample(&sample, corners, cell.raw() as usize))
+    }
+
+    /// Evaluate leaf centers within one source-cell fan, in input order with shared bed scratch.
+    /// Returns the bed sampling error before yielding any readings if coverage or input fails.
+    pub(crate) fn sample_surface_in_cell_batch(
+        &self,
+        cell: CellId,
+        directions: &[[f64; 3]],
+    ) -> Result<impl Iterator<Item = AtlasSurfaceSample> + '_, TerrainError> {
+        let beds = self
+            .fine
+            .sample_located_surface_batch(directions, &|| false)?;
+        Ok(beds.into_iter().map(move |sample| {
+            let corners = source_corners(&self.fine, sample.source_face);
+            self.classify_surface_sample(&sample, corners, cell.raw() as usize)
+        }))
+    }
+
     fn bind_surface_sample(
         &self,
         direction: [f64; 3],
@@ -464,13 +494,22 @@ impl AtlasTerrainSnapshot {
     ) -> Result<AtlasSurfaceSample, TerrainError> {
         let corners = source_corners(&self.fine, sample.source_face);
         let owner = source_owner(&self.fine, &self.surface, corners, direction)?;
+        Ok(self.classify_surface_sample(sample, corners, owner))
+    }
+
+    fn classify_surface_sample(
+        &self,
+        sample: &LocatedSurfaceSample,
+        corners: [usize; 3],
+        source_cell: usize,
+    ) -> AtlasSurfaceSample {
         let (water, level, _) = self.site_water.classify(corners, sample);
-        Ok(AtlasSurfaceSample {
+        AtlasSurfaceSample {
             bed_elevation_m: sample.bed_elevation_m,
             water,
             water_surface_elevation_m: level,
-            source_cell: owner,
-        })
+            source_cell,
+        }
     }
 
     /// Check source binding, actual current stock and resolved flow conservation.

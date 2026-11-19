@@ -26,7 +26,7 @@
 //! Edge midpoints depend symmetrically on their two endpoint directions
 //! only, so shared borders stay crack-free across batches and cells.
 
-use super::atlas_detail::{DetailEvaluator, DetailReading as DerivedReading};
+use super::atlas_detail::{leaf_center, DetailEvaluator, DetailReading as DerivedReading};
 #[cfg(test)]
 use crate::generators::natural::HierarchicalEvaluator;
 use std::collections::hash_map::DefaultHasher;
@@ -34,8 +34,8 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use crate::generators::natural::{
-    geometric_midpoint, subdivision_children, HierarchicalPath, LocatedPrimitive,
-    HIERARCHICAL_PATH_DEPTH_MAX,
+    geometric_midpoint, subdivision_children, subdivision_children_from_midpoints,
+    HierarchicalPath, LocatedPrimitive, HIERARCHICAL_PATH_DEPTH_MAX,
 };
 use crate::view::{
     project_unit_direction, AmplifiedSurfaceMesh, GlobeCamera, MapScreenTransform, ProjectionPoint,
@@ -931,13 +931,30 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
         &mut triangles,
     )?;
     let mut readings = Vec::with_capacity(batch.leaves());
-    context.evaluator.for_each_leaf_reading(
-        cell,
-        batch.sector,
-        batch.prefix.steps(),
-        batch.extra,
-        &mut |reading| readings.push(reading),
-    );
+    match &context.evaluator {
+        DetailEvaluator::Formation(evaluator) => evaluator.for_each_leaf_reading(
+            cell,
+            batch.sector,
+            batch.prefix.steps(),
+            batch.extra,
+            &mut |reading| readings.push(reading.into()),
+        ),
+        DetailEvaluator::Atlas { document, .. } => {
+            let leaf_directions = triangles
+                .chunks_exact(TRIANGLE_CORNERS)
+                .map(|triangle| {
+                    let corners = [triangle[0], triangle[1], triangle[2]]
+                        .map(|index| vertices[index as usize].components());
+                    leaf_center(corners).components()
+                })
+                .collect::<Vec<_>>();
+            let samples = document
+                .snapshot()
+                .sample_surface_in_cell_batch(cell, &leaf_directions)
+                .ok()?;
+            readings.extend(samples.map(|sample| DerivedReading::from_atlas(cell, sample)));
+        }
+    }
     if readings.len() * TRIANGLE_CORNERS != triangles.len() {
         return None;
     }
@@ -992,10 +1009,10 @@ fn subdivide_triangle(
     let ab = midpoint_index(a, b, vertices, midpoints)?;
     let bc = midpoint_index(b, c, vertices, midpoints)?;
     let ca = midpoint_index(c, a, vertices, midpoints)?;
-    subdivide_triangle(a, ab, ca, levels - 1, vertices, midpoints, out)?;
-    subdivide_triangle(ab, b, bc, levels - 1, vertices, midpoints, out)?;
-    subdivide_triangle(ca, bc, c, levels - 1, vertices, midpoints, out)?;
-    subdivide_triangle(ab, bc, ca, levels - 1, vertices, midpoints, out)
+    for [a, b, c] in subdivision_children_from_midpoints([a, b, c], [ab, bc, ca]) {
+        subdivide_triangle(a, b, c, levels - 1, vertices, midpoints, out)?;
+    }
+    Some(())
 }
 
 /// Returns the renormalized midpoint, deduplicated per batch.
@@ -1210,6 +1227,9 @@ mod tests {
     #[test]
     fn ocean_parent_must_not_force_every_detail_leaf_to_water() {
         let context = test_context();
+        let DetailEvaluator::Formation(evaluator) = &context.evaluator else {
+            panic!("the fixture uses Formation");
+        };
         // Ocean parents in this fixture have index 1 modulo 3. Compare actual
         // fine readings inside one parent, rather than inventing a color mask.
         for index in (1..context.evaluator.cell_count()).step_by(3) {
@@ -1217,17 +1237,14 @@ mod tests {
             let mut ocean = None;
             let mut land = None;
             for sector in 0..context.evaluator.sector_count(cell) {
-                context.evaluator.for_each_leaf_reading(
-                    cell,
-                    sector as u8,
-                    &[],
-                    2,
-                    &mut |reading| match reading.water {
+                evaluator.for_each_leaf_reading(cell, sector as u8, &[], 2, &mut |reading| {
+                    let reading = DerivedReading::from(reading);
+                    match reading.water {
                         SurfaceWaterKind::Ocean => ocean = Some(flat_color(&context, &reading)),
                         SurfaceWaterKind::DryLand => land = Some(flat_color(&context, &reading)),
                         SurfaceWaterKind::Lake => {}
-                    },
-                );
+                    }
+                });
             }
             if let (Some(ocean), Some(land)) = (ocean, land) {
                 assert_ne!(
@@ -1810,13 +1827,8 @@ mod tests {
                 };
                 let mesh = build_batch(&context, &batch).unwrap();
                 for tri in mesh.indices.chunks_exact(3) {
-                    let [a, b, c] = [tri[0], tri[1], tri[2]].map(|v| mesh.directions[v as usize]);
-                    let direction = UnitVector3::new(
-                        a[0] + b[0] + c[0],
-                        a[1] + b[1] + c[1],
-                        a[2] + b[2] + c[2],
-                    )
-                    .unwrap();
+                    let direction =
+                        leaf_center([tri[0], tri[1], tri[2]].map(|v| mesh.directions[v as usize]));
                     let sample = s.sample_surface(direction.components()).unwrap();
                     if !observed.insert(sample.water) {
                         continue;
@@ -1832,10 +1844,12 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(pick.water, sample.water);
+                    assert_eq!(pick.elevation_m, sample.bed_elevation_m as f32);
                     let rows = derived_pick_rows(&published, &pick).unwrap();
                     let gpu_owner = mesh.dry_sources[tri[0] as usize];
                     if sample.water == SurfaceWaterKind::DryLand {
                         assert_eq!(gpu_owner as usize, sample.source_cell + 1);
+                        assert_eq!(gpu_owner, cell.raw() + 1);
                         assert_eq!(pick.dry_source.unwrap().raw() + 1, gpu_owner);
                         assert!(rows.iter().any(|(label, _)| label == BIOME_BASIS));
                         for label in [BIOME_MONTHLY_RAIN, BIOME_MONTHLY_TEMP] {

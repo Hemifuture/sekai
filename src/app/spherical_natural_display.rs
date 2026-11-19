@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn camera_only_document_reconciliation_retains_the_outer_arc_and_skips_scans_in_band() {
+    fn camera_only_document_reconciliation_retains_the_arc_within_and_above_source_spacing() {
         let outcome = build_outcome(6_371_000.0);
         let mut document = SphericalNaturalFieldDocument::from_build_outcome(&outcome).unwrap();
         document.diagnostics.push(OwnedViewDiagnostic {
@@ -1245,7 +1245,7 @@ mod tests {
         let mut clock = DisplayRevisionClock::default();
         let projection = SphericalProjectionKind::EqualEarth;
         let mut map_camera = MapCamera::default();
-        assert!(map_camera.zoom_by(projection, 1.99));
+        assert!(map_camera.zoom_by(projection, 0.499));
         let low = Arc::new(
             prepare_spherical_document_layers(
                 &document,
@@ -1262,7 +1262,7 @@ mod tests {
         document.reset_catalog_calls();
         reset_field_layer_preparation_counts();
         map_camera.reset(projection);
-        assert!(map_camera.zoom_by(projection, 2.0));
+        assert!(map_camera.zoom_by(projection, 0.5));
         let medium = reconcile_spherical_document_camera(
             &document,
             &low,
@@ -1277,7 +1277,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&low, &medium));
         assert_eq!(
             medium.glyph_lod_key(),
-            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.0)
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 0.5)
         );
         assert_only_vector_glyph_revision_changed(&low, &medium);
         assert_eq!(document.catalog_calls(), 1);
@@ -1294,7 +1294,7 @@ mod tests {
         reset_field_layer_preparation_counts();
         let clock_before_in_band = next_revision(&clock);
         let mut globe_camera = GlobeCamera::default();
-        assert!(globe_camera.set_orthographic_scale(2.5));
+        assert!(globe_camera.set_orthographic_scale(0.75));
         let globe_in_band = reconcile_spherical_document_camera(
             &document,
             &medium,
@@ -1306,7 +1306,7 @@ mod tests {
             &mut clock,
         )
         .unwrap();
-        assert_eq!(state.vector_view_zoom(), 2.5);
+        assert_eq!(state.vector_view_zoom(), 0.75);
         assert!(Arc::ptr_eq(&medium, &globe_in_band));
         assert_eq!(document.catalog_calls(), 0);
         assert_eq!(
@@ -1335,7 +1335,7 @@ mod tests {
 
         document.reset_catalog_calls();
         reset_field_layer_preparation_counts();
-        assert!(globe_camera.set_orthographic_scale(4.0));
+        assert!(globe_camera.set_orthographic_scale(1.0));
         let high = reconcile_spherical_document_camera(
             &document,
             &repeated,
@@ -1350,7 +1350,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&repeated, &high));
         assert_eq!(
             high.glyph_lod_key(),
-            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 4.0)
+            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 1.0)
         );
         assert_only_vector_glyph_revision_changed(&repeated, &high);
         assert_eq!(document.catalog_calls(), 1);
@@ -1365,8 +1365,8 @@ mod tests {
 
         document.reset_catalog_calls();
         reset_field_layer_preparation_counts();
-        assert!(globe_camera.set_orthographic_scale(4.5));
-        let high_in_band = reconcile_spherical_document_camera(
+        assert!(globe_camera.set_orthographic_scale(8.0));
+        let saturated = reconcile_spherical_document_camera(
             &document,
             &high,
             SphericalViewMode::Globe,
@@ -1377,8 +1377,8 @@ mod tests {
             &mut clock,
         )
         .unwrap();
-        assert_eq!(state.vector_view_zoom(), 4.5);
-        assert!(Arc::ptr_eq(&high, &high_in_band));
+        assert_eq!(state.vector_view_zoom(), 8.0);
+        assert!(Arc::ptr_eq(&high, &saturated));
         assert_eq!(document.catalog_calls(), 0);
         assert_eq!(
             field_layer_preparation_counts(),
@@ -1435,10 +1435,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&first_layers, &replaced));
         assert_eq!(replaced.source(), &second.presentation_source());
         assert_eq!(second.catalog_calls(), 1);
-        assert_eq!(
-            replaced.glyph_lod_key(),
-            GlyphLodKey::for_zoom(VectorGlyphLod::Low, 2.5)
-        );
+        assert_eq!(replaced.glyph_lod_key(), first_layers.glyph_lod_key());
     }
 
     #[test]
@@ -1512,7 +1509,7 @@ mod tests {
         let projection_kind = SphericalProjectionKind::EqualEarth;
         let projection = SphericalProjection::new(projection_kind, 0.0).unwrap();
         let mut map_camera = MapCamera::default();
-        assert!(map_camera.zoom_by(projection_kind, 1.99));
+        assert!(map_camera.zoom_by(projection_kind, 0.499));
         let low = Arc::new(
             prepare_spherical_document_layers(
                 &document,
@@ -1563,7 +1560,7 @@ mod tests {
         document.reset_catalog_calls();
         reset_field_layer_preparation_counts();
         map_camera.reset(projection_kind);
-        assert!(map_camera.zoom_by(projection_kind, 2.0));
+        assert!(map_camera.zoom_by(projection_kind, 0.5));
         let medium = reconcile_spherical_document_camera(
             &document,
             &low,
@@ -1617,7 +1614,7 @@ mod tests {
         document.reset_catalog_calls();
         reset_field_layer_preparation_counts();
         map_camera.reset(projection_kind);
-        assert!(map_camera.zoom_by(projection_kind, 2.5));
+        assert!(map_camera.zoom_by(projection_kind, 0.75));
         let retained = reconcile_spherical_document_camera(
             &document,
             &medium,
@@ -1678,7 +1675,7 @@ mod tests {
         document.reset_catalog_calls();
         reset_field_layer_preparation_counts();
         map_camera.reset(projection_kind);
-        assert!(map_camera.zoom_by(projection_kind, 4.0));
+        assert!(map_camera.zoom_by(projection_kind, 1.0));
         let high = reconcile_spherical_document_camera(
             &document,
             &retained,
@@ -1728,7 +1725,7 @@ mod tests {
         document.reset_catalog_calls();
         reset_field_layer_preparation_counts();
         map_camera.reset(projection_kind);
-        assert!(map_camera.zoom_by(projection_kind, 4.5));
+        assert!(map_camera.zoom_by(projection_kind, 8.0));
         let high_retained = reconcile_spherical_document_camera(
             &document,
             &high,
@@ -1756,7 +1753,7 @@ mod tests {
             .unwrap();
 
         assert!(Arc::ptr_eq(&high, &high_retained));
-        assert_eq!(state.vector_view_zoom(), 4.5);
+        assert_eq!(state.vector_view_zoom(), 8.0);
         assert_eq!(document.catalog_calls(), 0);
         assert_eq!(
             field_layer_preparation_counts(),
