@@ -782,6 +782,7 @@ fn node_intersects_viewport(cap: &ViewCap, corners: &[UnitVector3; 3]) -> bool {
 struct CachedBatch {
     directions: Vec<[f64; 3]>,
     colors: Vec<[u8; 4]>,
+    dry_sources: Vec<u32>,
     indices: Vec<u32>,
     leaves: u32,
     last_used: u64,
@@ -846,6 +847,7 @@ pub(super) fn build_detail_mesh(
     }
     let mut directions = Vec::with_capacity(selection.leaves * 2);
     let mut colors = Vec::with_capacity(selection.leaves * 2);
+    let mut dry_sources = Vec::with_capacity(selection.leaves * 2);
     let mut indices = Vec::with_capacity(selection.leaves * TRIANGLE_CORNERS);
     for batch in &selection.batches {
         let entry = cache
@@ -856,10 +858,11 @@ pub(super) fn build_detail_mesh(
         let base = u32::try_from(directions.len()).ok()?;
         directions.extend_from_slice(&entry.directions);
         colors.extend_from_slice(&entry.colors);
+        dry_sources.extend_from_slice(&entry.dry_sources);
         indices.extend(entry.indices.iter().map(|&index| base + index));
     }
     cache.evict_unused();
-    AmplifiedSurfaceMesh::new(directions, colors, indices).ok()
+    AmplifiedSurfaceMesh::with_dry_sources(directions, colors, indices, dry_sources).ok()
 }
 
 /// Builds the missing batches with interleaved striping over the
@@ -943,16 +946,19 @@ fn build_batch(context: &AmplifiedDetailContext, batch: &DetailBatch) -> Option<
         .map(|direction| direction.components())
         .collect();
     let mut colors = vec![UNREAD_CORNER_COLOR; directions.len()];
+    let mut dry_sources = vec![0; directions.len()];
     for (leaf, triangle) in triangles.chunks_exact_mut(TRIANGLE_CORNERS).enumerate() {
         let provoking = u32::try_from(directions.len()).ok()?;
         let corner = directions[triangle[0] as usize];
         directions.push(corner);
         colors.push(flat_color(context, &readings[leaf]));
+        dry_sources.push(readings[leaf].dry_source.map_or(0, |cell| cell.raw() + 1));
         triangle[0] = provoking;
     }
     Some(CachedBatch {
         directions,
         colors,
+        dry_sources,
         indices: triangles,
         leaves: batch.leaves() as u32,
         last_used: 0,
@@ -1023,23 +1029,7 @@ fn flat_color(context: &AmplifiedDetailContext, reading: &DerivedReading) -> [u8
         context.display_radius_m,
         reading.water,
     );
-    let components = base.components();
-    [
-        encode_srgb(f64::from(components[0])),
-        encode_srgb(f64::from(components[1])),
-        encode_srgb(f64::from(components[2])),
-        255,
-    ]
-}
-
-fn encode_srgb(linear: f64) -> u8 {
-    let clamped = linear.clamp(0.0, 1.0);
-    let encoded = if clamped <= 0.003_130_8 {
-        12.92 * clamped
-    } else {
-        1.055 * clamped.powf(1.0 / 2.4) - 0.055
-    };
-    (encoded * 255.0).round() as u8
+    base.to_srgba8()
 }
 
 /// Builds display river polylines for one terrain selection. Each deeper
@@ -1739,6 +1729,138 @@ mod tests {
                 water_kinds.insert(reading.water);
             }
             assert!(water_kinds.len() > 1, "picks must span water classes");
+        }
+    }
+
+    /// A single real publication binds the chart, both water masks and inspector evidence.
+    /// Only the two mixed source cells below need their detail geometry baked.
+    #[test]
+    #[ignore = "one real Atlas Draft publication for coastal and lake biome picking"]
+    fn atlas_biome_drawn_leaf_and_inspector() {
+        use crate::app::{
+            derived_pick, PublishedSphericalPresentation, SphericalCanvasAction,
+            SphericalWorldFieldDocument, TemplateApp,
+        };
+        use crate::ui::field::localization::{
+            BIOME_BASIS, BIOME_MONTHLY_RAIN, BIOME_MONTHLY_TEMP, BIOME_WATER,
+        };
+        use crate::ui::spherical::derived_pick_rows;
+        use crate::view::SelectedSurfaceEntity;
+        use crate::world::natural::potential_biome_field_id;
+        use std::sync::Arc;
+
+        let mut app = TemplateApp::default();
+        app.spherical_canvas_state
+            .apply(SphericalCanvasAction::SelectFill(potential_biome_field_id()))
+            .unwrap();
+        let candidate = app.build_atlas_candidate_sync().unwrap();
+        let published =
+            PublishedSphericalPresentation::try_new_without_gpu_for_test(candidate).unwrap();
+        let SphericalWorldFieldDocument::CivAtlas(doc) = published.document() else {
+            panic!("expected Atlas");
+        };
+        let context = AmplifiedDetailContext {
+            evaluator: DetailEvaluator::atlas(Arc::clone(doc), Arc::clone(published.locator_arc()))
+                .unwrap(),
+            sea_level_m: 0.0,
+            display_radius_m: f64::from(doc.display_radius_m),
+            river_cells: vec![],
+            river_orders: vec![],
+            river_drainage_area_km2: vec![],
+        };
+        let s = doc.snapshot();
+        let fields = s.fields();
+        let mut counts = std::collections::BTreeMap::new();
+        let mut outside = 0;
+        for (i, &key) in s.potential_biomes().iter().enumerate() {
+            if fields.dry_fraction()[i] > 0.0 {
+                *counts.entry(key).or_insert(0usize) += 1;
+                outside += usize::from(s.extrapolated_biomes()[i]);
+            }
+        }
+        eprintln!(
+            "dry-part chart counts={counts:?} extrapolations={outside} fingerprint={}",
+            blake3::Hash::from(*s.fingerprint())
+        );
+
+        for (wet, fractions) in [
+            (SurfaceWaterKind::Ocean, fields.ocean_fraction()),
+            (SurfaceWaterKind::Lake, fields.lake_fraction()),
+        ] {
+            let i = fractions
+                .iter()
+                .zip(fields.dry_fraction())
+                .enumerate()
+                .max_by(|(_, (w1, d1)), (_, (w2, d2))| w1.min(**d1).total_cmp(&w2.min(**d2)))
+                .map(|(i, _)| i)
+                .unwrap();
+            let cell = CellId::from_raw(i as u32);
+            app.spherical_canvas_state
+                .apply(SphericalCanvasAction::SelectEntity(Some(
+                    SelectedSurfaceEntity::Cell(cell),
+                )))
+                .unwrap();
+            let mut observed = std::collections::HashSet::new();
+            for sector in 0..context.evaluator.sector_count(cell) {
+                let batch = DetailBatch {
+                    cell: cell.raw(),
+                    sector: sector as u8,
+                    prefix: HierarchicalPath::new(&[]),
+                    extra: s.support_depth() - 1,
+                };
+                let mesh = build_batch(&context, &batch).unwrap();
+                for tri in mesh.indices.chunks_exact(3) {
+                    let [a, b, c] = [tri[0], tri[1], tri[2]].map(|v| mesh.directions[v as usize]);
+                    let direction = UnitVector3::new(
+                        a[0] + b[0] + c[0],
+                        a[1] + b[1] + c[1],
+                        a[2] + b[2] + c[2],
+                    )
+                    .unwrap();
+                    let sample = s.sample_surface(direction.components()).unwrap();
+                    if !observed.insert(sample.water) {
+                        continue;
+                    }
+                    app.spherical_canvas_state
+                        .apply(SphericalCanvasAction::SetPickDirection(Some(direction)))
+                        .unwrap();
+                    let pick = derived_pick(
+                        &app.spherical_canvas_state,
+                        Some(&context),
+                        Some(&[batch]),
+                        &published,
+                    )
+                    .unwrap();
+                    assert_eq!(pick.water, sample.water);
+                    let rows = derived_pick_rows(&published, &pick).unwrap();
+                    let gpu_owner = mesh.dry_sources[tri[0] as usize];
+                    if sample.water == SurfaceWaterKind::DryLand {
+                        assert_eq!(gpu_owner as usize, sample.source_cell + 1);
+                        assert_eq!(pick.dry_source.unwrap().raw() + 1, gpu_owner);
+                        assert!(rows.iter().any(|(label, _)| label == BIOME_BASIS));
+                        for label in [BIOME_MONTHLY_RAIN, BIOME_MONTHLY_TEMP] {
+                            assert_eq!(
+                                rows.iter()
+                                    .find(|(k, _)| k == label)
+                                    .unwrap()
+                                    .1
+                                    .split(" · ")
+                                    .count(),
+                                12
+                            );
+                        }
+                    } else {
+                        assert_eq!(gpu_owner, 0);
+                        assert_eq!(rows[0].1, BIOME_WATER);
+                    }
+                    eprintln!(
+                        "source={i} leaf={:?} pick={:?}",
+                        sample.water,
+                        &rows[..if gpu_owner == 0 { 1 } else { 4 }]
+                    );
+                }
+            }
+            assert!(observed.contains(&wet) && observed.contains(&SurfaceWaterKind::DryLand));
         }
     }
 

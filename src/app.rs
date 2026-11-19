@@ -688,6 +688,7 @@ fn derived_pick(
     Some(SphericalDerivedPick {
         cell,
         level,
+        dry_source: reading.dry_source,
         elevation_m: reading.value.elevation_m,
         water: reading.water,
         initialized_water_m: reading.initialized_water_m,
@@ -3211,7 +3212,16 @@ impl eframe::App for TemplateApp {
                                     presentation,
                                 ) {
                                     match derived_pick_rows(presentation, &pick) {
-                                        Ok(rows) => show_spherical_derived_pick(ui, &rows),
+                                        Ok(rows) => {
+                                            if presentation.state().fill_field()
+                                                == Some(&crate::world::natural::potential_biome_field_id())
+                                            {
+                                                if let Some(direction) = self.spherical_canvas_state.picked_direction() {
+                                                    crate::ui::spherical::reveal_biome_pick(ui, direction);
+                                                }
+                                            }
+                                            show_spherical_derived_pick(ui, &rows)
+                                        },
                                         Err(error) => {
                                             ui.colored_label(
                                                 egui::Color32::LIGHT_RED,

@@ -1317,6 +1317,7 @@ fn append_edge_segment(
 /// mesh is rebuilt per detail selection and re-projected per map view.
 #[derive(Debug, Clone)]
 pub struct AmplifiedSurfaceMesh {
+    dry_sources: Vec<u32>,
     directions: Vec<[f64; 3]>,
     colors: Vec<[u8; 4]>,
     indices: Vec<u32>,
@@ -1329,7 +1330,18 @@ impl AmplifiedSurfaceMesh {
         colors: Vec<[u8; 4]>,
         indices: Vec<u32>,
     ) -> Result<Self, SphericalMeshError> {
-        if directions.is_empty()
+        let dry_sources = vec![0; directions.len()];
+        Self::with_dry_sources(directions, colors, indices, dry_sources)
+    }
+
+    pub(crate) fn with_dry_sources(
+        directions: Vec<[f64; 3]>,
+        colors: Vec<[u8; 4]>,
+        indices: Vec<u32>,
+        dry_sources: Vec<u32>,
+    ) -> Result<Self, SphericalMeshError> {
+        if directions.len() != dry_sources.len()
+            || directions.is_empty()
             || directions.len() != colors.len()
             || indices.is_empty()
             || indices.len() % TRIANGLE_VERTEX_COUNT != 0
@@ -1347,6 +1359,7 @@ impl AmplifiedSurfaceMesh {
             return Err(SphericalMeshError::InvalidAmplifiedMesh);
         }
         Ok(Self {
+            dry_sources,
             directions,
             colors,
             indices,
@@ -1356,6 +1369,10 @@ impl AmplifiedSurfaceMesh {
     /// Returns the unit directions of all subdivision vertices.
     pub fn directions(&self) -> &[[f64; 3]] {
         &self.directions
+    }
+
+    pub(crate) fn dry_sources(&self) -> &[u32] {
+        &self.dry_sources
     }
 
     /// Returns the pre-lit sRGB vertex colors.
@@ -1471,6 +1488,8 @@ pub fn project_unit_direction(
 /// subtracts the anchor before any f32 quantization.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AmplifiedMapVertex {
+    /// One-based source climate index on dry Atlas leaves, zero on water.
+    pub dry_source: u32,
     /// The projected planar position.
     pub position: [f64; 2],
     /// The pre-lit sRGB color carried over from the direction-domain vertex.
@@ -1500,7 +1519,9 @@ pub fn project_amplified_map(
     #[cfg(target_arch = "wasm32")]
     let vertex_iter = mesh.directions().iter().zip(mesh.colors().iter());
     let mut vertices: Vec<AmplifiedMapVertex> = vertex_iter
-        .map(|(direction, color)| AmplifiedMapVertex {
+        .enumerate()
+        .map(|(i, (direction, color))| AmplifiedMapVertex {
+            dry_source: mesh.dry_sources[i],
             position: project_unit_direction(projection, *direction).unwrap_or([f64::NAN; 2]),
             color: *color,
         })
@@ -1628,6 +1649,7 @@ fn append_seam_cut_triangle(
             vertices.push(AmplifiedMapVertex {
                 position: [point.x(), point.y()],
                 color: flat_color,
+                dry_source: mesh.dry_sources[corners[0] as usize],
             });
         }
         for corner in 1..projected.len() - 1 {

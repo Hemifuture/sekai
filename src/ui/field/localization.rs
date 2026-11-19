@@ -361,6 +361,21 @@ pub(super) const fn localized_palette(palette: PaletteId) -> &'static str {
     }
 }
 
+pub(crate) const BIOME_LEGEND: &str = "植被带图例";
+pub(crate) const BIOME_BASIS: &str = "温雨分带依据";
+pub(crate) const BIOME_MONTHLY_TEMP: &str = "1–12 月气温（°C）";
+pub(crate) const BIOME_MONTHLY_RAIN: &str = "1–12 月降水率（mm/日）";
+pub(crate) const BIOME_WATER: &str = "水面，无陆地植被带";
+
+pub(crate) fn biome_basis(source: u32, temp: f32, rain: f64, extrapolated: bool) -> String {
+    let relation = if extrapolated {
+        "落在图外，按最近分区推定"
+    } else {
+        "落在该分区内或其边界"
+    };
+    format!("来源格 {source} 的年均温 {temp:.1} °C，年降水 {rain:.1} mm。这组温雨值在 Whittaker–Ricklefs 图上{relation}。")
+}
+
 #[cfg(test)]
 mod quality_advisory_tests {
     use super::*;

@@ -162,6 +162,7 @@ fn river_globe_instance(
 struct GpuAmplifiedMapVertex {
     position: [f32; 2],
     color: [u8; 4],
+    dry_source: u32,
 }
 
 /// One amplified globe vertex: unit direction plus pre-lit sRGB color.
@@ -170,6 +171,7 @@ struct GpuAmplifiedMapVertex {
 struct GpuAmplifiedGlobeVertex {
     position: [f32; 3],
     color: [u8; 4],
+    dry_source: u32,
 }
 
 #[repr(C)]
@@ -945,6 +947,7 @@ struct ReplacementBuffer {
 /// }
 /// ```
 pub struct SphericalFieldRenderer {
+    target_srgb: bool,
     map_vertex_buffer: wgpu::Buffer,
     map_vertex_capacity: u64,
     map_index_buffer: wgpu::Buffer,
@@ -1151,6 +1154,7 @@ impl SphericalFieldRenderer {
             "fs_overlay",
         );
         Self {
+            target_srgb: target_format.is_srgb(),
             map_vertex_buffer,
             map_vertex_capacity: MIN_BUFFER_BYTES,
             map_index_buffer,
@@ -1360,7 +1364,14 @@ impl SphericalFieldRenderer {
         });
         let palette = plan
             .palette
-            .then(|| combined_palette(packet.layers().fill_palette()))
+            .then(|| {
+                combined_palette(
+                    packet.layers().fill_palette(),
+                    !self.target_srgb
+                        && packet.layers().fill().field_id()
+                            == &crate::world::natural::potential_biome_field_id(),
+                )
+            })
             .transpose()?;
         let candidate_map_overlay = plan
             .map_overlay
@@ -1683,6 +1694,7 @@ impl SphericalFieldRenderer {
                     (vertex.position[1] - origin[1]) as f32,
                 ],
                 color: vertex.color,
+                dry_source: vertex.dry_source,
             })
             .collect();
         (
@@ -1712,7 +1724,9 @@ impl SphericalFieldRenderer {
             .directions()
             .iter()
             .zip(mesh.colors())
-            .map(|(direction, color)| GpuAmplifiedGlobeVertex {
+            .enumerate()
+            .map(|(i, (direction, color))| GpuAmplifiedGlobeVertex {
+                dry_source: mesh.dry_sources()[i],
                 position: [
                     (direction[0] - anchor[0]) as f32,
                     (direction[1] - anchor[1]) as f32,
@@ -2205,7 +2219,10 @@ fn validate_geometry(
     Ok(())
 }
 
-fn combined_palette(base: &[LinearRgba]) -> Result<Vec<[f32; 4]>, SphericalRenderError> {
+fn combined_palette(
+    base: &[LinearRgba],
+    encode_chart_colors: bool,
+) -> Result<Vec<[f32; 4]>, SphericalRenderError> {
     let capacity = base
         .len()
         .checked_add(3)
@@ -2213,7 +2230,15 @@ fn combined_palette(base: &[LinearRgba]) -> Result<Vec<[f32; 4]>, SphericalRende
             context: "combined palette length",
         })?;
     let mut combined = Vec::with_capacity(capacity);
-    combined.extend(base.iter().map(|color| color.components()));
+    // Native egui commonly paints to a non-sRGB attachment. Encode chart swatches
+    // once on upload when the target cannot perform the transfer function.
+    combined.extend(base.iter().map(|color| {
+        if encode_chart_colors {
+            color.to_srgba8().map(|v| f32::from(v) / 255.0)
+        } else {
+            color.components()
+        }
+    }));
     combined.push(DIAGNOSTIC_INFO_COLOR.components());
     combined.push(DIAGNOSTIC_WARNING_COLOR.components());
     combined.push(DIAGNOSTIC_ERROR_COLOR.components());
@@ -2494,10 +2519,10 @@ fn create_amplified_pipeline(
         bind_group_layouts: &[bind_group_layout],
         push_constant_ranges: &[],
     });
-    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x2, 1 => Unorm8x4];
-    const GLOBE_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4];
+    const MAP_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Unorm8x4, 2 => Uint32];
+    const GLOBE_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4, 2 => Uint32];
     let (label, entry_point, array_stride, attributes, cull_mode) = match mode {
         SphericalRenderMode::Map => (
             "Spherical Amplified Map Pipeline",
@@ -2777,7 +2802,7 @@ mod tests {
     use crate::generators::spatial::GeodesicVoronoiBuilder;
     use crate::view::{
         category_color, prepare_spherical_field_layers, scalar_color, DisplayRangeMode,
-        DisplayRevision, DisplayRevisionClock, FieldCatalog, GlobeCamera, LinearRgba, MapCamera,
+        DisplayRevision, DisplayRevisionClock, FieldCatalog, GlobeCamera, MapCamera,
         OwnedViewDiagnostic, PaletteId, PreparedFieldKind, PreparedGlobeMesh, PreparedProjectedMap,
         SelectedSurfaceEntity, SphericalFieldDisplayState, SphericalLayerVisibility,
         SphericalMeshBudgets, SphericalPresentationSource, SphericalProjection,
@@ -3549,7 +3574,7 @@ mod tests {
                 &diagnostic_only,
                 viewport,
                 transformed_pixel(uniform.transform, position, viewport),
-                linear_to_srgba8(DIAGNOSTIC_ERROR_COLOR),
+                DIAGNOSTIC_ERROR_COLOR.to_srgba8(),
                 2,
             );
         }
@@ -4156,7 +4181,7 @@ mod tests {
         let mut expected_mask = vec![0_u32; fixture.surface.cells().len()];
         expected_mask[cell] = 3;
         assert_eq!(fixture.layers.diagnostics().cells(), expected_mask);
-        let expected = linear_to_srgba8(DIAGNOSTIC_ERROR_COLOR);
+        let expected = DIAGNOSTIC_ERROR_COLOR.to_srgba8();
         let mut rendered = Vec::new();
         for mode in [SphericalRenderMode::Map, SphericalRenderMode::Globe] {
             let viewport = [192, 96];
@@ -5096,7 +5121,7 @@ mod tests {
             ),
             PreparedFieldKind::Category => category_color(raw, packet.layers().fill_palette()),
         };
-        linear_to_srgba8(color)
+        color.to_srgba8()
     }
 
     fn transformed_pixel(
@@ -5179,30 +5204,6 @@ mod tests {
             })
         });
         assert!(found, "no pixel near {pixel:?} matched {expected:?}");
-    }
-
-    fn linear_to_srgba8(color: LinearRgba) -> [u8; 4] {
-        let [red, green, blue, alpha] = color.components();
-        [
-            linear_channel_to_srgb8(red),
-            linear_channel_to_srgb8(green),
-            linear_channel_to_srgb8(blue),
-            unit_to_u8(alpha),
-        ]
-    }
-
-    fn linear_channel_to_srgb8(linear: f32) -> u8 {
-        let linear = linear.clamp(0.0, 1.0);
-        let srgb = if linear <= 0.003_130_8 {
-            linear * 12.92
-        } else {
-            1.055 * linear.powf(1.0 / 2.4) - 0.055
-        };
-        unit_to_u8(srgb)
-    }
-
-    fn unit_to_u8(value: f32) -> u8 {
-        (value.clamp(0.0, 1.0) * 255.0).round() as u8
     }
 
     fn test_field(kind: TestFieldKind, cell_count: usize) -> (FieldSchema, FieldData, PaletteId) {

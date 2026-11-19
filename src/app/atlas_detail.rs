@@ -41,14 +41,31 @@ pub(super) struct DisplayElevation {
 pub(super) struct DetailReading {
     pub cell: CellId,
     pub value: DisplayElevation,
+    pub dry_source: Option<CellId>,
     pub water: SurfaceWaterKind,
     pub initialized_water_m: Option<(f64, f64)>,
+}
+
+impl DetailReading {
+    fn from_atlas(cell: CellId, sample: crate::world::natural::AtlasSurfaceSample) -> Self {
+        Self {
+            cell,
+            dry_source: (sample.water == SurfaceWaterKind::DryLand)
+                .then(|| CellId::from_raw(sample.source_cell as u32)),
+            value: DisplayElevation {
+                elevation_m: sample.bed_elevation_m as f32,
+            },
+            water: sample.water,
+            initialized_water_m: sample.water_surface_elevation_m.zip(sample.water_depth_m()),
+        }
+    }
 }
 
 impl From<crate::generators::natural::DerivedReading> for DetailReading {
     fn from(reading: crate::generators::natural::DerivedReading) -> Self {
         Self {
             cell: reading.cell,
+            dry_source: None,
             value: DisplayElevation {
                 elevation_m: reading.value.elevation_m,
             },
@@ -207,16 +224,7 @@ impl DetailEvaluator {
                     .snapshot()
                     .sample_surface(direction.components())
                     .expect("valid installed leaf queries the sealed Atlas snapshot");
-                DetailReading {
-                    cell,
-                    value: DisplayElevation {
-                        elevation_m: sample.bed_elevation_m as f32,
-                    },
-                    water: sample.water,
-                    initialized_water_m: sample
-                        .water_surface_elevation_m
-                        .zip(sample.water_depth_m()),
-                }
+                DetailReading::from_atlas(cell, sample)
             }
         }
     }
@@ -247,16 +255,7 @@ impl DetailEvaluator {
                     .sample_surface_batch(&directions, &|| false)
                     .expect("valid display leaves query sealed Atlas snapshot");
                 for sample in readings {
-                    sink(DetailReading {
-                        cell,
-                        value: DisplayElevation {
-                            elevation_m: sample.bed_elevation_m as f32,
-                        },
-                        water: sample.water,
-                        initialized_water_m: sample
-                            .water_surface_elevation_m
-                            .zip(sample.water_depth_m()),
-                    });
+                    sink(DetailReading::from_atlas(cell, sample));
                 }
             }
         }

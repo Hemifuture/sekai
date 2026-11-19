@@ -112,6 +112,10 @@ impl FieldDocument for AtlasFieldDocument {
         let mut payloads = self.cache.payloads();
         payloads.extend([
             (
+                crate::world::natural::potential_biome_field_id(),
+                FieldPayloadRef::CategoryU32(self.snapshot().potential_biomes()),
+            ),
+            (
                 surface_elevation_m_field_id(),
                 FieldPayloadRef::ScalarF32(self.snapshot().fields().bed_elevation_m()),
             ),

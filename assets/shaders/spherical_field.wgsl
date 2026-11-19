@@ -139,14 +139,22 @@ fn fs_fill(input: VertexOutput) -> @location(0) vec4<f32> {
     return input.color;
 }
 
+fn leaf_color(terrain: vec4<f32>, dry_source: u32) -> vec4<f32> {
+    if frame.field_kind == 1u && dry_source != 0u {
+        return decode_fill_color(dry_source - 1u);
+    }
+    return vec4<f32>(srgb_to_linear(terrain.rgb), terrain.a);
+}
+
 @vertex
 fn vs_map_amplified(
     @location(0) position: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) dry_source: u32,
 ) -> AmplifiedOutput {
     var output: AmplifiedOutput;
     output.position = frame.detail_transform * vec4<f32>(position, 0.0, 1.0);
-    output.color = color;
+    output.color = leaf_color(color, dry_source);
     return output;
 }
 
@@ -154,16 +162,17 @@ fn vs_map_amplified(
 fn vs_globe_amplified(
     @location(0) position: vec3<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) dry_source: u32,
 ) -> AmplifiedOutput {
     var output: AmplifiedOutput;
     output.position = frame.detail_transform * vec4<f32>(position, 1.0);
-    output.color = color;
+    output.color = leaf_color(color, dry_source);
     return output;
 }
 
 @fragment
 fn fs_amplified(input: AmplifiedOutput) -> @location(0) vec4<f32> {
-    return vec4<f32>(srgb_to_linear(input.color.rgb), input.color.a);
+    return input.color;
 }
 
 fn clipped_overlay(color: vec4<f32>, kind: u32) -> OverlayOutput {

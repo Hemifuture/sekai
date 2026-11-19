@@ -1373,14 +1373,15 @@ impl SphericalFieldDisplayState {
     /// Returns the fixed-frame visibility flags for the two formal data layers.
     ///
     /// The amplified subdivision layer is not a mode: it stands in for the
-    /// cell fill exactly while the fill channel shows the surface elevation
-    /// itself, so wheel zoom keeps one canvas and every other field keeps
-    /// its authoritative per-cell rendering. The renderer still falls back
+    /// cell fill for terrain elevation and dry-land vegetation so that
+    /// zoom and picks follow the same fine-bed shoreline. The renderer still falls back
     /// to the cell fill when no amplified mesh is installed.
     pub fn layer_visibility(&self) -> SphericalLayerVisibility {
         let amplified = self.fill_visible
-            && self.fill_field.as_ref()
-                == Some(&crate::world::natural::surface_elevation_m_field_id());
+            && self.fill_field.as_ref().is_some_and(|id| {
+                id == &crate::world::natural::surface_elevation_m_field_id()
+                    || id == &crate::world::natural::potential_biome_field_id()
+            });
         SphericalLayerVisibility {
             fill: self.fill_visible,
             overlay: self.overlay_visible,

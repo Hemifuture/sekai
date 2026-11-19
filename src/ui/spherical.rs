@@ -1384,6 +1384,24 @@ pub fn show_spherical_controls(
             }
         });
 
+    if selected_fill == Some(&crate::world::natural::potential_biome_field_id()) {
+        let catalog = presentation.document().catalog_for_ui()?;
+        if let Some(entry) = selected_fill.and_then(|id| catalog.get(id)) {
+            ui.collapsing(super::field::localization::BIOME_LEGEND, |ui| {
+                for (color, key) in presentation
+                    .layers()
+                    .fill_palette()
+                    .iter()
+                    .zip(entry.schema().category_labels.values())
+                {
+                    ui.horizontal(|ui| {
+                        super::field::color_swatch(ui, *color);
+                        ui.label(localized_field_key(key));
+                    });
+                }
+            });
+        }
+    }
     let selected_overlay = state.field_state().overlay_field();
     egui::ComboBox::from_label("叠加")
         .selected_text(
@@ -1503,6 +1521,8 @@ pub struct SphericalDerivedPick {
     pub cell: CellId,
     /// The primitive level the active view draws there.
     pub level: u8,
+    /// Climate source of the installed dry leaf. Water has no terrestrial vegetation.
+    pub dry_source: Option<CellId>,
     /// The drawn leaf's derived elevation in metres.
     pub elevation_m: f32,
     /// The drawn leaf's fine-shoreline water class.
@@ -1557,7 +1577,51 @@ pub fn derived_pick_rows(
         }
         _ => return Err(SphericalUiError::EntityValueMissing),
     };
-    let mut rows = vec![
+    let mut rows = Vec::new();
+    if presentation.layers().fill().field_id() == &crate::world::natural::potential_biome_field_id()
+    {
+        let field = view(crate::world::natural::potential_biome_field_id())?;
+        let label = localized_field_key(field.schema().display.label_key()).into_owned();
+        if let Some(source) = pick.dry_source {
+            let i = source.raw() as usize;
+            let atlas = presentation
+                .document()
+                .atlas()
+                .ok_or(SphericalUiError::EntityValueMissing)?
+                .snapshot();
+            let value = format_field_value(field, i)
+                .and_then(|v| v.category_label_key)
+                .ok_or(SphericalUiError::EntityValueMissing)?;
+            rows.push((label, localized_field_key(&value).into_owned()));
+            let c = atlas.climate().fields();
+            let temp = &c.monthly_air_temperature_c().values()[i];
+            let rain = &c.monthly_precipitation_mm_day().values()[i];
+            rows.push((
+                super::field::localization::BIOME_BASIS.into(),
+                super::field::localization::biome_basis(
+                    source.raw(),
+                    crate::world::natural::climatological_monthly_mean(temp),
+                    crate::world::natural::climatological_annual_total_mm(rain),
+                    atlas.extrapolated_biomes()[i],
+                ),
+            ));
+            for (label, data) in [
+                (super::field::localization::BIOME_MONTHLY_TEMP, temp),
+                (super::field::localization::BIOME_MONTHLY_RAIN, rain),
+            ] {
+                rows.push((
+                    label.into(),
+                    data.iter()
+                        .map(|v| format!("{v:.1}"))
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                ));
+            }
+        } else {
+            rows.push((label, super::field::localization::BIOME_WATER.into()));
+        }
+    }
+    rows.extend([
         (
             derived_elevation_label(pick.level),
             format!("{:.precision$} {unit}", pick.elevation_m),
@@ -1572,7 +1636,7 @@ pub fn derived_pick_rows(
             P5_OCEAN_AREA_FRACTION_LABEL.to_owned(),
             format!("{:.3}", pick.ocean_area_fraction),
         ),
-    ];
+    ]);
     if let Some((surface, depth)) = pick.initialized_water_m {
         rows.push((
             super::field::localization::INITIALIZED_WATER_SURFACE_LABEL.into(),
@@ -1584,6 +1648,18 @@ pub fn derived_pick_rows(
         ));
     }
     Ok(rows)
+}
+
+/// Bring a newly picked biome into view once, then leave scrolling to the player.
+pub(crate) fn reveal_biome_pick(ui: &egui::Ui, direction: crate::world::spatial::UnitVector3) {
+    let id = ui.id().with("last_biome_pick");
+    let changed = ui.data_mut(|data| {
+        let last = data.get_temp_mut_or::<Option<crate::world::spatial::UnitVector3>>(id, None);
+        last.replace(direction) != Some(direction)
+    });
+    if changed {
+        ui.scroll_to_cursor(Some(egui::Align::Min));
+    }
 }
 
 /// Draws the derived-pick rows under the inspector.
@@ -1806,6 +1882,9 @@ fn build_spherical_inspector_model_with_diagnostics(
                 .fill_field()
                 .and_then(|field| catalog.get(field))
                 .and_then(|entry| entry.view())
+                .filter(|view| {
+                    view.schema().display.palette() != crate::world::fields::FieldPaletteHint::Biome
+                })
             {
                 let value =
                     format_field_value(fill, index).ok_or(SphericalUiError::EntityValueMissing)?;
