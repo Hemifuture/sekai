@@ -55,8 +55,10 @@ pub fn show_field_inspector(
                 draw_scalar_legend(ui, built_in_palette(palette));
             }
         }
-        FieldPaletteHint::Categorical if view.category_values().is_some() => {
-            let palette = built_in_palette(PaletteId::Categorical);
+        FieldPaletteHint::Categorical | FieldPaletteHint::Biome
+            if view.category_values().is_some() =>
+        {
+            let palette = built_in_palette(palette_for_hint(schema.display.palette()));
             let total = schema.category_labels.len();
             for (compact, (key, label)) in schema.category_labels.iter().take(256).enumerate() {
                 let color = category_color(compact as u32, palette);
@@ -125,6 +127,7 @@ fn palette_for_hint(hint: FieldPaletteHint) -> PaletteId {
         FieldPaletteHint::Hypsometric => PaletteId::Hypsometric,
         FieldPaletteHint::Categorical => PaletteId::Categorical,
         FieldPaletteHint::LandOcean => PaletteId::LandOcean,
+        FieldPaletteHint::Biome => PaletteId::Biome,
         FieldPaletteHint::Sequential | FieldPaletteHint::Boolean | FieldPaletteHint::Vector => {
             PaletteId::Sequential
         }
@@ -139,27 +142,9 @@ fn draw_scalar_legend(ui: &mut egui::Ui, palette: &[LinearRgba]) {
     });
 }
 
-fn color_swatch(ui: &mut egui::Ui, color: LinearRgba) {
+pub(crate) fn color_swatch(ui: &mut egui::Ui, color: LinearRgba) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 1.0, linear_color32(color));
-}
-
-fn linear_color32(color: LinearRgba) -> egui::Color32 {
-    let [red, green, blue, alpha] = color.components();
-    egui::Color32::from_rgba_unmultiplied(
-        linear_channel_to_srgb8(red),
-        linear_channel_to_srgb8(green),
-        linear_channel_to_srgb8(blue),
-        (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
-    )
-}
-
-fn linear_channel_to_srgb8(value: f32) -> u8 {
-    let value = value.clamp(0.0, 1.0);
-    let srgb = if value <= 0.003_130_8 {
-        12.92 * value
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    };
-    (srgb * 255.0).round() as u8
+    let [r, g, b, a] = color.to_srgba8();
+    ui.painter()
+        .rect_filled(rect, 1.0, egui::Color32::from_rgba_unmultiplied(r, g, b, a));
 }

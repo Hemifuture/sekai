@@ -205,5 +205,6 @@ fn palette_matches_hint(palette: PaletteId, hint: FieldPaletteHint) -> bool {
             | (PaletteId::Hypsometric, FieldPaletteHint::Hypsometric)
             | (PaletteId::Categorical, FieldPaletteHint::Categorical)
             | (PaletteId::LandOcean, FieldPaletteHint::LandOcean)
+            | (PaletteId::Biome, FieldPaletteHint::Biome)
     )
 }

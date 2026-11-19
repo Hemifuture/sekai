@@ -1,11 +1,12 @@
 //! Contracts for the current-slice natural world.
 
 pub(crate) mod atlas_terrain;
+pub(crate) mod biome;
 mod circulation;
 pub use atlas_terrain::{
     AtlasCellFields, AtlasLake, AtlasRiverSegment, AtlasRunoffBudget, AtlasSurfaceSample,
-    AtlasTerrainSnapshot, AtlasTerrainValidationError, ATLAS_FINE_SCALE, ATLAS_SUPPORT_DEPTH,
-    ATLAS_TERRAIN_MODEL_VERSION,
+    AtlasTerrainSnapshot, AtlasTerrainValidationError, ATLAS_CURRENT_VERSION, ATLAS_FINE_SCALE,
+    ATLAS_SUPPORT_DEPTH, ATLAS_TERRAIN_MODEL_VERSION,
 };
 mod climate;
 mod climate_spec;
@@ -90,9 +91,10 @@ pub use fields::{
     latitude_degrees_field_id, mantle_heat_flow_field_id, maritime_influence_field_id,
     mean_annual_discharge_m3_s_field_id, metallic_mineral_potential_field_id,
     natural_field_registry, ocean_age_myr_field_id, plate_id_field_id, plate_velocity_field_id,
-    preliminary_annual_precipitation_mm_field_id, preliminary_mean_air_temperature_c_field_id,
-    preliminary_prevailing_wind_m_s_field_id, preliminary_temperature_seasonality_c_field_id,
-    primary_elevation_m_field_id, regional_offset_field_id, relative_permeability_field_id,
+    potential_biome_field_id, preliminary_annual_precipitation_mm_field_id,
+    preliminary_mean_air_temperature_c_field_id, preliminary_prevailing_wind_m_s_field_id,
+    preliminary_temperature_seasonality_c_field_id, primary_elevation_m_field_id,
+    regional_offset_field_id, relative_permeability_field_id,
     routed_sediment_deposition_m_field_id, routed_sediment_deposition_rate_m_per_year_field_id,
     sediment_deposition_thickness_m_field_id, sedimentary_basin_potential_field_id,
     spherical_formation_field_registry, spherical_natural_field_registry,

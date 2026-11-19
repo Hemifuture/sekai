@@ -10,6 +10,7 @@ include = [
     "LICENSE-MIT",
     "LICENSE-AGPL-3.0",
     "NOTICE-ATLAS.md",
+    "src/world/natural/biome/LICENSE-plotbiomes",
     "**/*.rs",
     "Cargo.toml",
     "crates/civ-atlas-terrain/Cargo.toml",

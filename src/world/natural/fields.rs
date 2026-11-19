@@ -927,6 +927,11 @@ pub fn spherical_formation_field_registry(
     Ok(builder.build()?)
 }
 
+/// Identifies the climate-defined potential vegetation of source-cell dry land.
+pub fn potential_biome_field_id() -> FieldId {
+    field_id("potential_biome")
+}
+
 /// Builds only the actual current-state Atlas field capabilities.
 ///
 /// # Errors
@@ -936,6 +941,16 @@ pub fn atlas_field_registry() -> Result<FieldRegistry, NaturalFieldRegistryError
     for schema in current_surface_schemas()? {
         builder.register(schema)?;
     }
+    builder.register(category_schema_with_palette(
+        potential_biome_field_id(),
+        FieldDomain::Cells,
+        super::biome::category_labels(),
+        vec![
+            circulation_mean_air_temperature_c_field_id(),
+            circulation_annual_precipitation_mm_field_id(),
+        ],
+        FieldPaletteHint::Biome,
+    )?)?;
     Ok(builder.build()?)
 }
 

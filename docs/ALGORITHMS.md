@@ -1294,7 +1294,7 @@ fn calculate_precipitation(
 
 ### 4.3 生物群落分配
 
-使用 Whittaker 生物群落分类。
+以下是早期使用字节降水的 Whittaker 示意。当前 Atlas 潜在植被带的气候单位、图域与地表遮罩见[生产规格](superpowers/specs/2026-11-18-biome-v1.md)。
 
 ```rust
 #[derive(Clone, Copy)]

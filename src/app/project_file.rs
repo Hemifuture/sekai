@@ -681,7 +681,10 @@ mod tests {
             .iter()
             .find(|entry| entry.id == stage.id().as_str())
             .unwrap();
-        assert_eq!(registered.version, source.terrain_model_version);
+        assert_eq!(
+            registered.version,
+            crate::world::natural::ATLAS_CURRENT_VERSION
+        );
         assert!(matches!(
             compare_generator(&file.generator, &current),
             Compatibility::UpgradeRequired(_)

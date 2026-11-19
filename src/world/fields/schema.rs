@@ -296,6 +296,8 @@ pub enum FieldPaletteHint {
     Categorical,
     /// A fixed two-color ocean/land palette keyed by the stable category index.
     LandOcean,
+    /// Ricklefs potential vegetation categories, ordered by their chart regions.
+    Biome,
     /// A two-state palette.
     Boolean,
     /// A vector-oriented display.
@@ -548,8 +550,10 @@ fn validate_schema(schema: &FieldSchema) -> Result<(), FieldSchemaError> {
         ) | (
             FieldValueType::CategoryU32 | FieldValueType::StableIdU32(_),
             FieldPaletteHint::Categorical
-        ) | (FieldValueType::CategoryU32, FieldPaletteHint::LandOcean)
-            | (FieldValueType::Boolean, FieldPaletteHint::Boolean)
+        ) | (
+            FieldValueType::CategoryU32,
+            FieldPaletteHint::LandOcean | FieldPaletteHint::Biome
+        ) | (FieldValueType::Boolean, FieldPaletteHint::Boolean)
             | (FieldValueType::Vector2F32, FieldPaletteHint::Vector)
     );
     if !palette_is_compatible {

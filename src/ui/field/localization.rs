@@ -249,6 +249,16 @@ pub(crate) fn localized_field_key(key: &str) -> Cow<'_, str> {
         "sedimentary_basin_potential" => "沉积盆地潜力",
         "strahler_stream_order" => "斯特拉勒河级",
         "surface_elevation_m" => "当前地表高程",
+        "potential_biome" => "潜在自然植被带",
+        "potential_biome.tundra" => "苔原",
+        "potential_biome.boreal_forest" => "北方针叶林",
+        "potential_biome.temperate_grassland_desert" => "温带草原／荒漠",
+        "potential_biome.woodland_shrubland" => "疏林／灌丛",
+        "potential_biome.temperate_seasonal_forest" => "温带季节林",
+        "potential_biome.temperate_rain_forest" => "温带雨林",
+        "potential_biome.tropical_rain_forest" => "热带雨林",
+        "potential_biome.tropical_seasonal_forest_savanna" => "热带季节林／稀树草原",
+        "potential_biome.subtropical_desert" => "亚热带荒漠",
         "surface_water_kind" => "地表水类型",
         "tectonic_offset_m" => "构造地貌偏移",
         "volcanic_influence" => "火山影响度",
@@ -347,6 +357,7 @@ pub(super) const fn localized_palette(palette: PaletteId) -> &'static str {
         PaletteId::Categorical => "分类",
         PaletteId::Hypsometric => "等高地形",
         PaletteId::LandOcean => "海陆",
+        PaletteId::Biome => "植被带",
     }
 }
 

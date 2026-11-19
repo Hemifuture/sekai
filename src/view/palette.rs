@@ -58,12 +58,33 @@ impl LinearRgba {
         self.0
     }
 
+    /// Encodes linear RGB and alpha into unpremultiplied display bytes (IEC 61966-2-1).
+    pub(crate) fn to_srgba8(self) -> [u8; 4] {
+        let [r, g, b, a] = self.0;
+        [
+            encode_srgb(r.into()),
+            encode_srgb(g.into()),
+            encode_srgb(b.into()),
+            (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        ]
+    }
+
     /// Returns whether every component is finite and lies in the unit interval.
     pub fn is_valid(self) -> bool {
         self.0
             .iter()
             .all(|component| component.is_finite() && (0.0..=1.0).contains(component))
     }
+}
+
+fn encode_srgb(linear: f64) -> u8 {
+    let clamped = linear.clamp(0.0, 1.0);
+    let encoded = if clamped <= 0.003_130_8 {
+        12.92 * clamped
+    } else {
+        1.055 * clamped.powf(1.0 / 2.4) - 0.055
+    };
+    (encoded * 255.0).round() as u8
 }
 
 /// Built-in renderer palettes.
@@ -79,6 +100,8 @@ pub enum PaletteId {
     Hypsometric,
     /// Two fixed semantic colors: ocean water then land.
     LandOcean,
+    /// Digitized Ricklefs chart colors in chart polygon order.
+    Biome,
 }
 
 /// How a scalar display range is selected.
@@ -405,6 +428,19 @@ const DIVERGING: [LinearRgba; 5] = [
     LinearRgba::new(0.260, 0.055, 0.045, 1.0),
 ];
 
+// plotbiomes Ricklefs_colors.rda converted from sRGB to linear light.
+const BIOME: [LinearRgba; 9] = [
+    LinearRgba::new(0.5332764, 0.7529422, 0.7230551, 1.0),
+    LinearRgba::new(0.3762621, 0.5711248, 0.2788943, 1.0),
+    LinearRgba::new(0.9734453, 0.6653873, 0.1946178, 1.0),
+    LinearRgba::new(0.6375969, 0.1559265, 0.0497066, 1.0),
+    LinearRgba::new(0.3094689, 0.4677838, 0.1412633, 1.0),
+    LinearRgba::new(0.1778884, 0.3967552, 0.1119324, 1.0),
+    LinearRgba::new(0.0307134, 0.1946178, 0.0159963, 1.0),
+    LinearRgba::new(0.3515326, 0.3094689, 0.0000000, 1.0),
+    LinearRgba::new(0.7156935, 0.496933, 0.0802198, 1.0),
+];
+
 const CATEGORICAL: [LinearRgba; 12] = [
     LinearRgba::new(0.670, 0.190, 0.150, 1.0),
     LinearRgba::new(0.110, 0.390, 0.540, 1.0),
@@ -514,6 +550,7 @@ pub const fn built_in_palette(id: PaletteId) -> &'static [LinearRgba] {
         PaletteId::Categorical => &CATEGORICAL,
         PaletteId::Hypsometric => &HYPSOMETRIC,
         PaletteId::LandOcean => &LAND_OCEAN,
+        PaletteId::Biome => &BIOME,
     }
 }
 

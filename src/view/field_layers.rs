@@ -2015,6 +2015,7 @@ fn fill_palette_for(
         FieldPaletteHint::Hypsometric => PaletteId::Hypsometric,
         FieldPaletteHint::Categorical => PaletteId::Categorical,
         FieldPaletteHint::LandOcean => PaletteId::LandOcean,
+        FieldPaletteHint::Biome => PaletteId::Biome,
         FieldPaletteHint::Boolean => {
             return Err(DisplayPrepareError::UnsupportedSphericalChannel {
                 field: field.schema().id.clone(),
@@ -2031,6 +2032,7 @@ fn overlay_palette_for(field: &FieldView<'_>) -> Result<PaletteId, DisplayPrepar
         FieldPaletteHint::Hypsometric => Ok(PaletteId::Hypsometric),
         FieldPaletteHint::Categorical => Ok(PaletteId::Categorical),
         FieldPaletteHint::LandOcean => Ok(PaletteId::LandOcean),
+        FieldPaletteHint::Biome => Ok(PaletteId::Biome),
         FieldPaletteHint::Boolean => Err(DisplayPrepareError::UnsupportedSphericalChannel {
             field: field.schema().id.clone(),
         }),
@@ -2140,6 +2142,7 @@ fn palette_matches_hint(palette: PaletteId, hint: FieldPaletteHint) -> bool {
             | (PaletteId::Hypsometric, FieldPaletteHint::Hypsometric)
             | (PaletteId::Categorical, FieldPaletteHint::Categorical)
             | (PaletteId::LandOcean, FieldPaletteHint::LandOcean)
+            | (PaletteId::Biome, FieldPaletteHint::Biome)
     )
 }
 

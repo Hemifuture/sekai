@@ -31,6 +31,7 @@ pub fn compatible_palettes(hint: FieldPaletteHint) -> &'static [PaletteId] {
         FieldPaletteHint::Hypsometric => &[PaletteId::Hypsometric],
         FieldPaletteHint::Categorical => &[PaletteId::Categorical],
         FieldPaletteHint::LandOcean => &[PaletteId::LandOcean],
+        FieldPaletteHint::Biome => &[PaletteId::Biome],
         FieldPaletteHint::Boolean | FieldPaletteHint::Vector => &[],
     }
 }

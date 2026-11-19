@@ -18,8 +18,8 @@ use crate::engine::{
 use crate::generators::spatial::build_source_voronoi_surface;
 use crate::world::natural::{
     AtlasTerrainSnapshot, AtlasTerrainValidationError, ClimateModelProfile, ClimateSpec,
-    HydroErosionSpec, NaturalQualityProfile, ATLAS_FINE_SCALE, ATLAS_SUPPORT_DEPTH,
-    ATLAS_TERRAIN_MODEL_VERSION, EARTH_WATER_REFERENCE_RADIUS_M,
+    HydroErosionSpec, NaturalQualityProfile, ATLAS_CURRENT_VERSION, ATLAS_FINE_SCALE,
+    ATLAS_SUPPORT_DEPTH, EARTH_WATER_REFERENCE_RADIUS_M,
 };
 use crate::world::spatial::{SphericalSurfaceSnapshot, UnitVector3};
 use crate::world::Meters;
@@ -164,7 +164,15 @@ fn finish_current(
         .iter()
         .chain(&geometry.fields.lake_volume_m3)
         .sum();
+    let vegetation =
+        crate::world::natural::biome::PotentialVegetation::from_climate(climate.fields());
+    log::debug!(
+        "Atlas potential vegetation ms={}",
+        phase.elapsed().as_millis()
+    );
+    let phase = crate::engine::StageTimer::now();
     let mut snapshot = AtlasTerrainSnapshot {
+        vegetation,
         fingerprint: [0; 32],
         terrain_fingerprint,
         forcing_fingerprint: *forcing.fingerprint(),
@@ -200,7 +208,7 @@ impl Serialize for AtlasTerrainArtifact {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         (
             Self::KEY.as_str(),
-            ATLAS_TERRAIN_MODEL_VERSION,
+            ATLAS_CURRENT_VERSION,
             self.snapshot.fingerprint(),
         )
             .serialize(serializer)
@@ -274,7 +282,7 @@ impl Stage for AtlasTerrainStage {
         StageId::new("natural.atlas-terrain-current")
     }
     fn version(&self) -> u32 {
-        ATLAS_TERRAIN_MODEL_VERSION
+        ATLAS_CURRENT_VERSION
     }
     fn namespace(&self) -> &'static str {
         "sekai.civ-atlas"

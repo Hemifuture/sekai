@@ -18,6 +18,8 @@ use crate::world::spatial::{dot, SphericalSurfaceSnapshot, SurfaceRef, UnitVecto
 /// Identity version for fixed-bed water classes, material prior and current runoff.
 /// Version 5 resolves marine inundation from submerged pathways to source ocean sites.
 pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 5;
+/// Atomic Atlas product epoch, including its climate-derived potential vegetation.
+pub const ATLAS_CURRENT_VERSION: u32 = 6;
 /// Fixed original zoom scale; camera LOD never changes the author bed.
 pub const ATLAS_FINE_SCALE: civ_atlas_terrain::FineScale = civ_atlas_terrain::FineScale::Four;
 /// Fan quadrature level of the cell water fields: each source fan triangle is
@@ -355,6 +357,7 @@ pub struct AtlasTerrainSnapshot {
     pub(crate) fields: AtlasCellFields,
     pub(crate) climate: GlobalCirculationSnapshot,
     pub(crate) climate_quality: NaturalQualityReport,
+    pub(crate) vegetation: super::biome::PotentialVegetation,
     pub(crate) lakes: Vec<AtlasLake>,
     pub(crate) rivers: Vec<AtlasRiverSegment>,
     pub(crate) runoff_budget: AtlasRunoffBudget,
@@ -366,6 +369,14 @@ pub struct AtlasTerrainSnapshot {
     pub(crate) site_water: AtlasSiteWater,
 }
 impl AtlasTerrainSnapshot {
+    /// Potential vegetation category for the dry portion of each source cell.
+    pub fn potential_biomes(&self) -> &[u32] {
+        &self.vegetation.categories
+    }
+    /// Whether the source climate lies outside the digitized biome diagram.
+    pub fn extrapolated_biomes(&self) -> &[bool] {
+        &self.vegetation.extrapolated
+    }
     /// Original source cells with validated spherical geometry.
     pub fn surface(&self) -> &SphericalSurfaceSnapshot {
         &self.surface
@@ -468,7 +479,9 @@ impl AtlasTerrainSnapshot {
         self.validate_binding()?;
         let n = self.surface.cells().len();
         self.fields.validate(n)?;
-        if self.fine.coarse_terrain().site_xyz().len() != 3 * n
+        if self.vegetation.categories.len() != n
+            || self.vegetation.extrapolated.len() != n
+            || self.fine.coarse_terrain().site_xyz().len() != 3 * n
             || self.site_water.sites.len() != n
             || self.site_water.coast.face_count()
                 != self.fine.coarse_terrain().site_triangles().len() / 3
@@ -575,6 +588,7 @@ impl AtlasTerrainSnapshot {
     pub(crate) fn calculate_fingerprint(&self) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"sekai.atlas-current.v1\0");
+        hasher.update(&ATLAS_CURRENT_VERSION.to_le_bytes());
         hasher.update(&self.terrain_fingerprint);
         hasher.update(&self.forcing_fingerprint);
         hasher.update(self.climate.checkpoint().fingerprint());
@@ -582,6 +596,7 @@ impl AtlasTerrainSnapshot {
         serde_json::to_writer(
             &mut hasher,
             &(
+                &self.vegetation,
                 &self.lakes,
                 &self.rivers,
                 &self.runoff_budget,
