@@ -57,7 +57,7 @@ impl StageDescriptor {
         self.id
     }
 
-    /// Returns the version included in random seeds and cache keys.
+    /// Returns the product version included in cache keys and recipe identities.
     pub const fn version(&self) -> u32 {
         self.version
     }
@@ -136,6 +136,12 @@ pub trait Stage: Send + Sync + 'static {
     /// Returns the stage implementation version.
     fn version(&self) -> u32;
 
+    /// Returns the version used to derive the random stream. A stage may retain
+    /// its stream when revising deterministic processes downstream of its draws.
+    fn random_stream_version(&self) -> u32 {
+        self.version()
+    }
+
     /// Returns the namespace owning the stage's deterministic streams.
     fn namespace(&self) -> &'static str;
 
@@ -170,6 +176,8 @@ pub(crate) enum ErasedStageError {
 }
 
 pub(crate) trait ErasedStage: Send + Sync {
+    fn random_stream_version(&self) -> u32;
+
     fn run(
         &self,
         artifacts: &mut BuildArtifacts,
@@ -191,6 +199,10 @@ struct ErasedStageAdapter<S> {
 }
 
 impl<S: Stage> ErasedStage for ErasedStageAdapter<S> {
+    fn random_stream_version(&self) -> u32 {
+        self.stage.random_stream_version()
+    }
+
     fn run(
         &self,
         artifacts: &mut BuildArtifacts,

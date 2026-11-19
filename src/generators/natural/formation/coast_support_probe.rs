@@ -24,6 +24,10 @@ impl Stage for ProceduralCoastCandidateStage {
         CausalNaturalFormationStage::default().version()
     }
 
+    fn random_stream_version(&self) -> u32 {
+        CausalNaturalFormationStage::default().random_stream_version()
+    }
+
     fn namespace(&self) -> &'static str {
         CausalNaturalFormationStage::default().namespace()
     }

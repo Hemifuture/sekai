@@ -701,6 +701,10 @@ pub fn sea_ice_heat_exchange_fraction() -> f64 {
     conductive / open_water
 }
 
+/// Marine atmospheric share of column shortwave absorption (Wild et al. 2015,
+/// Table 3: atmosphere and surface absorb 23.6% and 49.0% of incident sunlight).
+pub(crate) const MARINE_ATMOSPHERIC_SHORTWAVE_SHARE: f64 = 23.6 / (23.6 + 49.0);
+
 /// IAU 2015 Resolution B3 nominal total solar irradiance at 1 au.
 pub const EARTH_NOMINAL_TOTAL_SOLAR_IRRADIANCE_W_M2: f64 = 1_361.0;
 /// CERES EBAF Ed4 global-mean incoming shortwave flux (Loeb et al. 2018).

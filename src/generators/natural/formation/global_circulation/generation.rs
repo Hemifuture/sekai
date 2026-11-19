@@ -509,8 +509,13 @@ impl GlobalCirculationGenerator {
         let budget_report = final_budgets
             .expect("at least one formation cycle is required")
             .finish(final_cycle_budget)?;
-        let (fields, published_precipitation_relative_error) =
-            work.project(surface, domain, forcing, cancellation, &mut observer)?;
+        let (fields, published_precipitation_relative_error) = work.project(
+            surface,
+            (&grid, domain),
+            forcing,
+            cancellation,
+            &mut observer,
+        )?;
         #[cfg(test)]
         offline::record(|capture| capture.fields = Some(fields.clone()));
         let dense_state_bytes = expected_global_circulation_dense_state_bytes(
@@ -2436,7 +2441,7 @@ impl WorkClimatology {
     fn project(
         mut self,
         surface: &SphericalSurfaceSnapshot,
-        domain: &ClimateWorkDomainSnapshot,
+        (grid, domain): (&CubedSphereGrid, &ClimateWorkDomainSnapshot),
         forcing: &GlobalClimateForcing,
         cancellation: &BuildCancellation,
         observer: &mut impl FnMut(GlobalCirculationPhase),
@@ -2491,12 +2496,26 @@ impl WorkClimatology {
                 }
             }
         }
-        let lower_wind = project_monthly_tangent_vectors_cancellable(
-            domain,
-            surface,
-            &self.lower_wind,
-            cancellation,
-        )?;
+        // Refined source cells receive the footprint mean of the continuous wind
+        // reconstruction between the work-grid centres.
+        // On coarser targets retain the existing area average.
+        let average = |wind: &[[[f32; 3]; CLIMATE_MONTH_COUNT]]| {
+            project_monthly_tangent_vectors_cancellable(domain, surface, wind, cancellation)
+        };
+        let (lower_wind, upper_wind) = match self.upper_wind {
+            Some(upper) if surface.cells().len() > grid.cell_count() => {
+                let [low, high] = super::wind_projection::refine(
+                    grid,
+                    domain,
+                    surface,
+                    [&self.lower_wind, &upper],
+                    cancellation,
+                )?;
+                (low, Some(high))
+            }
+            Some(upper) => (average(&self.lower_wind)?, Some(average(&upper)?)),
+            None => (average(&self.lower_wind)?, None),
+        };
         observer(GlobalCirculationPhase::ProjectionFieldCompleted);
         let mut ocean_current = project_monthly_tangent_vectors_cancellable(
             domain,
@@ -2577,18 +2596,12 @@ impl WorkClimatology {
             Some(thermocline_height),
             Some(deep_temperature),
         ) = (
-            self.upper_wind,
+            upper_wind,
             self.thermocline_temperature,
             self.upper_height,
             self.thermocline_height,
             self.deep_temperature,
         ) {
-            let upper_wind = project_monthly_tangent_vectors_cancellable(
-                domain,
-                surface,
-                &upper_wind,
-                cancellation,
-            )?;
             let mut shear = Vec::with_capacity(upper_wind.len());
             for (cell, (upper, lower)) in upper_wind.iter().zip(&lower_wind).enumerate() {
                 if cell % 256 == 0 {

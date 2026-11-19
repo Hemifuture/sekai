@@ -24,15 +24,11 @@ use support::causal_formation::{
     build_causal_formation, causal_formation_fixture, CausalFormationFixture,
 };
 
-/// Draft seed-42 probe fingerprint (spec A4 formula with the LOD-1 §3.6
-/// version prefix) at `T1_DERIVATION_VERSION` 6: P1 vertex anchors (T1 v2
-/// spec amendment A16), inland average-interpolating centroids (A17),
-/// base-level beds with fine-dry river clipping (A18), the LOD-1 R2 lake
-/// bound with scale-recursive lake connectivity (A19), and the R2 lake-bed
-/// flattening with the lake-bound near-water partition (A20). The integrated
-/// A9 work domain restores the measured A20 baseline, not the old P4 A21 baseline (A22).
+/// Audited Draft/42 LOD-1 probe after the C2 seasonal and wind revision. The
+/// hierarchical operator still consumes the final coupled terrain and climate.
+/// See the 2026-11-18 C2 measurements for lake-shore and source-identity checks.
 const EXPECTED_PROBE_FINGERPRINT: &str =
-    "6b97e30623bead1c927a92313409b96ee3732faea87c6a336ad0c63465c710f3";
+    "0c4a34830437db94dd7cd1a2ab00db0ef107bae207372b7099de2165dd982f0f";
 
 fn evaluator() -> HierarchicalEvaluator {
     evaluator_for(causal_formation_fixture())

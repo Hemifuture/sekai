@@ -478,6 +478,23 @@ mod tests {
         let audit_ms = audit_start.elapsed().as_millis();
 
         let snapshot = &artifact.snapshot;
+        // The original Draft/42 regression crossed both published advisory bounds.
+        for name in [
+            "cubed-face-seam-speed-ratio",
+            "seasonal-hemisphere-phase-fraction",
+        ] {
+            let metric = snapshot
+                .climate_quality()
+                .metrics()
+                .iter()
+                .find(|metric| metric.id().name() == name)
+                .expect("C2 quality metric is registered");
+            assert_eq!(
+                metric.status(),
+                crate::world::natural::QualityMetricStatus::Pass,
+                "{metric:?}"
+            );
+        }
         eprintln!(
             "ATLAS current fingerprint={}",
             blake3::Hash::from(*snapshot.fingerprint())

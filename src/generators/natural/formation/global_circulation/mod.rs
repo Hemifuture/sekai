@@ -1,4 +1,5 @@
 mod comparison;
+mod dual_mesh;
 mod forcing;
 mod generation;
 mod imex;
@@ -7,6 +8,7 @@ mod rk3;
 mod split_explicit;
 mod state;
 mod tendency;
+mod wind_projection;
 
 use crate::world::natural::{
     ClimateModelProfile, CERES_EBAF_INCOMING_SHORTWAVE_GLOBAL_MEAN_W_M2,
@@ -69,6 +71,8 @@ pub fn global_circulation_model_fingerprint(profile: ClimateModelProfile) -> [u8
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"sekai.global-circulation-equations.v6\0");
     if profile == ClimateModelProfile::C2LayeredV1 {
+        hasher.update(b"marine-seasonal-shortwave-and-dual-grid-winds.v2\0");
+        hasher.update(&crate::world::natural::MARINE_ATMOSPHERIC_SHORTWAVE_SHARE.to_le_bytes());
         hasher.update(
             b"fixed-month-background-extensive-fas-atmosphere-injection-after-first-cycle.v1\0",
         );

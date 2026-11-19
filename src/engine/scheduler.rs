@@ -173,7 +173,14 @@ impl BuildEngine {
                 descriptor.version(),
                 descriptor.namespace(),
             );
-            let stage_seed = derive_stage_seed(root_seed, identity);
+            let stage_seed = derive_stage_seed(
+                root_seed,
+                StageIdentity::new(
+                    identity.id(),
+                    stage.random_stream_version(),
+                    identity.namespace(),
+                ),
+            );
             let cache_key = match StageCacheKey::new(
                 identity,
                 descriptor.output(),

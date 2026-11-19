@@ -280,6 +280,9 @@ impl CausalNaturalFormationStage {
     }
 }
 
+// The v5 stream determines tectonics, substrate and primary relief before C2 runs.
+pub(super) const FORMATION_TERRAIN_STREAM_VERSION: u32 = 5;
+
 impl Stage for CausalNaturalFormationStage {
     type Inputs = CausalNaturalFormationStageInputs;
     type Output = NaturalFormationBundleArtifact;
@@ -289,7 +292,11 @@ impl Stage for CausalNaturalFormationStage {
     }
 
     fn version(&self) -> u32 {
-        5
+        7
+    }
+
+    fn random_stream_version(&self) -> u32 {
+        FORMATION_TERRAIN_STREAM_VERSION
     }
 
     fn namespace(&self) -> &'static str {

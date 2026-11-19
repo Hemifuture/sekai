@@ -173,62 +173,11 @@ fn atmosphere_strain_triangles(
     grid: &CubedSphereGrid,
     cancellation: &BuildCancellation,
 ) -> Result<Vec<AtmosphereStrainTriangle>, LayeredTendencyError> {
-    let mut incident = vec![([0_u32; 4], 0_usize); grid.vertices().len()];
-    for (cell_index, cell) in grid.cells().iter().enumerate() {
-        if cell_index % 256 == 0 {
-            check_cancelled(cancellation)?;
-        }
-        for &vertex in cell.vertices() {
-            let (cells, count) = &mut incident[vertex as usize];
-            cells[*count] = cell_index as u32;
-            *count += 1;
-        }
-    }
     let mut triangles = Vec::with_capacity(atmosphere_strain_triangle_count(grid.cell_count()));
-    for (vertex_index, (cells, count)) in incident.iter_mut().enumerate() {
-        let cells = &mut cells[..*count];
-        if vertex_index % 256 == 0 {
-            check_cancelled(cancellation)?;
-        }
-        assert!(
-            matches!(cells.len(), 3 | 4),
-            "validated cubed-sphere vertices have three or four incident cells"
-        );
-        let normal = grid.vertices()[vertex_index];
-        // Choose the least aligned Cartesian axis to obtain a deterministic,
-        // nonsingular local basis. Sorting is geometric, never cell-id order.
-        let axis_index = (0..3)
-            .min_by(|&a, &b| normal[a].abs().total_cmp(&normal[b].abs()))
-            .expect("three Cartesian axes");
-        let axis = std::array::from_fn(|component| if component == axis_index { 1.0 } else { 0.0 });
-        let east = cross(normal, axis);
-        let east_norm = norm(east);
-        let east = east.map(|value| value / east_norm);
-        let north = cross(normal, east);
-        cells.sort_by(|&a, &b| {
-            let angle = |cell: u32| {
-                let center = grid.cells()[cell as usize].center_unit();
-                dot(center, north).atan2(dot(center, east))
-            };
-            angle(a).total_cmp(&angle(b)).then(a.cmp(&b))
-        });
-        // Rotate the cyclic order to its smallest id. A quad then uses the
-        // diagonal from this node to its cyclic opposite, independent of sort seam.
-        let first = cells
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, cell)| **cell)
-            .map(|(index, _)| index)
-            .expect("nonempty dual polygon");
-        cells.rotate_left(first);
-        for local in 1..cells.len() - 1 {
-            triangles.push(atmosphere_strain_triangle(
-                grid,
-                [cells[0], cells[local], cells[local + 1]],
-            ));
-        }
-    }
-    check_cancelled(cancellation)?;
+    super::super::dual_mesh::for_each_triangle(grid, cancellation, |_, nodes| {
+        triangles.push(atmosphere_strain_triangle(grid, nodes));
+    })
+    .map_err(|_| LayeredTendencyError::Cancelled)?;
     debug_assert_eq!(
         triangles.len(),
         atmosphere_strain_triangle_count(grid.cell_count())

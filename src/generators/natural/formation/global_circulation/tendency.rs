@@ -1949,6 +1949,12 @@ impl<'grid> LayeredTendencySystem<'grid> {
             ClimateLayerRole::OceanMixedLayer,
         ];
         let layout = ClimateLayerLayout::for_profile(state.profile());
+        let marine_share = match state.profile() {
+            ClimateModelProfile::C2LayeredV1 => {
+                crate::world::natural::MARINE_ATMOSPHERIC_SHORTWAVE_SHARE
+            }
+            ClimateModelProfile::C1SingleLayerV1 => 0.0,
+        };
         for cell in 0..self.grid.cell_count() {
             if cell % 256 == 0 {
                 check_cancelled(cancellation)?;
@@ -2033,7 +2039,17 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     .zip(heat_capacities)
                     .map(|(weight, capacity)| weight * weight / capacity)
                     .sum::<f64>();
-            let requested_power = (absorbed_shortwave - outgoing_longwave)
+            // The annual reference already balances the mean column fluxes. Deposit
+            // the atmospheric share of the seasonal solar perturbation directly in
+            // air. The opposite ocean term keeps the column source exactly paired.
+            let air_solar =
+                water_fraction * marine_share * (absorbed_shortwave - annual_absorbed_shortwave);
+            let source_slope = weights[0] / heat_capacities[0] - weights[1] / heat_capacities[1];
+            let predictor_longwave = step_seconds
+                * gray_longwave_slope_w_m2_k(equilibrium_surface_temperature)
+                * source_slope
+                * air_solar;
+            let requested_power = (absorbed_shortwave - outgoing_longwave - predictor_longwave)
                 / (1.0 + step_seconds * relaxation_rate_per_s);
 
             for (role_index, role) in SURFACE_ROLES.iter().copied().enumerate() {
@@ -2047,7 +2063,10 @@ impl<'grid> LayeredTendencySystem<'grid> {
                     .layer_mut(role)
                     .expect("active tendency role")
                     .temperature_tendency_k_s[cell];
-                *target = baseline + (requested_power * weights[role_index] / heat_capacity) as f32;
+                *target = baseline
+                    + ((requested_power * weights[role_index]
+                        + [air_solar, -air_solar][role_index])
+                        / heat_capacity) as f32;
                 let actual_retained = f64::from(*target) - f64::from(baselines[role_index]);
                 retained_power += heat_capacities[role_index] * actual_retained;
             }

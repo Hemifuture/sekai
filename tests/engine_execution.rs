@@ -751,6 +751,48 @@ fn changed_stage_version_misses_the_prior_cache_entry() {
 }
 
 #[test]
+fn deterministic_revision_keeps_the_declared_random_stream_but_misses_the_cache() {
+    struct DrawStage(u32);
+    impl Stage for DrawStage {
+        type Inputs = SpecInput;
+        type Output = AArtifact;
+        fn id(&self) -> StageId {
+            StageId::new("test.stable-draw")
+        }
+        fn version(&self) -> u32 {
+            self.0
+        }
+        fn random_stream_version(&self) -> u32 {
+            1
+        }
+        fn namespace(&self) -> &'static str {
+            "test"
+        }
+        fn run(
+            &self,
+            _: Self::Inputs,
+            rng: &mut StageRng,
+            _: &mut Vec<Diagnostic>,
+        ) -> Result<AArtifact, StageError> {
+            Ok(AArtifact(rand::RngCore::next_u32(rng) as i32))
+        }
+    }
+    let mut cache = MemoryStageCache::new();
+    let mut build = |version| {
+        single_stage_engine(DrawStage(version))
+            .build(RootSeed::new(42), spec(1), &mut cache)
+            .unwrap()
+    };
+    let before = build(1);
+    let revised = build(2);
+    assert_eq!(revised.report.cache_misses(), 1);
+    assert_eq!(
+        before.artifacts.get::<AArtifact>().unwrap().0,
+        revised.artifacts.get::<AArtifact>().unwrap().0
+    );
+}
+
+#[test]
 fn cache_is_bounded_fifo_and_gets_do_not_refresh_age() {
     let hash_source = spec(1);
     let spec_hash = hash_source.hash::<SpecArtifact>().unwrap();

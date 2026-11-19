@@ -519,3 +519,7 @@ advances_temperature` 的期望热容除以压缩比。申报功率仍是物理 
 | 失真物理加速（选项 B 的出处） | Bryan, K. (1984) *J. Phys. Oceanogr.* 14, 666–673 |
 | EBM 扩散系数 `D = 0.649`、无冰共反照率 `a(x) = 0.681 − 0.202 P₂(x)` | North, G. R., Cahalan, R. F. & Coakley, J. A. (1981) *Rev. Geophys. Space Phys.* 19, 91–121 |
 | 固定相对湿度下的水汽温室 | Manabe, S. & Wetherald, R. T. (1967) *J. Atmos. Sci.* 24, 241–259 |
+
+## 修订（2026-11-18）：C2 海上季节短波分配
+
+C2 下边界增加配对的海上季节短波扰动及相应的隐式长波预测项。原年度灰体平衡、储热时钟与收支校验继续适用。实测、适用尺度和推导见[海上季相与来源格风场规格](2026-11-18-c2-climate-advisories.md)。

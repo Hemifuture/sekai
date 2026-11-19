@@ -19,6 +19,7 @@ mod geology;
 mod global_circulation;
 pub(crate) use global_circulation::{
     climate_work_domain_schema_for_source, global_circulation_schema_for_source,
+    MARINE_ATMOSPHERIC_SHORTWAVE_SHARE,
 };
 mod hydro_erosion;
 mod hydro_erosion_spec;

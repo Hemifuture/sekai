@@ -19,7 +19,7 @@ use crate::world::spatial::{dot, SphericalSurfaceSnapshot, SurfaceRef, UnitVecto
 /// Version 5 resolves marine inundation from submerged pathways to source ocean sites.
 pub const ATLAS_TERRAIN_MODEL_VERSION: u32 = 5;
 /// Atomic Atlas product epoch, including its climate-derived potential vegetation.
-pub const ATLAS_CURRENT_VERSION: u32 = 6;
+pub const ATLAS_CURRENT_VERSION: u32 = 8;
 /// Fixed original zoom scale; camera LOD never changes the author bed.
 pub const ATLAS_FINE_SCALE: civ_atlas_terrain::FineScale = civ_atlas_terrain::FineScale::Four;
 /// Fan quadrature level of the cell water fields: each source fan triangle is
